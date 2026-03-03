@@ -10,8 +10,10 @@ namespace HZExporter
     public static class HZMeshExporter
     {
         // C struct sizes (must match engine exactly)
-        const int SIZEOF_MODEL_BLOB_ASSET = 168; // 48 header + 4+4 + 64 mat4 + 16*3 BlobPtrs
-        const int SIZEOF_MESH_BLOB_ASSET = 172;  // 8+8+4+4+4+12+12 + 16*7 + 4
+        // ModelBlobAsset: 48 header + 4+4 + 8 padding (mat4 has 16-byte alignment via CGLM_ALIGN_MAT) + 64 mat4 + 16*3 BlobPtrs = 176
+        const int SIZEOF_MODEL_BLOB_ASSET = 176;
+        // MeshBlobAsset: 8+8+4+4+4+12+12 + 16*5 indices/pos/norm/tan/uv + 4 has_skin + 16*2 joint_idx/weights = 168
+        const int SIZEOF_MESH_BLOB_ASSET = 168;
         const int SIZEOF_STRING_BLOB = 8;
 
         public static void Export(Mesh mesh, string materialPath, string outputPath)
@@ -114,8 +116,8 @@ namespace HZExporter
             string meshName = mesh.name ?? "mesh";
             if (materialPath == null) materialPath = "";
 
-            int meshesOffset = SIZEOF_MODEL_BLOB_ASSET;
-            int stringsOffset = meshesOffset + SIZEOF_MESH_BLOB_ASSET;
+            int meshesOffset = SIZEOF_MODEL_BLOB_ASSET; // 176
+            int stringsOffset = meshesOffset + SIZEOF_MESH_BLOB_ASSET; // 176 + 168 = 344
 
             // No joints, no deps for now
             int depsOffset = stringsOffset; // deps array goes here (0 deps)
@@ -148,13 +150,17 @@ namespace HZExporter
             w.WriteU32(1);  // mesh_count
             w.WriteU32(0);  // joint_count
 
+            // 8 bytes padding for mat4 16-byte alignment (CGLM_ALIGN_MAT)
+            // offset 56 needs to be padded to offset 64
+            w.WriteZeros(8);
+
             // armature_transform (mat4 identity, 64 bytes)
             w.WriteMat4Identity();
 
             // meshes BlobPtr
             w.WriteBlobPtr(modelBase, meshesOffset, 1, SIZEOF_MESH_BLOB_ASSET, "MeshBlobAsset");
             // joints BlobPtr (empty)
-            w.WriteEmptyBlobPtr(84, "JointBlobAsset"); // sizeof(JointBlobAsset) = 64+4+16 = 84
+            w.WriteEmptyBlobPtr(96, "JointBlobAsset"); // sizeof(JointBlobAsset) = 64 mat4 + 4 parent_index + 12 padding + 16 BlobPtr = 96
             // joint_names BlobPtr (empty)
             w.WriteEmptyBlobPtr(SIZEOF_STRING_BLOB, "StringBlob");
 

@@ -15,6 +15,7 @@ def dump_model(path: str):
     off = 48
     mesh_count = r.read_u32(off); off += 4
     joint_count = r.read_u32(off); off += 4
+    off += 8  # 8 bytes padding for mat4 16-byte alignment (CGLM_ALIGN_MAT)
     mat4 = r.read_mat4(off); off += 64
     meshes_bp = r.read_blob_ptr(off); off += 16
     joints_bp = r.read_blob_ptr(off); off += 16
@@ -28,12 +29,12 @@ def dump_model(path: str):
     print(f"  joint_count:     {joint_count}")
     print(f"  armature_xform:  {'identity' if is_identity else [f'{v:.4f}' for v in mat4]}")
     print(f"  meshes BlobPtr:  {meshes_bp}")
-    r.check_blob_ptr(meshes_bp, "MeshBlobAsset", 172, "meshes")
+    r.check_blob_ptr(meshes_bp, "MeshBlobAsset", 168, "meshes")
     print(f"  joints BlobPtr:  {joints_bp}")
     print(f"  jnames BlobPtr:  {joint_names_bp}")
 
     # === MeshBlobAsset(s) ===
-    MESH_BLOB_SIZE = 172
+    MESH_BLOB_SIZE = 168
     for mi in range(mesh_count):
         mesh_off = meshes_bp.offset + mi * MESH_BLOB_SIZE
         mesh_base = mesh_off
