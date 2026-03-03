@@ -31,7 +31,11 @@ def dump_model(path: str):
     print(f"  meshes BlobPtr:  {meshes_bp}")
     r.check_blob_ptr(meshes_bp, "MeshBlobAsset", 168, "meshes")
     print(f"  joints BlobPtr:  {joints_bp}")
+    if joint_count > 0:
+        r.check_blob_ptr(joints_bp, "JointBlobAsset", 96, "joints")
     print(f"  jnames BlobPtr:  {joint_names_bp}")
+    if joint_count > 0:
+        r.check_blob_ptr(joint_names_bp, "StringBlob", 8, "joint_names")
 
     # === MeshBlobAsset(s) ===
     MESH_BLOB_SIZE = 168
@@ -69,6 +73,16 @@ def dump_model(path: str):
         joint_weights_bp = r.read_blob_ptr(mesh_off); mesh_off += 16
 
         print(f"  has_skin:       {has_skin}")
+
+        if has_skin:
+            r.check_blob_ptr(joint_indices_bp, "u8", 1, "joint_indices")
+            r.check(joint_indices_bp.count == vertex_count * 4,
+                    f"joint_indices: expected {vertex_count * 4} u8, got {joint_indices_bp.count}")
+            r.check_blob_ptr(joint_weights_bp, "f32", 4, "joint_weights")
+            r.check(joint_weights_bp.count == vertex_count * 4,
+                    f"joint_weights: expected {vertex_count * 4} f32, got {joint_weights_bp.count}")
+            print(f"  joint_indices:  {joint_indices_bp}")
+            print(f"  joint_weights:  {joint_weights_bp}")
 
         idx_ts = 2 if index_format == 0 else 4
         idx_tn = "u16" if index_format == 0 else "u32"
@@ -113,6 +127,60 @@ def dump_model(path: str):
                 else:
                     val = r.read_u32(idx_abs + ii * 4)
                 print(f"    [{ii}] {val}")
+
+    # === JointBlobAsset(s) ===
+    JOINT_BLOB_SIZE = 96
+    if joint_count > 0:
+        print(f"\n=== Skeleton ({joint_count} joints) ===")
+
+        # Read joint names from joint_names BlobArray(StringBlob)
+        jnames_abs = joint_names_bp.offset  # offset from ModelBlobAsset base (0)
+        names = []
+        for ji in range(joint_count):
+            sb_off = jnames_abs + ji * 8
+            name = r.read_string_blob(sb_off, sb_off)
+            names.append(name)
+
+        joints_abs = joints_bp.offset  # offset from ModelBlobAsset base (0)
+        for ji in range(joint_count):
+            j_off = joints_abs + ji * JOINT_BLOB_SIZE
+            j_base = j_off
+
+            # inverse_bind_matrix (64 bytes)
+            ibm = r.read_mat4(j_off); j_off += 64
+
+            # parent_index (4 bytes)
+            parent_idx = r.read_i32(j_off); j_off += 4
+
+            # children BlobPtr (16 bytes) — at offset 68 within JointBlobAsset
+            children_bp = r.read_blob_ptr(j_off); j_off += 16
+
+            # Validate children BlobPtr
+            r.check_blob_ptr(children_bp, "u32", 4, f"joint[{ji}].children")
+            r.check(children_bp.type_size > 0,
+                    f"joint[{ji}].children: type_size is 0 (would cause divide by zero)")
+
+            # Validate parent_index range
+            if parent_idx != -1:
+                r.check(0 <= parent_idx < joint_count,
+                        f"joint[{ji}].parent_index={parent_idx} out of range [0,{joint_count})")
+
+            # Validate children indices
+            if not children_bp.empty:
+                child_abs = j_base + children_bp.offset
+                for ci in range(children_bp.count):
+                    child_idx = r.read_u32(child_abs + ci * 4)
+                    r.check(child_idx < joint_count,
+                            f"joint[{ji}].children[{ci}]={child_idx} out of range [0,{joint_count})")
+
+            # Print first few and last few joints
+            if ji < 4 or ji >= joint_count - 2:
+                jname = names[ji] if ji < len(names) else "?"
+                parent_name = names[parent_idx] if 0 <= parent_idx < len(names) else "ROOT"
+                n_children = children_bp.count if not children_bp.empty else 0
+                print(f"  [{ji:3d}] \"{jname}\" parent={parent_idx}({parent_name}) children={n_children}")
+            elif ji == 4:
+                print(f"  ... ({joint_count - 6} more joints) ...")
 
     r.print_result()
     sys.exit(0 if r.ok else 1)

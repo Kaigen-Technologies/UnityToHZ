@@ -29,8 +29,7 @@ public static class HZExportCommands
 
     /// <summary>
     /// Loads an FBX at assetPath, finds all Mesh sub-assets, and exports each as a
-    /// ModelBlobAsset to ExportedAssets/meshes/{prefix}_{meshName}.hza.
-    /// If only one mesh, uses {prefix}.hza.
+    /// ModelBlobAsset. Detects SkinnedMeshRenderer to export with skinning data.
     /// </summary>
     static void ExportFbxMeshes(string assetPath, string prefix)
     {
@@ -39,6 +38,23 @@ public static class HZExportCommands
         {
             Debug.LogError($"[HZ] No assets found at {assetPath}");
             return;
+        }
+
+        // Instantiate the FBX to access SkinnedMeshRenderers (they need a live hierarchy)
+        var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(assetPath);
+        GameObject instance = null;
+        if (prefab != null)
+            instance = Object.Instantiate(prefab);
+
+        // Build a map of mesh name → SkinnedMeshRenderer from the instance
+        var smrByMeshName = new System.Collections.Generic.Dictionary<string, SkinnedMeshRenderer>();
+        if (instance != null)
+        {
+            foreach (var smr in instance.GetComponentsInChildren<SkinnedMeshRenderer>())
+            {
+                if (smr.sharedMesh != null)
+                    smrByMeshName[smr.sharedMesh.name] = smr;
+            }
         }
 
         int meshCount = 0;
@@ -51,6 +67,7 @@ public static class HZExportCommands
         if (meshCount == 0)
         {
             Debug.LogError($"[HZ] No meshes found in {assetPath}");
+            if (instance != null) Object.DestroyImmediate(instance);
             return;
         }
 
@@ -65,10 +82,17 @@ public static class HZExportCommands
 
                 string outputPath = $"{OutputDir}/meshes/{filename}";
 
-                HZMeshExporter.Export(mesh, "", outputPath);
+                if (smrByMeshName.TryGetValue(mesh.name, out var smr))
+                    HZMeshExporter.Export(smr, "", outputPath);
+                else
+                    HZMeshExporter.Export(mesh, "", outputPath);
+
                 exported++;
             }
         }
+
+        if (instance != null)
+            Object.DestroyImmediate(instance);
 
         Debug.Log($"[HZ] Exported {exported} mesh(es) from {assetPath}");
     }
