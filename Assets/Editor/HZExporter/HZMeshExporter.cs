@@ -37,22 +37,22 @@ namespace HZExporter
 
             for (int i = 0; i < vertexCount; i++)
             {
-                positions[i * 3 + 0] = vertices[i].x;
+                positions[i * 3 + 0] = -vertices[i].x; // negate X (undo Unity's LH import flip)
                 positions[i * 3 + 1] = vertices[i].y;
-                positions[i * 3 + 2] = -vertices[i].z; // negate Z
+                positions[i * 3 + 2] = vertices[i].z;
 
                 if (i < normals.Length)
                 {
-                    norms[i * 3 + 0] = normals[i].x;
+                    norms[i * 3 + 0] = -normals[i].x; // negate X
                     norms[i * 3 + 1] = normals[i].y;
-                    norms[i * 3 + 2] = -normals[i].z; // negate Z
+                    norms[i * 3 + 2] = normals[i].z;
                 }
 
                 if (i < tangents.Length)
                 {
-                    tans[i * 4 + 0] = tangents[i].x;
+                    tans[i * 4 + 0] = -tangents[i].x; // negate X
                     tans[i * 4 + 1] = tangents[i].y;
-                    tans[i * 4 + 2] = -tangents[i].z; // negate Z
+                    tans[i * 4 + 2] = tangents[i].z;
                     tans[i * 4 + 3] = tangents[i].w;  // keep handedness
                 }
 
@@ -74,12 +74,12 @@ namespace HZExporter
 
             // AABB with converted coords
             var bounds = mesh.bounds;
-            float aabbMinX = bounds.min.x;
+            float aabbMinX = -bounds.max.x; // negate X & swap min/max
             float aabbMinY = bounds.min.y;
-            float aabbMinZ = -bounds.max.z; // negate & swap
-            float aabbMaxX = bounds.max.x;
+            float aabbMinZ = bounds.min.z;
+            float aabbMaxX = -bounds.min.x; // negate X & swap min/max
             float aabbMaxY = bounds.max.y;
-            float aabbMaxZ = -bounds.min.z; // negate & swap
+            float aabbMaxZ = bounds.max.z;
 
             // Build index data
             byte[] indexData;
