@@ -23,6 +23,7 @@ public static class RemoteRefresh
     static Thread s_thread;
     static volatile bool s_running;
     static volatile bool s_refreshRequested;
+    static volatile string s_execMethod;
 
     // Persist compile results across domain reloads via temp file
     static readonly string s_resultFile = Path.Combine(Path.GetTempPath(), "unity_remote_refresh_result.txt");
@@ -81,25 +82,33 @@ public static class RemoteRefresh
 
                 var buf = new byte[256];
                 int n = stream.Read(buf, 0, buf.Length);
-                string cmd = Encoding.UTF8.GetString(buf, 0, n).Trim().ToLowerInvariant();
+                string rawCmd = Encoding.UTF8.GetString(buf, 0, n).Trim();
+                string cmd = rawCmd.ToLowerInvariant();
 
                 string response;
-                switch (cmd)
+                if (cmd == "refresh")
                 {
-                    case "refresh":
-                        WriteResult("compiling");
-                        s_refreshRequested = true;
-                        response = "refresh_queued";
-                        break;
-                    case "log":
-                        response = ReadResult();
-                        break;
-                    case "ping":
-                        response = "pong";
-                        break;
-                    default:
-                        response = $"unknown_command:{cmd}";
-                        break;
+                    WriteResult("compiling");
+                    s_refreshRequested = true;
+                    response = "refresh_queued";
+                }
+                else if (cmd == "log")
+                {
+                    response = ReadResult();
+                }
+                else if (cmd == "ping")
+                {
+                    response = "pong";
+                }
+                else if (cmd.StartsWith("exec:"))
+                {
+                    // exec:ClassName.MethodName — runs a static method on main thread
+                    s_execMethod = rawCmd.Substring(5); // preserve case
+                    response = $"exec_queued:{s_execMethod}";
+                }
+                else
+                {
+                    response = $"unknown_command:{cmd}";
                 }
 
                 byte[] resp = Encoding.UTF8.GetBytes(response);
@@ -123,6 +132,37 @@ public static class RemoteRefresh
             s_refreshRequested = false;
             Debug.Log("[RemoteRefresh] Triggering AssetDatabase.Refresh...");
             AssetDatabase.Refresh(ImportAssetOptions.Default);
+        }
+
+        if (s_execMethod != null)
+        {
+            string method = s_execMethod;
+            s_execMethod = null;
+            try
+            {
+                int dot = method.LastIndexOf('.');
+                if (dot < 0) { Debug.LogError($"[RemoteRefresh] Invalid method: {method}"); return; }
+                string typeName = method.Substring(0, dot);
+                string methodName = method.Substring(dot + 1);
+
+                System.Type type = null;
+                foreach (var asm in System.AppDomain.CurrentDomain.GetAssemblies())
+                {
+                    type = asm.GetType(typeName);
+                    if (type != null) break;
+                }
+                if (type == null) { Debug.LogError($"[RemoteRefresh] Type not found: {typeName}"); return; }
+
+                var mi = type.GetMethod(methodName, System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+                if (mi == null) { Debug.LogError($"[RemoteRefresh] Method not found: {method}"); return; }
+
+                Debug.Log($"[RemoteRefresh] Executing {method}...");
+                mi.Invoke(null, null);
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogError($"[RemoteRefresh] exec failed: {ex}");
+            }
         }
     }
 
