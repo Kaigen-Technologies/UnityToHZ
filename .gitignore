@@ -1,0 +1,48 @@
+# Unity generated
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Uu]serSettings/
+[Mm]emoryCaptures/
+[Rr]ecordings/
+
+# Asset meta (keep these — Unity needs them)
+# *.meta
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.csproj
+*.sln
+*.slnx
+*.vsconfig
+*.user
+*.suo
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Builds
+*.apk
+*.aab
+*.unitypackage
+*.app
+
+# Crashlytics
+crashlytics-build.properties
+
+# Exported HZ assets (binary output, don't track)
+ExportOutput/
