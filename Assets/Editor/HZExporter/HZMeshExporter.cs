@@ -5,16 +5,27 @@ using UnityEngine;
 namespace HZExporter
 {
     /// <summary>
-    /// Exports a Unity Mesh as a ModelBlobAsset (.hza) with one MeshBlobAsset inside.
+    /// Exports a Unity Mesh as a ModelBlobAsset (.hza) for hz-engine-v5.
+    /// v5 layout: ModelBlobAsset → MeshBlobAsset[] → SubMeshBlobAsset[]
     /// Supports both static and skinned meshes.
     /// </summary>
     public static class HZMeshExporter
     {
         // C struct sizes (must match engine exactly)
-        const int SIZEOF_MODEL_BLOB_ASSET = 176; // 48 header + 4+4 + 8 pad + 64 mat4 + 16*3 BlobPtrs
-        const int SIZEOF_MESH_BLOB_ASSET = 168;  // 8+8+4+4+4+12+12 + 16*5 + 4 + 16*2
-        const int SIZEOF_JOINT_BLOB_ASSET = 96;  // 64 mat4 + 4 parent_index + 12 pad + 16 BlobPtr
+        // ModelBlobAsset: header(48) + mat4(64) + meshes(16) + joints(16) + joint_names(16) = 160
+        const int SIZEOF_MODEL_BLOB_ASSET = 160;
+        // MeshBlobAsset: name(8) + submeshes(16) + blendshape_names(16) = 40
+        const int SIZEOF_MESH_BLOB_ASSET = 40;
+        // SubMeshBlobAsset: material(8) + index_format(4) + index_count(4) + vertex_count(4)
+        //   + aabb_min(12) + aabb_max(12) + indices(16) + positions(16) + normals(16)
+        //   + tangents(16) + uvs(16) + has_skin(4) + joint_indices(16) + joint_weights(16)
+        //   + blendshapes(16) = 176
+        const int SIZEOF_SUBMESH_BLOB_ASSET = 176;
+        // JointBlobAsset: mat4(64) + parent_index(4) + children(16) = 84
+        const int SIZEOF_JOINT_BLOB_ASSET = 84;
         const int SIZEOF_STRING_BLOB = 8;
+        // BlendshapeBlobAsset: position_deltas(16) + normal_deltas(16) = 32
+        const int SIZEOF_BLENDSHAPE_BLOB_ASSET = 32;
 
         /// <summary>Static mesh export (no skinning).</summary>
         public static void Export(Mesh mesh, string materialPath, string outputPath)
@@ -189,43 +200,44 @@ namespace HZExporter
             var w = new HZBlobWriter(1024 * 1024);
             int modelBase = w.Position;
 
-            // === ModelBlobAsset (176 bytes) ===
+            // === ModelBlobAsset (160 bytes) ===
+            // header(48) + mat4(64) + meshes(16) + joints(16) + joint_names(16)
             w.WriteHeader("ModelBlobAsset");
             w.WriteEmptyBlobPtr(SIZEOF_STRING_BLOB, "StringBlob"); // no deps
 
-            w.WriteU32(1);                    // mesh_count
-            w.WriteU32((uint)jointCount);     // joint_count
-            w.WriteZeros(8);                  // padding for mat4 alignment
+            // armature_transform — identity for Unity exports.
+            w.WriteMat4Identity();
 
-            // armature_transform
-            if (skinned)
-            {
-                // Use the root bone's local-to-world, converted
-                var root = FindRootBone(bones);
-                WriteMat4Converted(w, root != null ? root.localToWorldMatrix : Matrix4x4.identity);
-            }
-            else
-            {
-                w.WriteMat4Identity();
-            }
-
-            int meshesPtrPos = w.ReserveBlobPtr();    // meshes
-            int jointsPtrPos = w.ReserveBlobPtr();    // joints
+            int meshesPtrPos = w.ReserveBlobPtr();     // meshes
+            int jointsPtrPos = w.ReserveBlobPtr();     // joints
             int jointNamesPtrPos = w.ReserveBlobPtr(); // joint_names
 
             Debug.Assert(w.Position == SIZEOF_MODEL_BLOB_ASSET,
                 $"ModelBlobAsset size mismatch: expected {SIZEOF_MODEL_BLOB_ASSET}, got {w.Position}");
 
-            // === MeshBlobAsset (168 bytes) ===
+            // === MeshBlobAsset (40 bytes) — one mesh node ===
+            // name(8) + submeshes(16) + blendshape_names(16)
             int meshBase = w.Position;
-            w.PatchBlobPtr(meshesPtrPos, modelBase, meshBase, 1, SIZEOF_MESH_BLOB_ASSET, "MeshBlobAsset");
+            w.PatchBlobPtr(meshesPtrPos, meshBase, 1, SIZEOF_MESH_BLOB_ASSET, "MeshBlobAsset");
 
-            int namePos = w.ReserveStringBlob();
-            int matPos = w.ReserveStringBlob();
+            int meshNamePos = w.ReserveStringBlob();        // name
+            int submeshesPtrPos = w.ReserveBlobPtr();        // submeshes
+            int blendshapeNamesPtrPos = w.ReserveBlobPtr();  // blendshape_names (empty)
 
-            w.WriteU32(useU16 ? 0u : 1u);
-            w.WriteU32((uint)indexCount);
-            w.WriteU32((uint)vertexCount);
+            PatchEmptyBlobPtr(w, blendshapeNamesPtrPos, SIZEOF_STRING_BLOB, "StringBlob");
+
+            Debug.Assert(w.Position == meshBase + SIZEOF_MESH_BLOB_ASSET,
+                $"MeshBlobAsset size mismatch: expected {SIZEOF_MESH_BLOB_ASSET}, got {w.Position - meshBase}");
+
+            // === SubMeshBlobAsset (176 bytes) — one submesh ===
+            int subBase = w.Position;
+            w.PatchBlobPtr(submeshesPtrPos, subBase, 1, SIZEOF_SUBMESH_BLOB_ASSET, "SubMeshBlobAsset");
+
+            int matPos = w.ReserveStringBlob();  // material
+
+            w.WriteU32(useU16 ? 0u : 1u);       // index_format
+            w.WriteU32((uint)indexCount);         // index_count
+            w.WriteU32((uint)vertexCount);        // vertex_count
             w.WriteVec3(aabbMinX, aabbMinY, aabbMinZ);
             w.WriteVec3(aabbMaxX, aabbMaxY, aabbMaxZ);
 
@@ -239,27 +251,25 @@ namespace HZExporter
 
             int jointIdxPtrPos = w.ReserveBlobPtr();
             int jointWtPtrPos = w.ReserveBlobPtr();
+            int blendshapesPtrPos = w.ReserveBlobPtr(); // blendshapes (empty)
 
             if (!skinned)
             {
-                // Patch empty BlobPtrs for non-skinned
-                w.PatchBlobPtr(jointIdxPtrPos, meshBase, 0, 0, 1, "u8");
-                w.PatchBlobPtr(jointWtPtrPos, meshBase, 0, 0, 4, "f32");
-                // Write empty with correct format (offset=0, size=0)
                 PatchEmptyBlobPtr(w, jointIdxPtrPos, 1, "u8");
                 PatchEmptyBlobPtr(w, jointWtPtrPos, 4, "f32");
             }
+            PatchEmptyBlobPtr(w, blendshapesPtrPos, SIZEOF_BLENDSHAPE_BLOB_ASSET, "BlendshapeBlobAsset");
 
-            Debug.Assert(w.Position == meshBase + SIZEOF_MESH_BLOB_ASSET,
-                $"MeshBlobAsset size mismatch: expected {SIZEOF_MESH_BLOB_ASSET}, got {w.Position - meshBase}");
+            Debug.Assert(w.Position == subBase + SIZEOF_SUBMESH_BLOB_ASSET,
+                $"SubMeshBlobAsset size mismatch: expected {SIZEOF_SUBMESH_BLOB_ASSET}, got {w.Position - subBase}");
 
-            // === JointBlobAsset array ===
+            // === JointBlobAsset array (84 bytes each) ===
             int jointsArrayPos = w.Position;
             int[] jointChildrenPtrPositions = null;
 
             if (skinned)
             {
-                w.PatchBlobPtr(jointsPtrPos, modelBase, jointsArrayPos, jointCount, SIZEOF_JOINT_BLOB_ASSET, "JointBlobAsset");
+                w.PatchBlobPtr(jointsPtrPos, jointsArrayPos, jointCount, SIZEOF_JOINT_BLOB_ASSET, "JointBlobAsset");
 
                 jointChildrenPtrPositions = new int[jointCount];
                 for (int i = 0; i < jointCount; i++)
@@ -275,9 +285,7 @@ namespace HZExporter
                     // children BlobPtr (16 bytes) — reserve, patch later
                     jointChildrenPtrPositions[i] = w.ReserveBlobPtr();
 
-                    // 12 bytes padding (struct padded to 96 for mat4 alignment)
-                    w.WriteZeros(12);
-
+                    // No trailing padding in v5
                     Debug.Assert(w.Position == jointBase + SIZEOF_JOINT_BLOB_ASSET,
                         $"JointBlobAsset[{i}] size mismatch: expected {SIZEOF_JOINT_BLOB_ASSET}, got {w.Position - jointBase}");
                 }
@@ -293,7 +301,7 @@ namespace HZExporter
 
             if (skinned)
             {
-                w.PatchBlobPtr(jointNamesPtrPos, modelBase, jointNamesArrayPos, jointCount, SIZEOF_STRING_BLOB, "StringBlob");
+                w.PatchBlobPtr(jointNamesPtrPos, jointNamesArrayPos, jointCount, SIZEOF_STRING_BLOB, "StringBlob");
 
                 jointNameSBPositions = new int[jointCount];
                 for (int i = 0; i < jointCount; i++)
@@ -305,13 +313,13 @@ namespace HZExporter
             }
 
             // === String data (mesh name, material path, joint names) ===
-            w.WriteAndPatchStringBlob(namePos, meshBase, meshName);
-            w.WriteAndPatchStringBlob(matPos, meshBase, materialPath);
+            w.WriteAndPatchStringBlob(meshNamePos, meshName);
+            w.WriteAndPatchStringBlob(matPos, materialPath);
 
             if (skinned)
             {
                 for (int i = 0; i < jointCount; i++)
-                    w.WriteAndPatchStringBlob(jointNameSBPositions[i], jointNamesArrayPos + i * SIZEOF_STRING_BLOB, bones[i].name);
+                    w.WriteAndPatchStringBlob(jointNameSBPositions[i], bones[i].name);
             }
 
             // === Joint children data ===
@@ -323,15 +331,13 @@ namespace HZExporter
                     if (children.Count > 0)
                     {
                         int childDataPos = w.Position;
-                        int jointBase = jointsArrayPos + i * SIZEOF_JOINT_BLOB_ASSET;
-                        w.PatchBlobPtr(jointChildrenPtrPositions[i], jointBase, childDataPos, children.Count, 4, "u32");
+                        w.PatchBlobPtr(jointChildrenPtrPositions[i], childDataPos, children.Count, 4, "u32");
 
                         for (int c = 0; c < children.Count; c++)
                             w.WriteU32((uint)children[c]);
                     }
                     else
                     {
-                        int jointBase = jointsArrayPos + i * SIZEOF_JOINT_BLOB_ASSET;
                         PatchEmptyBlobPtr(w, jointChildrenPtrPositions[i], 4, "u32");
                     }
                 }
@@ -343,34 +349,34 @@ namespace HZExporter
             // === Vertex/index data ===
             int indicesDataPos = w.Position;
             w.WriteBytes(indexData);
-            w.PatchBlobPtr(indicesPtrPos, meshBase, indicesDataPos, indexData.Length / indexTypeSize, indexTypeSize, indexTypeName);
+            w.PatchBlobPtr(indicesPtrPos, indicesDataPos, indexData.Length / indexTypeSize, indexTypeSize, indexTypeName);
 
             int posDataPos = w.Position;
             WriteFloatArray(w, positions);
-            w.PatchBlobPtr(positionsPtrPos, meshBase, posDataPos, vertexCount * 3, 4, "f32");
+            w.PatchBlobPtr(positionsPtrPos, posDataPos, vertexCount * 3, 4, "f32");
 
             int normDataPos = w.Position;
             WriteFloatArray(w, norms);
-            w.PatchBlobPtr(normalsPtrPos, meshBase, normDataPos, vertexCount * 3, 4, "f32");
+            w.PatchBlobPtr(normalsPtrPos, normDataPos, vertexCount * 3, 4, "f32");
 
             int tanDataPos = w.Position;
             WriteFloatArray(w, tans);
-            w.PatchBlobPtr(tangentsPtrPos, meshBase, tanDataPos, vertexCount * 4, 4, "f32");
+            w.PatchBlobPtr(tangentsPtrPos, tanDataPos, vertexCount * 4, 4, "f32");
 
             int uvDataPos = w.Position;
             WriteFloatArray(w, uv);
-            w.PatchBlobPtr(uvsPtrPos, meshBase, uvDataPos, vertexCount * 2, 4, "f32");
+            w.PatchBlobPtr(uvsPtrPos, uvDataPos, vertexCount * 2, 4, "f32");
 
             // === Skinning vertex data ===
             if (skinned)
             {
                 int jiDataPos = w.Position;
                 w.WriteBytes(jointIndicesData);
-                w.PatchBlobPtr(jointIdxPtrPos, meshBase, jiDataPos, vertexCount * 4, 1, "u8");
+                w.PatchBlobPtr(jointIdxPtrPos, jiDataPos, vertexCount * 4, 1, "u8");
 
                 int jwDataPos = w.Position;
                 WriteFloatArray(w, jointWeightsData);
-                w.PatchBlobPtr(jointWtPtrPos, meshBase, jwDataPos, vertexCount * 4, 4, "f32");
+                w.PatchBlobPtr(jointWtPtrPos, jwDataPos, vertexCount * 4, 4, "f32");
             }
 
             // Patch header.asset_size
@@ -393,7 +399,6 @@ namespace HZExporter
             // Unity Matrix4x4 is column-major: m[row, col]
             // cglm mat4 is column-major: mat4[col][row]
             // Negate X: negate row 0 and col 0, but double-negate [0,0] cancels out
-            // Row 0 = X row, Col 0 = X column
             for (int col = 0; col < 4; col++)
             {
                 for (int row = 0; row < 4; row++)
@@ -401,7 +406,6 @@ namespace HZExporter
                     float v = m[row, col];
                     bool negateRow = (row == 0);
                     bool negateCol = (col == 0);
-                    // XOR: negate if exactly one of row/col is 0
                     if (negateRow != negateCol)
                         v = -v;
                     w.WriteF32(v);
@@ -409,21 +413,9 @@ namespace HZExporter
             }
         }
 
-        static Transform FindRootBone(Transform[] bones)
-        {
-            var boneSet = new HashSet<Transform>(bones);
-            foreach (var bone in bones)
-            {
-                if (bone.parent == null || !boneSet.Contains(bone.parent))
-                    return bone;
-            }
-            return bones.Length > 0 ? bones[0] : null;
-        }
-
         static void PatchEmptyBlobPtr(HZBlobWriter w, int pos, int typeSize, string typeName)
         {
-            long saved = w.Position;
-            w.PatchU32(pos, 0);
+            w.PatchI32(pos, 0);
             w.PatchU32(pos + 4, 0);
             w.PatchU32(pos + 8, (uint)typeSize);
             w.PatchU32(pos + 12, (uint)HZBlobWriter.TypeHash(typeName, typeSize));
@@ -434,8 +426,5 @@ namespace HZExporter
             for (int i = 0; i < data.Length; i++)
                 w.WriteF32(data[i]);
         }
-
-        static int Align4(int size) => (size + 3) & ~3;
-        static int Align16(int size) => (size + 15) & ~15;
     }
 }

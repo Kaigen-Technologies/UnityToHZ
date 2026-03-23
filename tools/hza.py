@@ -1,5 +1,9 @@
 """
-Shared utilities for reading and validating hz-engine-v3 .hza binary assets.
+Shared utilities for reading and validating hz-engine-v5 .hza binary assets.
+
+v5 changes from v3:
+  - BlobPtr.offset is i32, self-relative (data = &offset + offset)
+  - StringBlob layout: { i32 offset; u32 len } (swapped from v3)
 
 Usage from other scripts:
     from hza import HzaReader
@@ -32,14 +36,20 @@ def asset_type(name: str) -> int:
 
 
 class BlobPtr:
-    """Parsed BlobPtr / BlobArray(T)."""
-    __slots__ = ("offset", "size", "type_size", "typehash")
+    """Parsed BlobPtr / BlobArray(T). Offset is self-relative in v5."""
+    __slots__ = ("offset", "size", "type_size", "typehash", "field_pos")
 
-    def __init__(self, offset: int, size: int, type_size: int, typehash: int):
+    def __init__(self, offset: int, size: int, type_size: int, typehash: int, field_pos: int):
         self.offset = offset
         self.size = size
         self.type_size = type_size
         self.typehash = typehash
+        self.field_pos = field_pos  # file position of this BlobPtr
+
+    @property
+    def data_pos(self) -> int:
+        """Absolute file position of the data this BlobPtr points to."""
+        return self.field_pos + self.offset
 
     @property
     def count(self) -> int:
@@ -68,11 +78,11 @@ class BlobPtr:
     def __repr__(self):
         return (f"BlobPtr(offset={self.offset}, size={self.size}, "
                 f"type_size={self.type_size}, typehash=0x{self.typehash:08x}, "
-                f"count={self.count})")
+                f"count={self.count}, data_pos={self.data_pos})")
 
 
 class HzaReader:
-    """Reads and validates an .hza binary asset file."""
+    """Reads and validates an .hza binary asset file (v5 format)."""
 
     def __init__(self, path: str):
         with open(path, "rb") as f:
@@ -116,15 +126,16 @@ class HzaReader:
         return self.read(offset, "16f")
 
     def read_blob_ptr(self, offset: int) -> BlobPtr:
-        off, size, ts, th = self.read(offset, "IIII")
-        return BlobPtr(off, size, ts, th)
+        """Read a BlobPtr at file offset. v5: { i32 offset, u32 size, u32 type_size, u32 typehash }"""
+        off, size, ts, th = self.read(offset, "iIII")
+        return BlobPtr(off, size, ts, th, field_pos=offset)
 
-    def read_string_blob(self, sb_offset: int, parent_offset: int) -> str:
-        """Read a StringBlob at sb_offset, with string offset relative to parent_offset."""
-        slen, soff = self.read(sb_offset, "II")
+    def read_string_blob(self, sb_offset: int) -> str:
+        """Read a StringBlob at sb_offset. v5 layout: { i32 offset; u32 len }, self-relative."""
+        soff, slen = self.read(sb_offset, "iI")
         if slen == 0 and soff == 0:
             return ""
-        abs_off = parent_offset + soff
+        abs_off = sb_offset + soff  # self-relative
         return self.data[abs_off:abs_off + slen].decode("utf-8", errors="replace")
 
     def read_floats(self, offset: int, count: int) -> list[float]:
@@ -188,25 +199,12 @@ class HzaReader:
         print(f"  version:         {self.version} {ok(self.version == ASSET_VERSION)}")
         print(f"  dependencies:    {self.deps_bp}")
 
-    def read_dependency_paths(self) -> list[str]:
-        """Read dependency paths from header.dependencies BlobArray(StringBlob)."""
-        if self.deps_bp.empty:
-            return []
-        paths = []
-        # deps BlobPtr is at offset 32, relative to header base (0)
-        deps_abs = self.deps_bp.offset  # offset from header base (0)
-        for i in range(self.deps_bp.count):
-            sb_off = deps_abs + i * 8
-            path = self.read_string_blob(sb_off, sb_off)
-            paths.append(path)
-        return paths
-
     # --- Result ---
 
     def print_result(self):
         print(f"\n{'=' * 40}")
         if self.errors:
-            print(f"VALIDATION FAILED — {len(self.errors)} error(s):")
+            print(f"VALIDATION FAILED - {len(self.errors)} error(s):")
             for e in self.errors:
                 print(f"  - {e}")
         else:

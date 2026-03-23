@@ -5,8 +5,8 @@ using System.Text;
 namespace HZExporter
 {
     /// <summary>
-    /// Binary writer for hz-engine-v3 BlobAsset format.
-    /// All offsets are relative to a parent struct position, not file start.
+    /// Binary writer for hz-engine-v5 BlobAsset format.
+    /// All BlobPtr/StringBlob offsets are SELF-RELATIVE (offset from the field's own address).
     /// Little-endian throughout.
     /// </summary>
     public class HZBlobWriter
@@ -133,25 +133,27 @@ namespace HZExporter
 
         /// <summary>
         /// Writes a BlobPtr at the current position. Returns the position.
+        /// Offset is self-relative: dataPos - thisFieldPos.
         /// </summary>
-        public int WriteBlobPtr(int parentPos, int dataPos, int count, int typeSize, string typeName)
+        public int WriteBlobPtr(int dataPos, int count, int typeSize, string typeName)
         {
             int pos = Position;
-            _writer.Write((uint)(dataPos - parentPos));   // offset
-            _writer.Write((uint)(count * typeSize));       // size
-            _writer.Write((uint)typeSize);                 // type_size
-            _writer.Write((uint)TypeHash(typeName, typeSize)); // typehash
+            _writer.Write((int)(dataPos - pos));               // offset (i32, self-relative)
+            _writer.Write((uint)(count * typeSize));            // size
+            _writer.Write((uint)typeSize);                      // type_size
+            _writer.Write((uint)TypeHash(typeName, typeSize));  // typehash
             return pos;
         }
 
         /// <summary>
         /// Patches a previously reserved BlobPtr at blobPtrPos.
+        /// Offset is self-relative: dataPos - blobPtrPos.
         /// </summary>
-        public void PatchBlobPtr(int blobPtrPos, int parentPos, int dataPos, int count, int typeSize, string typeName)
+        public void PatchBlobPtr(int blobPtrPos, int dataPos, int count, int typeSize, string typeName)
         {
             long saved = _stream.Position;
             _stream.Position = blobPtrPos;
-            _writer.Write((uint)(dataPos - parentPos));
+            _writer.Write((int)(dataPos - blobPtrPos));
             _writer.Write((uint)(count * typeSize));
             _writer.Write((uint)typeSize);
             _writer.Write((uint)TypeHash(typeName, typeSize));
@@ -164,7 +166,7 @@ namespace HZExporter
         public int WriteEmptyBlobPtr(int typeSize, string typeName)
         {
             int pos = Position;
-            _writer.Write((uint)0);                        // offset
+            _writer.Write((int)0);                         // offset (i32)
             _writer.Write((uint)0);                        // size
             _writer.Write((uint)typeSize);                 // type_size
             _writer.Write((uint)TypeHash(typeName, typeSize)); // typehash
@@ -186,9 +188,10 @@ namespace HZExporter
 
         /// <summary>
         /// Writes string data (null-terminated, 4-byte aligned) and patches
-        /// the StringBlob at sbPos. parentPos is the base for the offset.
+        /// the StringBlob at sbPos. Offset is self-relative (from sbPos).
+        /// v5 layout: { i32 offset; u32 len; }
         /// </summary>
-        public void WriteAndPatchStringBlob(int sbPos, int parentPos, string str)
+        public void WriteAndPatchStringBlob(int sbPos, string str)
         {
             int dataPos = Position;
             byte[] utf8 = Encoding.UTF8.GetBytes(str);
@@ -199,11 +202,11 @@ namespace HZExporter
             int pad = aligned - allocSize;
             if (pad > 0) WriteZeros(pad);
 
-            // Patch the StringBlob
+            // Patch the StringBlob: { i32 offset, u32 len }
             long saved = _stream.Position;
             _stream.Position = sbPos;
-            _writer.Write((uint)utf8.Length);        // len
-            _writer.Write((uint)(dataPos - parentPos)); // offset
+            _writer.Write((int)(dataPos - sbPos));   // offset (i32, self-relative)
+            _writer.Write((uint)utf8.Length);         // len
             _stream.Position = saved;
         }
 

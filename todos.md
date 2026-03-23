@@ -1,3 +1,3 @@
 - [x] test exporting xbot (no skin)
-- [ ] test exporting xbot skin
+- [x] test exporting xbot skin
 - [ ] test exporting xbot anim
