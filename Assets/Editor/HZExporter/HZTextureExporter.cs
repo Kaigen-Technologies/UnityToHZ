@@ -4,37 +4,58 @@ using UnityEngine;
 namespace HZExporter
 {
     /// <summary>
-    /// Exports a Unity Texture2D as a TextureBlobAsset (.hza) + raw PNG for hz-engine-v5.
+    /// Exports a Unity Texture2D as a TextureBlobAsset (.hza) + compressed KTX via PVRTexTool.
+    /// Matches the engine exporter's texture pipeline.
     /// </summary>
     public static class HZTextureExporter
     {
-        // TextureBlobAsset: header(48) + image BlobAssetRef(24) + format(4) + width(4) + height(4) + is_srgb(4) = 88
         const int SIZEOF_TEXTURE_BLOB_ASSET = 88;
         const int SIZEOF_STRING_BLOB = 8;
 
-        // TextureFormat enum
-        const uint TEX_FORMAT_RAW = 0;
+        // TextureFormat enum (must match engine)
+        const uint TEX_FORMAT_BC1 = 1;
+        const uint TEX_FORMAT_BC3 = 2;
+        const uint TEX_FORMAT_BC5 = 3;
+
+        const string PVRTEXTOOL_PATH = "D:/dev/gabrieldechichi/hz-engine-v5/tools/PVRTextTool/PVRTexToolCLI.exe";
 
         /// <summary>
-        /// Export a texture as TextureBlobAsset + PNG image file.
+        /// Export a texture as TextureBlobAsset (.hza) + PNG + compressed KTX.
         /// </summary>
         /// <param name="texture">Source texture</param>
-        /// <param name="imagePath">Asset-relative path for the image (base, no extension for compressed; full path for raw)</param>
-        /// <param name="isSrgb">Whether the texture is sRGB (albedo/emission) vs linear (normal/metallic)</param>
-        /// <param name="outputHzaPath">Output .hza metadata file path</param>
-        /// <param name="outputImagePath">Output image file path (PNG)</param>
-        public static void Export(Texture2D texture, string imagePath, bool isSrgb,
-            string outputHzaPath, string outputImagePath)
+        /// <param name="imageBasePath">Asset-relative base path for the image (e.g. "/unity/albedo") — no extension</param>
+        /// <param name="isSrgb">sRGB for albedo/emission, linear for normal/metallic</param>
+        /// <param name="hasAlpha">Whether the texture has meaningful alpha</param>
+        /// <param name="outputHzaPath">Output .hza file path</param>
+        /// <param name="outputPngPath">Output PNG file path</param>
+        public static void Export(Texture2D texture, string imageBasePath, bool isSrgb,
+            bool hasAlpha, string outputHzaPath, string outputPngPath)
         {
-            // Export the PNG image
-            Directory.CreateDirectory(Path.GetDirectoryName(outputImagePath));
-
-            // Make texture readable
+            // Export the PNG
+            Directory.CreateDirectory(Path.GetDirectoryName(outputPngPath));
             var readable = MakeReadable(texture);
             byte[] pngData = readable.EncodeToPNG();
-            File.WriteAllBytes(outputImagePath, pngData);
+            File.WriteAllBytes(outputPngPath, pngData);
             if (readable != texture)
                 Object.DestroyImmediate(readable);
+
+            // Compress with PVRTexTool
+            string outputBase = Path.Combine(
+                Path.GetDirectoryName(outputPngPath),
+                Path.GetFileNameWithoutExtension(outputPngPath));
+            string colorSpace = isSrgb ? "sRGB" : "lRGB";
+
+            uint format;
+            if (hasAlpha)
+            {
+                format = TEX_FORMAT_BC3;
+                RunPVRTexTool($"-i \"{outputPngPath}\" -o \"{outputBase}_bc3.ktx\" -m -f BC3,UBN,{colorSpace}");
+            }
+            else
+            {
+                format = TEX_FORMAT_BC1;
+                RunPVRTexTool($"-i \"{outputPngPath}\" -o \"{outputBase}_bc1.ktx\" -m -f BC1,UBN,{colorSpace}");
+            }
 
             // Write TextureBlobAsset
             var w = new HZBlobWriter(1024);
@@ -45,24 +66,43 @@ namespace HZExporter
 
             int imageRefPos = w.ReserveBlobAssetRef(); // image
 
-            w.WriteU32(TEX_FORMAT_RAW); // format
-            w.WriteU32((uint)texture.width); // width
-            w.WriteU32((uint)texture.height); // height
+            w.WriteU32(format);  // format
+            w.WriteU32(0);       // width (engine gets from KTX)
+            w.WriteU32(0);       // height (engine gets from KTX)
             w.WriteU32(isSrgb ? 1u : 0u); // is_srgb
 
             Debug.Assert(w.Position == SIZEOF_TEXTURE_BLOB_ASSET,
                 $"TextureBlobAsset size mismatch: expected {SIZEOF_TEXTURE_BLOB_ASSET}, got {w.Position}");
 
-            // String data: image path
-            // sizeof(u8) = 1, TYPE_HASH("u8") for the raw image blob
-            w.WriteAndPatchBlobAssetRef(imageRefPos, imagePath, 1, "u8");
+            // image.path = base path (engine appends _bc1.ktx etc.)
+            w.WriteAndPatchBlobAssetRef(imageRefPos, imageBasePath, 1, "u8");
 
             int finalSize = w.Position;
             w.PatchU64(blobBase + 8, (ulong)finalSize);
 
             Directory.CreateDirectory(Path.GetDirectoryName(outputHzaPath));
             w.WriteToFile(outputHzaPath);
-            Debug.Log($"[HZTextureExporter] Exported → {outputHzaPath} ({finalSize} bytes, {texture.width}x{texture.height}, srgb={isSrgb})");
+            Debug.Log($"[HZTextureExporter] Exported → {outputHzaPath} ({finalSize} bytes, format={(format == TEX_FORMAT_BC1 ? "BC1" : "BC3")}, srgb={isSrgb})");
+        }
+
+        static void RunPVRTexTool(string args)
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = PVRTEXTOOL_PATH,
+                Arguments = args,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            var proc = System.Diagnostics.Process.Start(psi);
+            proc.WaitForExit(30000);
+            if (proc.ExitCode != 0)
+            {
+                string stderr = proc.StandardError.ReadToEnd();
+                Debug.LogError($"[HZTextureExporter] PVRTexTool failed (exit {proc.ExitCode}): {stderr}");
+            }
         }
 
         static Texture2D MakeReadable(Texture2D src)

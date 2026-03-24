@@ -33,6 +33,33 @@ public static class HZExportCommands
         Debug.Log("[HZ] Cube export done!");
     }
 
+    public static void ExportTexturedCube()
+    {
+        var go = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        var meshFilter = go.GetComponent<MeshFilter>();
+        var mesh = meshFilter.sharedMesh;
+
+        // Create material with a texture
+        var tex = AssetDatabase.LoadAssetAtPath<Texture2D>("Assets/TutorialInfo/Icons/URP.png");
+        if (tex == null)
+        {
+            Debug.LogError("[HZ] Could not find URP.png texture");
+            Object.DestroyImmediate(go);
+            return;
+        }
+
+        var mat = new Material(Shader.Find("Universal Render Pipeline/Lit"));
+        mat.SetTexture("_BaseMap", tex);
+        mat.SetColor("_BaseColor", Color.white);
+
+        string matAssetPath = ExportMaterial(mat, "TexturedCube", false);
+        HZMeshExporter.Export(mesh, matAssetPath, OutputDir + "/meshes/TexturedCube.hza");
+
+        Object.DestroyImmediate(mat);
+        Object.DestroyImmediate(go);
+        Debug.Log("[HZ] Textured cube export done!");
+    }
+
     public static void ExportXBot()
     {
         ExportFbxMeshes("Assets/New Folder/X Bot.fbx", "X_Bot");
@@ -141,14 +168,19 @@ public static class HZExportCommands
             {
                 string texName = $"{baseName}_albedo";
                 string texHzaPath = $"{OutputDir}/textures/{texName}_tex.hza";
-                string texImagePath = $"{OutputDir}/textures/{texName}.png";
+                string texPngPath = $"{OutputDir}/textures/{texName}.png";
                 texAssetPath = $"{AssetPrefix}/{texName}_tex.hza";
 
-                // The image path in the blob is what the engine uses to find the image file
-                // For RAW format, the engine loads it directly as a raw blob
-                string imageAssetPath = $"{AssetPrefix}/{texName}.png";
+                // Image base path: engine appends _bc1.ktx (leading / matches engine convention)
+                string imageBasePath = $"/{AssetPrefix}/{texName}";
 
-                HZTextureExporter.Export(albedo, imageAssetPath, true, texHzaPath, texImagePath);
+                // Detect alpha
+                bool hasAlpha = albedo.format == TextureFormat.RGBA32 ||
+                                albedo.format == TextureFormat.ARGB32 ||
+                                albedo.format == TextureFormat.DXT5 ||
+                                albedo.alphaIsTransparency;
+
+                HZTextureExporter.Export(albedo, imageBasePath, true, hasAlpha, texHzaPath, texPngPath);
             }
         }
 
