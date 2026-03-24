@@ -11,13 +11,23 @@ public static class HZExportCommands
 {
     const string OutputDir = "D:/dev/unity/UnityToHZ/ExportedAssets";
 
+    // Asset-relative prefix (how the engine sees the paths, relative to assets/)
+    const string AssetPrefix = "unity";
+
     [MenuItem("HZ Engine/Export Test Cube")]
     public static void ExportTestCube()
     {
         var go = GameObject.CreatePrimitive(PrimitiveType.Cube);
-        var mesh = go.GetComponent<MeshFilter>().sharedMesh;
+        var meshFilter = go.GetComponent<MeshFilter>();
+        var meshRenderer = go.GetComponent<MeshRenderer>();
+        var mesh = meshFilter.sharedMesh;
+        var mat = meshRenderer.sharedMaterial;
 
-        HZMeshExporter.Export(mesh, "", OutputDir + "/meshes/Cube.hza");
+        // Export material
+        string matAssetPath = ExportMaterial(mat, "Cube", false);
+
+        // Export mesh with material reference
+        HZMeshExporter.Export(mesh, matAssetPath, OutputDir + "/meshes/Cube.hza");
 
         Object.DestroyImmediate(go);
         Debug.Log("[HZ] Cube export done!");
@@ -48,7 +58,7 @@ public static class HZExportCommands
             instance = Object.Instantiate(prefab);
 
         // Build a map of mesh name → SkinnedMeshRenderer from the instance
-        var smrByMeshName = new System.Collections.Generic.Dictionary<string, SkinnedMeshRenderer>();
+        var smrByMeshName = new Dictionary<string, SkinnedMeshRenderer>();
         if (instance != null)
         {
             foreach (var smr in instance.GetComponentsInChildren<SkinnedMeshRenderer>())
@@ -77,16 +87,26 @@ public static class HZExportCommands
         {
             if (asset is Mesh mesh && mesh.vertexCount > 0)
             {
-                string filename = meshCount == 1
-                    ? $"{prefix}.hza"
-                    : $"{prefix}_{SanitizeName(mesh.name)}.hza";
-
+                string safeName = meshCount == 1
+                    ? prefix
+                    : $"{prefix}_{SanitizeName(mesh.name)}";
+                string filename = safeName + ".hza";
                 string outputPath = $"{OutputDir}/meshes/{filename}";
 
-                if (smrByMeshName.TryGetValue(mesh.name, out var smr))
-                    HZMeshExporter.Export(smr, "", outputPath);
+                bool skinned = smrByMeshName.ContainsKey(mesh.name);
+
+                // Export material
+                Material mat = null;
+                if (skinned && smrByMeshName.TryGetValue(mesh.name, out var smr))
+                {
+                    mat = smr.sharedMaterial;
+                }
+                string matAssetPath = ExportMaterial(mat, safeName, skinned);
+
+                if (skinned)
+                    HZMeshExporter.Export(smrByMeshName[mesh.name], matAssetPath, outputPath);
                 else
-                    HZMeshExporter.Export(mesh, "", outputPath);
+                    HZMeshExporter.Export(mesh, matAssetPath, outputPath);
 
                 exported++;
             }
@@ -98,10 +118,47 @@ public static class HZExportCommands
         Debug.Log($"[HZ] Exported {exported} mesh(es) from {assetPath}");
     }
 
+    /// <summary>
+    /// Export a material and its textures. Returns the asset-relative path to the material .hza.
+    /// </summary>
+    static string ExportMaterial(Material mat, string baseName, bool skinned)
+    {
+        string matFilename = $"{baseName}_mat.hza";
+        string matOutputPath = $"{OutputDir}/materials/{matFilename}";
+        string matAssetPath = $"{AssetPrefix}/{matFilename}";
+
+        // Check for albedo texture
+        string texAssetPath = null;
+        if (mat != null)
+        {
+            Texture2D albedo = null;
+            if (mat.HasProperty("_BaseMap"))
+                albedo = mat.GetTexture("_BaseMap") as Texture2D;
+            else if (mat.HasProperty("_MainTex"))
+                albedo = mat.GetTexture("_MainTex") as Texture2D;
+
+            if (albedo != null)
+            {
+                string texName = $"{baseName}_albedo";
+                string texHzaPath = $"{OutputDir}/textures/{texName}_tex.hza";
+                string texImagePath = $"{OutputDir}/textures/{texName}.png";
+                texAssetPath = $"{AssetPrefix}/{texName}_tex.hza";
+
+                // The image path in the blob is what the engine uses to find the image file
+                // For RAW format, the engine loads it directly as a raw blob
+                string imageAssetPath = $"{AssetPrefix}/{texName}.png";
+
+                HZTextureExporter.Export(albedo, imageAssetPath, true, texHzaPath, texImagePath);
+            }
+        }
+
+        HZMaterialExporter.Export(mat, skinned, texAssetPath, matOutputPath);
+        return matAssetPath;
+    }
+
     public static void ExportBodyBlock()
     {
         // Get skeleton bone order from X Bot — must match the model .hza we exported.
-        // Use Beta_Surface SMR specifically (it has 65 bones including HeadTop_End).
         var xbotPrefab = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/New Folder/X Bot.fbx");
         var xbotInstance = Object.Instantiate(xbotPrefab);
 
@@ -124,7 +181,6 @@ public static class HZExportCommands
 
         Debug.Log($"[HZ] Using X Bot '{smr.sharedMesh.name}' SMR with {smr.bones.Length} bones");
 
-        // Build bone name → joint index map from X Bot skeleton
         var boneNameToIndex = new Dictionary<string, int>();
         for (int i = 0; i < smr.bones.Length; i++)
             boneNameToIndex[smr.bones[i].name] = i;
@@ -132,7 +188,6 @@ public static class HZExportCommands
         int jointCount = smr.bones.Length;
         Object.DestroyImmediate(xbotInstance);
 
-        // Get animation clip from Body Block FBX
         var clips = AssetDatabase.LoadAllAssetsAtPath("Assets/New Folder/Body Block.fbx");
         AnimationClip clip = null;
         foreach (var asset in clips)
@@ -150,13 +205,10 @@ public static class HZExportCommands
             return;
         }
 
-        // Instantiate Body Block to sample on
         var bbPrefab = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/New Folder/Body Block.fbx");
         var bbInstance = Object.Instantiate(bbPrefab);
         var bbSmr = bbInstance.GetComponentInChildren<SkinnedMeshRenderer>();
 
-        // Build the bone list from Body Block's actual SMR bones,
-        // mapped to X Bot joint indices by name
         var animBoneMap = new Dictionary<string, int>();
         if (bbSmr != null)
         {
