@@ -16,16 +16,19 @@ namespace HZExporter
         const int SIZEOF_MODEL_BLOB_ASSET = 160;
         // MeshBlobAsset: name(8) + submeshes(16) + blendshape_names(16) = 40
         const int SIZEOF_MESH_BLOB_ASSET = 40;
-        // SubMeshBlobAsset: material(8) + index_format(4) + index_count(4) + vertex_count(4)
+        // SubMeshBlobAsset: material BlobAssetRef(24) + index_format(4) + index_count(4) + vertex_count(4)
         //   + aabb_min(12) + aabb_max(12) + indices(16) + positions(16) + normals(16)
         //   + tangents(16) + uvs(16) + has_skin(4) + joint_indices(16) + joint_weights(16)
-        //   + blendshapes(16) = 176
-        const int SIZEOF_SUBMESH_BLOB_ASSET = 176;
+        //   + blendshapes(16) = 192
+        const int SIZEOF_SUBMESH_BLOB_ASSET = 192;
         // JointBlobAsset: mat4(64) + parent_index(4) + children(16) = 84
         const int SIZEOF_JOINT_BLOB_ASSET = 84;
         const int SIZEOF_STRING_BLOB = 8;
         // BlendshapeBlobAsset: position_deltas(16) + normal_deltas(16) = 32
         const int SIZEOF_BLENDSHAPE_BLOB_ASSET = 32;
+        // MaterialBlobAsset: header(48) + material_shader BlobAssetRef(24) + depth_test(4) + depth_write(4)
+        //   + depth_compare(4) + cull_mode(4) + is_transparent(4) + alpha_cutoff(4) + properties(16) = 112
+        const int SIZEOF_MATERIAL_BLOB_ASSET = 112;
 
         /// <summary>Static mesh export (no skinning).</summary>
         public static void Export(Mesh mesh, string materialPath, string outputPath)
@@ -233,7 +236,7 @@ namespace HZExporter
             int subBase = w.Position;
             w.PatchBlobPtr(submeshesPtrPos, subBase, 1, SIZEOF_SUBMESH_BLOB_ASSET, "SubMeshBlobAsset");
 
-            int matPos = w.ReserveStringBlob();  // material
+            int matPos = w.ReserveBlobAssetRef();  // material (BlobAssetRef)
 
             w.WriteU32(useU16 ? 0u : 1u);       // index_format
             w.WriteU32((uint)indexCount);         // index_count
@@ -314,7 +317,10 @@ namespace HZExporter
 
             // === String data (mesh name, material path, joint names) ===
             w.WriteAndPatchStringBlob(meshNamePos, meshName);
-            w.WriteAndPatchStringBlob(matPos, materialPath);
+            if (!string.IsNullOrEmpty(materialPath))
+                w.WriteAndPatchBlobAssetRef(matPos, materialPath, SIZEOF_MATERIAL_BLOB_ASSET, "MaterialBlobAsset");
+            else
+                w.PatchEmptyBlobAssetRef(matPos, SIZEOF_MATERIAL_BLOB_ASSET, "MaterialBlobAsset");
 
             if (skinned)
             {

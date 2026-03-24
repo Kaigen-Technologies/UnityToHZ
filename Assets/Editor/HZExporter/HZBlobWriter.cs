@@ -210,6 +210,64 @@ namespace HZExporter
             _stream.Position = saved;
         }
 
+        // --- BlobAssetRef (24 bytes) ---
+        // Layout: { StringBlob path(8); u32 type_size(4); u32 typehash(4); HzHandle handle(8); }
+
+        /// <summary>
+        /// Reserves 24 bytes for a BlobAssetRef. Returns the position.
+        /// </summary>
+        public int ReserveBlobAssetRef()
+        {
+            int pos = Position;
+            WriteZeros(24);
+            return pos;
+        }
+
+        /// <summary>
+        /// Writes string data for the path and patches the BlobAssetRef at refPos.
+        /// typeName/typeSize are for the referenced asset type.
+        /// Handle is zeroed (filled at runtime by loader).
+        /// </summary>
+        public void WriteAndPatchBlobAssetRef(int refPos, string path, int typeSize, string typeName)
+        {
+            // Write path string data
+            int dataPos = Position;
+            byte[] utf8 = Encoding.UTF8.GetBytes(path);
+            _writer.Write(utf8);
+            _writer.Write((byte)0);
+            int allocSize = utf8.Length + 1;
+            int aligned = (allocSize + 3) & ~3;
+            int pad = aligned - allocSize;
+            if (pad > 0) WriteZeros(pad);
+
+            // Patch: StringBlob path { i32 offset, u32 len }
+            long saved = _stream.Position;
+            _stream.Position = refPos;
+            _writer.Write((int)(dataPos - refPos));   // path.offset (self-relative)
+            _writer.Write((uint)utf8.Length);          // path.len
+            _writer.Write((uint)typeSize);             // type_size
+            _writer.Write((uint)TypeHash(typeName, typeSize)); // typehash
+            _writer.Write((uint)0);                    // handle.idx (zero on disk)
+            _writer.Write((uint)0);                    // handle.gen (zero on disk)
+            _stream.Position = saved;
+        }
+
+        /// <summary>
+        /// Patches a BlobAssetRef with an empty path (no reference).
+        /// </summary>
+        public void PatchEmptyBlobAssetRef(int refPos, int typeSize, string typeName)
+        {
+            long saved = _stream.Position;
+            _stream.Position = refPos;
+            _writer.Write((int)0);                     // path.offset
+            _writer.Write((uint)0);                    // path.len
+            _writer.Write((uint)typeSize);             // type_size
+            _writer.Write((uint)TypeHash(typeName, typeSize)); // typehash
+            _writer.Write((uint)0);                    // handle.idx
+            _writer.Write((uint)0);                    // handle.gen
+            _stream.Position = saved;
+        }
+
         // --- Hashing ---
 
         public static uint FNV1a(string str)

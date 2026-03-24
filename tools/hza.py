@@ -138,6 +138,14 @@ class HzaReader:
         abs_off = sb_offset + soff  # self-relative
         return self.data[abs_off:abs_off + slen].decode("utf-8", errors="replace")
 
+    def read_blob_asset_ref(self, offset: int) -> tuple[str, int, int]:
+        """Read a BlobAssetRef (24 bytes): { StringBlob path(8), u32 type_size(4), u32 typehash(4), HzHandle(8) }.
+        Returns (path_str, type_size, typehash)."""
+        path = self.read_string_blob(offset)
+        ts, th = self.read(offset + 8, "II")
+        # handle at offset+16 is 8 bytes, ignored (zero on disk)
+        return path, ts, th
+
     def read_floats(self, offset: int, count: int) -> list[float]:
         return list(struct.unpack_from(f"<{count}f", self.data, offset))
 

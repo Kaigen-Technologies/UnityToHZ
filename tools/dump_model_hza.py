@@ -15,7 +15,7 @@ from hza import HzaReader
 
 SIZEOF_MODEL = 160
 SIZEOF_MESH = 40
-SIZEOF_SUBMESH = 176
+SIZEOF_SUBMESH = 192
 SIZEOF_JOINT = 84
 
 
@@ -70,7 +70,7 @@ def dump_model(path: str):
             sub_off = submeshes_bp.data_pos + si * SIZEOF_SUBMESH
             sub_base = sub_off
 
-            material = r.read_string_blob(sub_off); sub_off += 8
+            mat_path, mat_ts, mat_th = r.read_blob_asset_ref(sub_off); sub_off += 24
             index_format = r.read_u32(sub_off); sub_off += 4
             index_count = r.read_u32(sub_off); sub_off += 4
             vertex_count = r.read_u32(sub_off); sub_off += 4
@@ -92,7 +92,7 @@ def dump_model(path: str):
                     f"SubMeshBlobAsset size: expected {SIZEOF_SUBMESH}, got {sub_off - sub_base}")
 
             print(f"\n  --- SubMesh[{mi}.{si}] (at byte {sub_base}) ---")
-            print(f"    material:       \"{material}\"")
+            print(f"    material:       \"{mat_path}\" (type_size={mat_ts}, typehash=0x{mat_th:08x})")
             print(f"    index_format:   {index_format} ({'U16' if index_format == 0 else 'U32'})")
             print(f"    index_count:    {index_count}")
             print(f"    vertex_count:   {vertex_count}")
