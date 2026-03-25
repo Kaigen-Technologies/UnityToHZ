@@ -337,6 +337,30 @@ public static class HZExportCommands
             }
         }
 
+        // Cameras
+        foreach (var root in roots)
+        {
+            var cam = root.GetComponent<Camera>();
+            if (cam == null) continue;
+
+            var t = root.transform;
+            entities.Add(new HZSceneExporter.EntityExportInfo {
+                name = root.name,
+                position = t.position,
+                eulerAngles = t.eulerAngles,
+                scale = t.lossyScale,
+                visible = true,
+                castsShadow = false,
+                isCamera = true,
+                fov = cam.fieldOfView,
+                nearPlane = cam.nearClipPlane,
+                farPlane = cam.farClipPlane,
+                rotation = t.rotation,
+            });
+
+            Debug.Log($"[HZ] Scene entity: {root.name} (camera, fov={cam.fieldOfView})");
+        }
+
         if (entities.Count == 0)
         {
             Debug.LogError("[HZ] No exportable entities found in scene");

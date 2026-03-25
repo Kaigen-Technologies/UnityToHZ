@@ -28,6 +28,7 @@ namespace HZExporter
         static readonly ulong HASH_EcsModelRef = HZBlobWriter.FNV1a("EcsModelRef");
         static readonly ulong HASH_EcsMaterialRef = HZBlobWriter.FNV1a("EcsMaterialRef");
         static readonly ulong HASH_EcsAABB = HZBlobWriter.FNV1a("EcsAABB");
+        static readonly ulong HASH_Camera = HZBlobWriter.FNV1a("Camera");
 
         // Component data sizes (must match engine struct sizeof)
         const int SIZE_SceneEntityTag = 1;
@@ -38,6 +39,8 @@ namespace HZExporter
         const int SIZE_EcsModelRef = 24;    // BlobAssetRef(ModelBlobAsset)
         const int SIZE_EcsMaterialRef = 24; // BlobAssetRef(MaterialBlobAsset)
         const int SIZE_EcsAABB = 24;        // 2x vec3
+        // Camera: 4x mat4(256) + Frustum(96) + quat(16) + vec3(12) + 4x f32(16) = 396
+        const int SIZE_Camera = 396;
 
         // sizeof(ModelBlobAsset) for BlobAssetRef typehash
         const int SIZEOF_MODEL_BLOB_ASSET = 160;
@@ -59,6 +62,12 @@ namespace HZExporter
             public string modelAssetPath;    // asset-relative path to model .hza
             public string materialAssetPath; // asset-relative path to material .hza
             public bool skinned;
+            // Camera (null if not a camera entity)
+            public bool isCamera;
+            public float fov;
+            public float nearPlane;
+            public float farPlane;
+            public Quaternion rotation; // Unity quaternion
         }
 
         /// <summary>
@@ -101,11 +110,12 @@ namespace HZExporter
             bool hasModel = !string.IsNullOrEmpty(info.modelAssetPath);
             bool hasMaterial = !string.IsNullOrEmpty(info.materialAssetPath);
 
-            int compCount = 4; // SceneEntityTag + EcsStableId + EntityName + EcsTransform
+            int compCount = 4; // SceneEntityTag + EcsStableId + EntityName + Transform
             compCount++; // EcsVisibility
             if (hasModel) compCount++; // EcsModelRef
             if (hasMaterial) compCount++; // EcsMaterialRef
             if (hasModel) compCount++; // EcsAABB
+            if (info.isCamera) compCount++; // Camera
 
             var w = new HZBlobWriter(4096);
             int blobBase = w.Position;
@@ -198,6 +208,35 @@ namespace HZExporter
                     var b = info.bounds;
                     wr.WriteVec3(-b.max.x, b.min.y, b.min.z);
                     wr.WriteVec3(-b.min.x, b.max.y, b.max.z);
+                });
+            }
+
+            // --- Camera ---
+            if (info.isCamera)
+            {
+                ReserveComponent(HASH_Camera, SIZE_Camera, wr => {
+                    // Camera struct layout:
+                    // mat4 view(64) + mat4 proj(64) + mat4 view_proj(64) + mat4 inv_view_proj(64) = 256 zeros
+                    // Frustum frustum(96) = 96 zeros
+                    // quaternion rot(16) + vec3 pos(12) + f32 fov(4) + f32 near_plane(4) + f32 far_plane(4) + f32 aspect(4)
+                    wr.WriteZeros(256); // 4x mat4 (computed at runtime)
+                    wr.WriteZeros(96);  // Frustum (computed at runtime)
+
+                    // quaternion rot: convert Unity LH→RH
+                    // 1) X-mirror: (qx, -qy, -qz, qw)
+                    // 2) Unity forward is +Z, engine forward is -Z → rotate 180° around Y
+                    var mirrored = new Quaternion(info.rotation.x, -info.rotation.y, -info.rotation.z, info.rotation.w);
+                    var flip180Y = Quaternion.Euler(0, 180, 0);
+                    var q = mirrored * flip180Y;
+                    wr.WriteVec4(q.x, q.y, q.z, q.w);
+
+                    // vec3 pos: negate X
+                    wr.WriteVec3(-info.position.x, info.position.y, info.position.z);
+
+                    wr.WriteF32(info.fov);
+                    wr.WriteF32(info.nearPlane);
+                    wr.WriteF32(info.farPlane);
+                    wr.WriteF32(0); // aspect (computed at runtime)
                 });
             }
 
