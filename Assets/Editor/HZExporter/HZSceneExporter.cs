@@ -15,7 +15,7 @@ namespace HZExporter
         // Struct sizes (must match engine)
         const int SIZEOF_SCENE_BLOB_ASSET = 72;       // header(48) + scene_dir StringBlob(8) + entities BlobPtr(16)
         const int SIZEOF_ENTITY_BLOB_ASSET = 72;      // header(48) + stable_id(8) + components BlobPtr(16)
-        const int SIZEOF_SCENE_COMPONENT_BLOB = 28;   // stable_type_hash(8) + data_size(4) + data BlobArray(16)
+        const int SIZEOF_SCENE_COMPONENT_BLOB = 32;   // stable_type_hash(8) + data_size(4) + data BlobArray(16) + 4 pad (u64 alignment)
         const int SIZEOF_BLOB_ASSET_REF = 24;
         const int SIZEOF_STRING_BLOB = 8;
 
@@ -132,9 +132,10 @@ namespace HZExporter
             // Helper to reserve a component slot
             void ReserveComponent(ulong hash, int dataSize, Action<HZBlobWriter> writeData)
             {
-                w.WriteU64(hash);           // stable_type_hash
-                w.WriteU32((uint)dataSize); // data_size
-                int dataPtrPos = w.ReserveBlobPtr(); // data BlobArray(u8)
+                w.WriteU64(hash);           // stable_type_hash (8)
+                w.WriteU32((uint)dataSize); // data_size (4)
+                int dataPtrPos = w.ReserveBlobPtr(); // data BlobArray(u8) (16)
+                w.WriteZeros(4);            // padding to 32 (u64 alignment)
                 compSlots.Add((hash, dataSize, dataPtrPos, writeData));
             }
 
