@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 using UnityEditor;
 using HZExporter;
 
@@ -258,6 +259,96 @@ public static class HZExportCommands
 
         Object.DestroyImmediate(bbInstance);
         Debug.Log("[HZ] Body Block animation export done!");
+    }
+
+    public static void ExportScene()
+    {
+        var scene = SceneManager.GetActiveScene();
+        var roots = scene.GetRootGameObjects();
+        var entities = new List<HZSceneExporter.EntityExportInfo>();
+
+        foreach (var root in roots)
+        {
+            // Static meshes
+            foreach (var mf in root.GetComponentsInChildren<MeshFilter>())
+            {
+                var mr = mf.GetComponent<MeshRenderer>();
+                if (mr == null || mf.sharedMesh == null) continue;
+
+                string safeName = SanitizeName(mf.gameObject.name);
+                var mesh = mf.sharedMesh;
+                var mat = mr.sharedMaterial;
+
+                string matAssetPath = ExportMaterial(mat, safeName, false);
+                string modelPath = $"{OutputDir}/meshes/{safeName}.hza";
+                string modelAssetPath = $"{AssetPrefix}/{safeName}.hza";
+                HZMeshExporter.Export(mesh, matAssetPath, modelPath);
+
+                var t = mf.transform;
+                entities.Add(new HZSceneExporter.EntityExportInfo {
+                    name = mf.gameObject.name,
+                    position = t.position,
+                    eulerAngles = t.eulerAngles,
+                    scale = t.lossyScale,
+                    visible = mr.enabled,
+                    castsShadow = mr.shadowCastingMode != UnityEngine.Rendering.ShadowCastingMode.Off,
+                    bounds = mr.bounds,
+                    modelAssetPath = modelAssetPath,
+                    materialAssetPath = matAssetPath,
+                    skinned = false,
+                });
+
+                Debug.Log($"[HZ] Scene entity: {mf.gameObject.name} (static) → {modelAssetPath}");
+            }
+
+            // Skinned meshes
+            foreach (var smr in root.GetComponentsInChildren<SkinnedMeshRenderer>())
+            {
+                if (smr.sharedMesh == null) continue;
+
+                string safeName = SanitizeName(smr.gameObject.name);
+                // Use the root name for skinned meshes to group submeshes
+                string rootName = SanitizeName(root.name);
+                string meshSafeName = $"{rootName}_{safeName}";
+                var mat = smr.sharedMaterial;
+
+                string matAssetPath = ExportMaterial(mat, meshSafeName, true);
+                string modelPath = $"{OutputDir}/meshes/{meshSafeName}.hza";
+                string modelAssetPath = $"{AssetPrefix}/{meshSafeName}.hza";
+                HZMeshExporter.Export(smr, matAssetPath, modelPath);
+
+                var t = smr.transform;
+                // Use the root transform for the entity position
+                var rootT = root.transform;
+                entities.Add(new HZSceneExporter.EntityExportInfo {
+                    name = root.name,
+                    position = rootT.position,
+                    eulerAngles = rootT.eulerAngles,
+                    scale = rootT.lossyScale,
+                    visible = smr.enabled,
+                    castsShadow = smr.shadowCastingMode != UnityEngine.Rendering.ShadowCastingMode.Off,
+                    bounds = smr.bounds,
+                    modelAssetPath = modelAssetPath,
+                    materialAssetPath = matAssetPath,
+                    skinned = true,
+                });
+
+                Debug.Log($"[HZ] Scene entity: {root.name}/{smr.gameObject.name} (skinned) → {modelAssetPath}");
+            }
+        }
+
+        if (entities.Count == 0)
+        {
+            Debug.LogError("[HZ] No exportable entities found in scene");
+            return;
+        }
+
+        string scenePath = $"{OutputDir}/scenes/SampleScene.hza";
+        string sceneDir = $"{OutputDir}/scenes/SampleScene";
+        string sceneDirAssetPath = $"{AssetPrefix}/SampleScene";
+
+        HZSceneExporter.Export(entities.ToArray(), scenePath, sceneDir, sceneDirAssetPath);
+        Debug.Log($"[HZ] Scene export done! {entities.Count} entities");
     }
 
     static string SanitizeName(string name)
