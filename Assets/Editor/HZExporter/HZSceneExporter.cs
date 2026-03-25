@@ -23,7 +23,7 @@ namespace HZExporter
         static readonly ulong HASH_SceneEntityTag = HZBlobWriter.FNV1a("SceneEntityTag");
         static readonly ulong HASH_EcsStableId = HZBlobWriter.FNV1a("EcsStableId");
         static readonly ulong HASH_EntityName = HZBlobWriter.FNV1a("EntityName");
-        static readonly ulong HASH_EcsTransform = HZBlobWriter.FNV1a("EcsTransform");
+        static readonly ulong HASH_Transform = HZBlobWriter.FNV1a("Transform");
         static readonly ulong HASH_EcsVisibility = HZBlobWriter.FNV1a("EcsVisibility");
         static readonly ulong HASH_EcsModelRef = HZBlobWriter.FNV1a("EcsModelRef");
         static readonly ulong HASH_EcsMaterialRef = HZBlobWriter.FNV1a("EcsMaterialRef");
@@ -33,7 +33,7 @@ namespace HZExporter
         const int SIZE_SceneEntityTag = 1;
         const int SIZE_EcsStableId = 8;
         const int SIZE_EntityName = 68;     // u32 len + char[64]
-        const int SIZE_EcsTransform = 36;   // 3x vec3
+        const int SIZE_Transform = 36;   // 3x vec3
         const int SIZE_EcsVisibility = 8;   // 2x b32
         const int SIZE_EcsModelRef = 24;    // BlobAssetRef(ModelBlobAsset)
         const int SIZE_EcsMaterialRef = 24; // BlobAssetRef(MaterialBlobAsset)
@@ -163,7 +163,7 @@ namespace HZExporter
             });
 
             // --- EcsTransform (coordinate conversion: negate X) ---
-            ReserveComponent(HASH_EcsTransform, SIZE_EcsTransform, wr => {
+            ReserveComponent(HASH_Transform, SIZE_Transform, wr => {
                 wr.WriteVec3(-info.position.x, info.position.y, info.position.z);
                 // Euler rotation: negate Y and Z for LH→RH
                 float rx = info.eulerAngles.x * Mathf.Deg2Rad;
