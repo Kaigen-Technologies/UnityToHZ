@@ -30,7 +30,9 @@ namespace HZExporter
         static readonly ulong HASH_EcsAABB = HZBlobWriter.FNV1a("EcsAABB");
         static readonly ulong HASH_Camera = HZBlobWriter.FNV1a("Camera");
         static readonly ulong HASH_EcsSceneSettings = HZBlobWriter.FNV1a("EcsSceneSettings");
+        static readonly ulong HASH_EcsAnimationRef = HZBlobWriter.FNV1a("EcsAnimationRef");
         static readonly ulong HASH_EcsDirectionalLight = HZBlobWriter.FNV1a("EcsDirectionalLight");
+        static readonly ulong HASH_EcsPointLight = HZBlobWriter.FNV1a("EcsPointLight");
 
         // Component data sizes (must match engine struct sizeof)
         const int SIZE_SceneEntityTag = 1;
@@ -45,6 +47,9 @@ namespace HZExporter
         const int SIZE_Camera = 396;
         const int SIZE_EcsSceneSettings = 16;    // v3(12) + f32(4)
         const int SIZE_EcsDirectionalLight = 36; // v3 direction(12) + v3 color(12) + f32 intensity(4) + b32 cast_shadow(4) + f32 shadow_distance(4)
+        const int SIZE_EcsPointLight = 20;       // v3 color(12) + f32 radius(4) + f32 intensity(4)
+        const int SIZE_EcsAnimationRef = 24;     // BlobAssetRef(AnimationBlobAsset)
+        const int SIZEOF_ANIMATION_BLOB_ASSET = 72;
 
         // sizeof(ModelBlobAsset) for BlobAssetRef typehash
         const int SIZEOF_MODEL_BLOB_ASSET = 160;
@@ -80,6 +85,11 @@ namespace HZExporter
             public float lightIntensity;
             public bool castShadow;
             public float shadowDistance;
+            // Animation
+            public string animationAssetPath; // asset-relative path to animation .hza
+            // Point light
+            public bool isPointLight;
+            public float pointLightRadius;
             // Scene settings
             public bool isSceneSettings;
             public Vector3 ambientColor;
@@ -131,14 +141,18 @@ namespace HZExporter
             if (hasModel) compCount++; // EcsModelRef
             if (hasMaterial) compCount++; // EcsMaterialRef
             if (hasModel) compCount++; // EcsAABB
+            bool hasAnimation = !string.IsNullOrEmpty(info.animationAssetPath);
+            if (hasAnimation) compCount++; // EcsAnimationRef
             if (info.isCamera) compCount++; // Camera
             if (info.isDirectionalLight) compCount++; // EcsDirectionalLight
+            if (info.isPointLight) compCount++; // EcsPointLight
             if (info.isSceneSettings) compCount++; // EcsSceneSettings
 
             // Collect entity-level deps (model + material paths)
             var entityDeps = new List<string>();
             if (hasModel) entityDeps.Add(info.modelAssetPath);
             if (hasMaterial) entityDeps.Add(info.materialAssetPath);
+            if (hasAnimation) entityDeps.Add(info.animationAssetPath);
 
             var w = new HZBlobWriter(4096);
             int blobBase = w.Position;
@@ -224,6 +238,12 @@ namespace HZExporter
                 ReserveComponent(HASH_EcsMaterialRef, SIZE_EcsMaterialRef, null); // special: needs BlobAssetRef patching
             }
 
+            // --- EcsAnimationRef ---
+            if (hasAnimation)
+            {
+                ReserveComponent(HASH_EcsAnimationRef, SIZE_EcsAnimationRef, null); // BlobAssetRef patching
+            }
+
             // --- EcsAABB ---
             if (hasModel)
             {
@@ -275,6 +295,16 @@ namespace HZExporter
                 });
             }
 
+            // --- EcsPointLight ---
+            if (info.isPointLight)
+            {
+                ReserveComponent(HASH_EcsPointLight, SIZE_EcsPointLight, wr => {
+                    wr.WriteVec3(info.lightColor.x, info.lightColor.y, info.lightColor.z);
+                    wr.WriteF32(info.pointLightRadius);
+                    wr.WriteF32(info.lightIntensity);
+                });
+            }
+
             // --- EcsSceneSettings ---
             if (info.isSceneSettings)
             {
@@ -310,6 +340,13 @@ namespace HZExporter
                     w.WriteZeros(SIZEOF_BLOB_ASSET_REF);
                     w.WriteAndPatchBlobAssetRef(refPos, info.materialAssetPath,
                         SIZEOF_MATERIAL_BLOB_ASSET, "MaterialBlobAsset");
+                }
+                else if (slot.hash == HASH_EcsAnimationRef)
+                {
+                    int refPos = w.Position;
+                    w.WriteZeros(SIZEOF_BLOB_ASSET_REF);
+                    w.WriteAndPatchBlobAssetRef(refPos, info.animationAssetPath,
+                        SIZEOF_ANIMATION_BLOB_ASSET, "AnimationBlobAsset");
                 }
                 else
                 {

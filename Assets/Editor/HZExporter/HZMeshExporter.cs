@@ -36,11 +36,305 @@ namespace HZExporter
             ExportInternal(mesh, materialPath, outputPath, null);
         }
 
-        /// <summary>Skinned mesh export with skeleton data.</summary>
+        /// <summary>Skinned mesh export with skeleton data (single SMR).</summary>
         public static void Export(SkinnedMeshRenderer smr, string materialPath, string outputPath)
         {
             var mesh = smr.sharedMesh;
             ExportInternal(mesh, materialPath, outputPath, smr);
+        }
+
+        /// <summary>Multi-mesh skinned export. All SMRs share the same skeleton (from primarySmr).</summary>
+        public static void ExportMultiSkinned(SkinnedMeshRenderer[] smrs, string[] materialPaths,
+            SkinnedMeshRenderer primarySmr, string outputPath)
+        {
+            // Use primary SMR for skeleton data
+            var bones = primarySmr.bones;
+            int jointCount = bones.Length;
+            var bindPoses = primarySmr.sharedMesh.bindposes;
+
+            // Build hierarchy
+            var boneToIndex = new Dictionary<Transform, int>();
+            for (int i = 0; i < jointCount; i++)
+                boneToIndex[bones[i]] = i;
+
+            int[] parentIndices = new int[jointCount];
+            List<int>[] childrenLists = new List<int>[jointCount];
+            for (int i = 0; i < jointCount; i++)
+                childrenLists[i] = new List<int>();
+
+            for (int i = 0; i < jointCount; i++)
+            {
+                var parent = bones[i].parent;
+                if (parent != null && boneToIndex.TryGetValue(parent, out int pi))
+                {
+                    parentIndices[i] = pi;
+                    childrenLists[pi].Add(i);
+                }
+                else
+                {
+                    parentIndices[i] = -1;
+                }
+            }
+
+            int meshCount = smrs.Length;
+
+            var w = new HZBlobWriter(1024 * 1024 * 4);
+            int modelBase = w.Position;
+
+            // === ModelBlobAsset (160 bytes) ===
+            w.WriteHeader("ModelBlobAsset");
+            w.WriteEmptyBlobPtr(SIZEOF_STRING_BLOB, "StringBlob"); // no deps
+            w.WriteMat4Identity(); // armature_transform
+
+            int meshesPtrPos = w.ReserveBlobPtr();
+            int jointsPtrPos = w.ReserveBlobPtr();
+            int jointNamesPtrPos = w.ReserveBlobPtr();
+
+            Debug.Assert(w.Position == SIZEOF_MODEL_BLOB_ASSET,
+                $"ModelBlobAsset size mismatch: expected {SIZEOF_MODEL_BLOB_ASSET}, got {w.Position}");
+
+            // === MeshBlobAsset array (one per SMR) ===
+            int meshArrayBase = w.Position;
+            w.PatchBlobPtr(meshesPtrPos, meshArrayBase, meshCount, SIZEOF_MESH_BLOB_ASSET, "MeshBlobAsset");
+
+            int[] meshNamePositions = new int[meshCount];
+            int[] submeshPtrPositions = new int[meshCount];
+            int[] blendshapeNamePtrPositions = new int[meshCount];
+
+            for (int mi = 0; mi < meshCount; mi++)
+            {
+                meshNamePositions[mi] = w.ReserveStringBlob();
+                submeshPtrPositions[mi] = w.ReserveBlobPtr();
+                blendshapeNamePtrPositions[mi] = w.ReserveBlobPtr();
+                PatchEmptyBlobPtr(w, blendshapeNamePtrPositions[mi], SIZEOF_STRING_BLOB, "StringBlob");
+            }
+
+            // === SubMeshBlobAsset array (one per MeshBlobAsset, one submesh each) ===
+            int[][] subMeshFieldPositions = new int[meshCount][];
+            int[] subMeshBases = new int[meshCount];
+
+            for (int mi = 0; mi < meshCount; mi++)
+            {
+                int subBase = w.Position;
+                subMeshBases[mi] = subBase;
+                w.PatchBlobPtr(submeshPtrPositions[mi], subBase, 1, SIZEOF_SUBMESH_BLOB_ASSET, "SubMeshBlobAsset");
+
+                // SubMeshBlobAsset fields
+                int matPos = w.ReserveBlobAssetRef(); // material
+                var mesh = smrs[mi].sharedMesh;
+                int vertexCount = mesh.vertexCount;
+                int indexCount = mesh.triangles.Length;
+                bool useU16 = vertexCount <= 65535;
+
+                w.WriteU32(useU16 ? 0u : 1u);
+                w.WriteU32((uint)indexCount);
+                w.WriteU32((uint)vertexCount);
+
+                var bounds = mesh.bounds;
+                w.WriteVec3(-bounds.max.x, bounds.min.y, bounds.min.z);
+                w.WriteVec3(-bounds.min.x, bounds.max.y, bounds.max.z);
+
+                int indicesPtrPos = w.ReserveBlobPtr();
+                int positionsPtrPos = w.ReserveBlobPtr();
+                int normalsPtrPos = w.ReserveBlobPtr();
+                int tangentsPtrPos = w.ReserveBlobPtr();
+                int uvsPtrPos = w.ReserveBlobPtr();
+
+                w.WriteU32(1u); // has_skin = true
+
+                int jointIdxPtrPos = w.ReserveBlobPtr();
+                int jointWtPtrPos = w.ReserveBlobPtr();
+                int blendshapesPtrPos = w.ReserveBlobPtr();
+                PatchEmptyBlobPtr(w, blendshapesPtrPos, SIZEOF_BLENDSHAPE_BLOB_ASSET, "BlendshapeBlobAsset");
+
+                Debug.Assert(w.Position == subBase + SIZEOF_SUBMESH_BLOB_ASSET,
+                    $"SubMeshBlobAsset size mismatch");
+
+                subMeshFieldPositions[mi] = new int[] {
+                    matPos, indicesPtrPos, positionsPtrPos, normalsPtrPos,
+                    tangentsPtrPos, uvsPtrPos, jointIdxPtrPos, jointWtPtrPos
+                };
+            }
+
+            // === JointBlobAsset array ===
+            int jointsArrayPos = w.Position;
+            w.PatchBlobPtr(jointsPtrPos, jointsArrayPos, jointCount, SIZEOF_JOINT_BLOB_ASSET, "JointBlobAsset");
+
+            int[] jointChildrenPtrPositions = new int[jointCount];
+            for (int i = 0; i < jointCount; i++)
+            {
+                WriteMat4Converted(w, bindPoses[i]);
+                w.WriteI32(parentIndices[i]);
+                jointChildrenPtrPositions[i] = w.ReserveBlobPtr();
+            }
+
+            // === Joint names ===
+            int jointNamesArrayPos = w.Position;
+            w.PatchBlobPtr(jointNamesPtrPos, jointNamesArrayPos, jointCount, SIZEOF_STRING_BLOB, "StringBlob");
+
+            int[] jointNameSBPositions = new int[jointCount];
+            for (int i = 0; i < jointCount; i++)
+                jointNameSBPositions[i] = w.ReserveStringBlob();
+
+            // === String data (mesh names, joint names) ===
+            for (int mi = 0; mi < meshCount; mi++)
+                w.WriteAndPatchStringBlob(meshNamePositions[mi], smrs[mi].sharedMesh.name ?? "mesh");
+
+            for (int i = 0; i < jointCount; i++)
+                w.WriteAndPatchStringBlob(jointNameSBPositions[i], bones[i].name);
+
+            // === Material paths ===
+            for (int mi = 0; mi < meshCount; mi++)
+            {
+                string mp = materialPaths[mi] ?? "";
+                if (!string.IsNullOrEmpty(mp))
+                    w.WriteAndPatchBlobAssetRef(subMeshFieldPositions[mi][0], mp,
+                        SIZEOF_MATERIAL_BLOB_ASSET, "MaterialBlobAsset");
+                else
+                    w.PatchEmptyBlobAssetRef(subMeshFieldPositions[mi][0],
+                        SIZEOF_MATERIAL_BLOB_ASSET, "MaterialBlobAsset");
+            }
+
+            // === Joint children data ===
+            for (int i = 0; i < jointCount; i++)
+            {
+                var children = childrenLists[i];
+                if (children.Count > 0)
+                {
+                    int childDataPos = w.Position;
+                    w.PatchBlobPtr(jointChildrenPtrPositions[i], childDataPos, children.Count, 4, "u32");
+                    for (int c = 0; c < children.Count; c++)
+                        w.WriteU32((uint)children[c]);
+                }
+                else
+                {
+                    PatchEmptyBlobPtr(w, jointChildrenPtrPositions[i], 4, "u32");
+                }
+            }
+
+            // === Align to 16 before vertex data ===
+            w.AlignTo(16);
+
+            // === Per-mesh vertex/index data ===
+            for (int mi = 0; mi < meshCount; mi++)
+            {
+                var mesh = smrs[mi].sharedMesh;
+                var smr = smrs[mi];
+                int vertexCount = mesh.vertexCount;
+                var vertices = mesh.vertices;
+                var normals = mesh.normals;
+                var tangents = mesh.tangents;
+                var uvs = mesh.uv;
+                var triangles = mesh.triangles;
+                int indexCount = triangles.Length;
+                bool useU16 = vertexCount <= 65535;
+
+                // Convert vertex data
+                float[] positions = new float[vertexCount * 3];
+                float[] norms = new float[vertexCount * 3];
+                float[] tans = new float[vertexCount * 4];
+                float[] uv = new float[vertexCount * 2];
+
+                for (int i = 0; i < vertexCount; i++)
+                {
+                    positions[i * 3 + 0] = -vertices[i].x;
+                    positions[i * 3 + 1] = vertices[i].y;
+                    positions[i * 3 + 2] = vertices[i].z;
+                    if (i < normals.Length) { norms[i*3+0] = -normals[i].x; norms[i*3+1] = normals[i].y; norms[i*3+2] = normals[i].z; }
+                    if (i < tangents.Length) { tans[i*4+0] = -tangents[i].x; tans[i*4+1] = tangents[i].y; tans[i*4+2] = tangents[i].z; tans[i*4+3] = tangents[i].w; }
+                    if (i < uvs.Length) { uv[i*2+0] = uvs[i].x; uv[i*2+1] = uvs[i].y; }
+                }
+
+                // Flip winding
+                int[] indices = new int[indexCount];
+                for (int i = 0; i < indexCount; i += 3)
+                {
+                    indices[i + 0] = triangles[i + 0];
+                    indices[i + 1] = triangles[i + 2];
+                    indices[i + 2] = triangles[i + 1];
+                }
+
+                // Index data
+                byte[] indexData;
+                int indexTypeSize;
+                string indexTypeName;
+                if (useU16)
+                {
+                    indexData = new byte[indexCount * 2];
+                    for (int i = 0; i < indexCount; i++)
+                    {
+                        ushort v = (ushort)indices[i];
+                        indexData[i * 2 + 0] = (byte)(v & 0xFF);
+                        indexData[i * 2 + 1] = (byte)(v >> 8);
+                    }
+                    indexTypeSize = 2; indexTypeName = "u16";
+                }
+                else
+                {
+                    indexData = new byte[indexCount * 4];
+                    for (int i = 0; i < indexCount; i++)
+                    {
+                        uint v = (uint)indices[i];
+                        indexData[i*4+0] = (byte)(v & 0xFF); indexData[i*4+1] = (byte)((v>>8)&0xFF);
+                        indexData[i*4+2] = (byte)((v>>16)&0xFF); indexData[i*4+3] = (byte)(v>>24);
+                    }
+                    indexTypeSize = 4; indexTypeName = "u32";
+                }
+
+                // Skinning data — remap bone indices from this SMR's bone array to primary's
+                int[] boneRemap = new int[smr.bones.Length];
+                for (int bi = 0; bi < smr.bones.Length; bi++)
+                {
+                    boneRemap[bi] = 0;
+                    if (smr.bones[bi] != null && boneToIndex.TryGetValue(smr.bones[bi], out int primaryIdx))
+                        boneRemap[bi] = primaryIdx;
+                }
+
+                var boneWeights = mesh.boneWeights;
+                byte[] jointIndicesData = new byte[vertexCount * 4];
+                float[] jointWeightsData = new float[vertexCount * 4];
+                for (int i = 0; i < vertexCount; i++)
+                {
+                    var bw = boneWeights[i];
+                    jointIndicesData[i*4+0] = (byte)boneRemap[bw.boneIndex0];
+                    jointIndicesData[i*4+1] = (byte)boneRemap[bw.boneIndex1];
+                    jointIndicesData[i*4+2] = (byte)boneRemap[bw.boneIndex2];
+                    jointIndicesData[i*4+3] = (byte)boneRemap[bw.boneIndex3];
+                    jointWeightsData[i*4+0] = bw.weight0; jointWeightsData[i*4+1] = bw.weight1;
+                    jointWeightsData[i*4+2] = bw.weight2; jointWeightsData[i*4+3] = bw.weight3;
+                }
+
+                int[] fps = subMeshFieldPositions[mi];
+
+                int idxPos = w.Position; w.WriteBytes(indexData);
+                w.PatchBlobPtr(fps[1], idxPos, indexData.Length / indexTypeSize, indexTypeSize, indexTypeName);
+
+                int posPos = w.Position; WriteFloatArray(w, positions);
+                w.PatchBlobPtr(fps[2], posPos, vertexCount * 3, 4, "f32");
+
+                int normPos = w.Position; WriteFloatArray(w, norms);
+                w.PatchBlobPtr(fps[3], normPos, vertexCount * 3, 4, "f32");
+
+                int tanPos = w.Position; WriteFloatArray(w, tans);
+                w.PatchBlobPtr(fps[4], tanPos, vertexCount * 4, 4, "f32");
+
+                int uvPos = w.Position; WriteFloatArray(w, uv);
+                w.PatchBlobPtr(fps[5], uvPos, vertexCount * 2, 4, "f32");
+
+                int jiPos = w.Position; w.WriteBytes(jointIndicesData);
+                w.PatchBlobPtr(fps[6], jiPos, vertexCount * 4, 1, "u8");
+
+                int jwPos = w.Position; WriteFloatArray(w, jointWeightsData);
+                w.PatchBlobPtr(fps[7], jwPos, vertexCount * 4, 4, "f32");
+            }
+
+            // Patch header.asset_size
+            int finalSize = w.Position;
+            w.PatchU64(modelBase + 8, (ulong)finalSize);
+
+            Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
+            w.WriteToFile(outputPath);
+            Debug.Log($"[HZMeshExporter] Exported multi-skinned → {outputPath} ({finalSize} bytes, {meshCount} meshes, {jointCount} joints)");
         }
 
         static void ExportInternal(Mesh mesh, string materialPath, string outputPath, SkinnedMeshRenderer smr)
