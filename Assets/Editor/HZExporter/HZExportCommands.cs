@@ -288,7 +288,7 @@ public static class HZExportCommands
                 entities.Add(new HZSceneExporter.EntityExportInfo {
                     name = mf.gameObject.name,
                     position = t.position,
-                    eulerAngles = t.eulerAngles,
+                    rotation = t.rotation,
                     scale = t.lossyScale,
                     visible = mr.enabled,
                     castsShadow = mr.shadowCastingMode != UnityEngine.Rendering.ShadowCastingMode.Off,
@@ -323,7 +323,7 @@ public static class HZExportCommands
                 entities.Add(new HZSceneExporter.EntityExportInfo {
                     name = root.name,
                     position = rootT.position,
-                    eulerAngles = rootT.eulerAngles,
+                    rotation = rootT.rotation,
                     scale = rootT.lossyScale,
                     visible = smr.enabled,
                     castsShadow = smr.shadowCastingMode != UnityEngine.Rendering.ShadowCastingMode.Off,
@@ -361,13 +361,43 @@ public static class HZExportCommands
             Debug.Log($"[HZ] Scene entity: {root.name} (camera, fov={cam.fieldOfView})");
         }
 
+        // Directional lights
+        foreach (var root in roots)
+        {
+            foreach (var light in root.GetComponentsInChildren<Light>())
+            {
+                if (light.type != LightType.Directional) continue;
+
+                var t = light.transform;
+                Color c = light.color.linear;
+                Vector3 fwd = t.forward;
+                Vector3 dir = new Vector3(-fwd.x, fwd.y, fwd.z);
+
+                entities.Add(new HZSceneExporter.EntityExportInfo {
+                    name = light.gameObject.name,
+                    position = t.position,
+                    rotation = t.rotation,
+                    scale = Vector3.one,
+                    visible = true,
+                    castsShadow = false,
+                    isDirectionalLight = true,
+                    lightDirection = dir,
+                    lightColor = new Vector3(c.r, c.g, c.b),
+                    lightIntensity = light.intensity,
+                    castShadow = false,
+                    shadowDistance = 0,
+                });
+                Debug.Log($"[HZ] Scene entity: {light.gameObject.name} (directional light)");
+            }
+        }
+
         // Scene settings (ambient light)
         {
             Color ambient = RenderSettings.ambientLight.linear;
             entities.Add(new HZSceneExporter.EntityExportInfo {
                 name = "SceneSettings",
                 position = Vector3.zero,
-                eulerAngles = Vector3.zero,
+                rotation = Quaternion.identity,
                 scale = Vector3.one,
                 visible = true,
                 castsShadow = false,

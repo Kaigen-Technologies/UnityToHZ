@@ -23,19 +23,20 @@ namespace HZExporter
         static readonly ulong HASH_SceneEntityTag = HZBlobWriter.FNV1a("SceneEntityTag");
         static readonly ulong HASH_EcsStableId = HZBlobWriter.FNV1a("EcsStableId");
         static readonly ulong HASH_EntityName = HZBlobWriter.FNV1a("EntityName");
-        static readonly ulong HASH_Transform = HZBlobWriter.FNV1a("Transform");
+        static readonly ulong HASH_LocalTransform = HZBlobWriter.FNV1a("LocalTransform");
         static readonly ulong HASH_EcsVisibility = HZBlobWriter.FNV1a("EcsVisibility");
         static readonly ulong HASH_EcsModelRef = HZBlobWriter.FNV1a("EcsModelRef");
         static readonly ulong HASH_EcsMaterialRef = HZBlobWriter.FNV1a("EcsMaterialRef");
         static readonly ulong HASH_EcsAABB = HZBlobWriter.FNV1a("EcsAABB");
         static readonly ulong HASH_Camera = HZBlobWriter.FNV1a("Camera");
         static readonly ulong HASH_EcsSceneSettings = HZBlobWriter.FNV1a("EcsSceneSettings");
+        static readonly ulong HASH_EcsDirectionalLight = HZBlobWriter.FNV1a("EcsDirectionalLight");
 
         // Component data sizes (must match engine struct sizeof)
         const int SIZE_SceneEntityTag = 1;
         const int SIZE_EcsStableId = 8;
         const int SIZE_EntityName = 68;     // u32 len + char[64]
-        const int SIZE_Transform = 36;   // 3x vec3
+        const int SIZE_LocalTransform = 40;  // v3 position(12) + quat rotation(16) + v3 scale(12)
         const int SIZE_EcsVisibility = 8;   // 2x b32
         const int SIZE_EcsModelRef = 24;    // BlobAssetRef(ModelBlobAsset)
         const int SIZE_EcsMaterialRef = 24; // BlobAssetRef(MaterialBlobAsset)
@@ -43,6 +44,7 @@ namespace HZExporter
         // Camera: 4x mat4(256) + Frustum(96) + quat(16) + vec3(12) + 4x f32(16) = 396
         const int SIZE_Camera = 396;
         const int SIZE_EcsSceneSettings = 16;    // v3(12) + f32(4)
+        const int SIZE_EcsDirectionalLight = 36; // v3 direction(12) + v3 color(12) + f32 intensity(4) + b32 cast_shadow(4) + f32 shadow_distance(4)
 
         // sizeof(ModelBlobAsset) for BlobAssetRef typehash
         const int SIZEOF_MODEL_BLOB_ASSET = 160;
@@ -70,6 +72,14 @@ namespace HZExporter
             public float nearPlane;
             public float farPlane;
             public Quaternion rotation; // Unity quaternion
+            // Scene settings
+            // Directional light
+            public bool isDirectionalLight;
+            public Vector3 lightDirection;
+            public Vector3 lightColor;
+            public float lightIntensity;
+            public bool castShadow;
+            public float shadowDistance;
             // Scene settings
             public bool isSceneSettings;
             public Vector3 ambientColor;
@@ -122,6 +132,7 @@ namespace HZExporter
             if (hasMaterial) compCount++; // EcsMaterialRef
             if (hasModel) compCount++; // EcsAABB
             if (info.isCamera) compCount++; // Camera
+            if (info.isDirectionalLight) compCount++; // EcsDirectionalLight
             if (info.isSceneSettings) compCount++; // EcsSceneSettings
 
             var w = new HZBlobWriter(4096);
@@ -179,14 +190,14 @@ namespace HZExporter
                 if (pad > 0) wr.WriteZeros(pad);
             });
 
-            // --- EcsTransform (coordinate conversion: negate X) ---
-            ReserveComponent(HASH_Transform, SIZE_Transform, wr => {
+            // --- LocalTransform (coordinate conversion: negate X, quaternion rotation) ---
+            ReserveComponent(HASH_LocalTransform, SIZE_LocalTransform, wr => {
+                // position: negate X
                 wr.WriteVec3(-info.position.x, info.position.y, info.position.z);
-                // Euler rotation: negate Y and Z for LH→RH
-                float rx = info.eulerAngles.x * Mathf.Deg2Rad;
-                float ry = info.eulerAngles.y * Mathf.Deg2Rad;
-                float rz = info.eulerAngles.z * Mathf.Deg2Rad;
-                wr.WriteVec3(rx, -ry, -rz);
+                // rotation: quaternion, X-mirror: (qx, -qy, -qz, qw)
+                var q = info.rotation;
+                wr.WriteVec4(q.x, -q.y, -q.z, q.w);
+                // scale: unchanged
                 wr.WriteVec3(info.scale.x, info.scale.y, info.scale.z);
             });
 
@@ -244,6 +255,18 @@ namespace HZExporter
                     wr.WriteF32(info.nearPlane);
                     wr.WriteF32(info.farPlane);
                     wr.WriteF32(0); // aspect (computed at runtime)
+                });
+            }
+
+            // --- EcsDirectionalLight ---
+            if (info.isDirectionalLight)
+            {
+                ReserveComponent(HASH_EcsDirectionalLight, SIZE_EcsDirectionalLight, wr => {
+                    wr.WriteVec3(info.lightDirection.x, info.lightDirection.y, info.lightDirection.z);
+                    wr.WriteVec3(info.lightColor.x, info.lightColor.y, info.lightColor.z);
+                    wr.WriteF32(info.lightIntensity);
+                    wr.WriteU32(info.castShadow ? 1u : 0u);
+                    wr.WriteF32(info.shadowDistance);
                 });
             }
 
