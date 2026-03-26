@@ -114,7 +114,7 @@ namespace HZExporter
                 WriteEntity(entities[i], stableId, entityFilePath);
             }
 
-            // Write manifest
+            // Write manifest (entity deps handle asset loading)
             WriteManifest(entityFilePaths, sceneDirAssetPath, scenePath);
 
             Debug.Log($"[HZSceneExporter] Exported scene → {scenePath} ({entities.Length} entities)");
@@ -135,12 +135,17 @@ namespace HZExporter
             if (info.isDirectionalLight) compCount++; // EcsDirectionalLight
             if (info.isSceneSettings) compCount++; // EcsSceneSettings
 
+            // Collect entity-level deps (model + material paths)
+            var entityDeps = new List<string>();
+            if (hasModel) entityDeps.Add(info.modelAssetPath);
+            if (hasMaterial) entityDeps.Add(info.materialAssetPath);
+
             var w = new HZBlobWriter(4096);
             int blobBase = w.Position;
 
             // === EntityBlobAsset header ===
             w.WriteHeader("EntityBlobAsset");
-            w.WriteEmptyBlobPtr(SIZEOF_STRING_BLOB, "StringBlob"); // no deps
+            int depsPtrPos = w.ReserveBlobPtr(); // header.dependencies
 
             w.WriteU64(stableId); // stable_id
 
@@ -315,6 +320,25 @@ namespace HZExporter
                 // For ref components, the written size includes the string data after the struct
             }
 
+            // Write entity header.dependencies
+            if (entityDeps.Count > 0)
+            {
+                int depsArrayPos = w.Position;
+                w.PatchBlobPtr(depsPtrPos, depsArrayPos, entityDeps.Count,
+                    SIZEOF_STRING_BLOB, "StringBlob");
+
+                int[] depSBPositions = new int[entityDeps.Count];
+                for (int d = 0; d < entityDeps.Count; d++)
+                    depSBPositions[d] = w.ReserveStringBlob();
+
+                for (int d = 0; d < entityDeps.Count; d++)
+                    w.WriteAndPatchStringBlob(depSBPositions[d], entityDeps[d]);
+            }
+            else
+            {
+                PatchEmptyBlobPtr(w, depsPtrPos, SIZEOF_STRING_BLOB, "StringBlob");
+            }
+
             // Patch header.asset_size
             int finalSize = w.Position;
             w.PatchU64(blobBase + 8, (ulong)finalSize);
@@ -329,7 +353,7 @@ namespace HZExporter
             int blobBase = w.Position;
 
             w.WriteHeader("SceneBlobAsset");
-            w.WriteEmptyBlobPtr(SIZEOF_STRING_BLOB, "StringBlob"); // no deps
+            w.WriteEmptyBlobPtr(SIZEOF_STRING_BLOB, "StringBlob"); // no scene-level deps
 
             int sceneDirPos = w.ReserveStringBlob();      // scene_dir
             int entitiesPtrPos = w.ReserveBlobPtr();       // entities
@@ -363,6 +387,14 @@ namespace HZExporter
 
             Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
             w.WriteToFile(outputPath);
+        }
+
+        static void PatchEmptyBlobPtr(HZBlobWriter w, int pos, int typeSize, string typeName)
+        {
+            w.PatchI32(pos, 0);
+            w.PatchU32(pos + 4, 0);
+            w.PatchU32(pos + 8, (uint)typeSize);
+            w.PatchU32(pos + 12, (uint)HZBlobWriter.TypeHash(typeName, typeSize));
         }
     }
 }
