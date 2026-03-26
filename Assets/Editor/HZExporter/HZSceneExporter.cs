@@ -111,6 +111,9 @@ namespace HZExporter
         public static void Export(EntityExportInfo[] entities, string scenePath,
             string sceneDir, string sceneDirAssetPath)
         {
+            // Clean old entity files
+            if (Directory.Exists(sceneDir))
+                Directory.Delete(sceneDir, true);
             Directory.CreateDirectory(sceneDir);
 
             string[] entityFilePaths = new string[entities.Length];
