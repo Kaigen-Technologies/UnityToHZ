@@ -261,194 +261,205 @@ public static class HZExportCommands
         Debug.Log("[HZ] Body Block animation export done!");
     }
 
+    // Stable ID counter for hierarchy
+    static ulong s_nextStableId;
+
+    static ulong NextStableId()
+    {
+        s_nextStableId++;
+        return s_nextStableId;
+    }
+
     public static void ExportScene()
     {
         var scene = SceneManager.GetActiveScene();
         var roots = scene.GetRootGameObjects();
         var entities = new List<HZSceneExporter.EntityExportInfo>();
 
+        s_nextStableId = 0;
+
+        // Map from GameObject instance ID to stable ID for parent references
+        var goToStableId = new Dictionary<int, ulong>();
+
+        // First pass: assign stable IDs to all GameObjects
+        foreach (var root in roots)
+            foreach (var t in root.GetComponentsInChildren<Transform>(true))
+                goToStableId[t.gameObject.GetInstanceID()] = NextStableId();
+
+        // Collect GameObjects to skip: skeleton bones + SMR children of skinned roots
+        var skipGOs = new HashSet<int>();
         foreach (var root in roots)
         {
-            // Static meshes
-            foreach (var mf in root.GetComponentsInChildren<MeshFilter>())
-            {
-                var mr = mf.GetComponent<MeshRenderer>();
-                if (mr == null || mf.sharedMesh == null) continue;
-
-                string safeName = SanitizeName(mf.gameObject.name);
-                var mesh = mf.sharedMesh;
-                var mat = mr.sharedMaterial;
-
-                string matAssetPath = ExportMaterial(mat, safeName, false);
-                string modelPath = $"{OutputDir}/meshes/{safeName}.hza";
-                string modelAssetPath = $"{AssetPrefix}/{safeName}.hza";
-                HZMeshExporter.Export(mesh, matAssetPath, modelPath);
-
-                var t = mf.transform;
-                entities.Add(new HZSceneExporter.EntityExportInfo {
-                    name = mf.gameObject.name,
-                    position = t.position,
-                    rotation = t.rotation,
-                    scale = t.lossyScale,
-                    visible = mr.enabled,
-                    castsShadow = mr.shadowCastingMode != UnityEngine.Rendering.ShadowCastingMode.Off,
-                    bounds = mr.bounds,
-                    modelAssetPath = modelAssetPath,
-                    materialAssetPath = matAssetPath,
-                    skinned = false,
-                });
-
-                Debug.Log($"[HZ] Scene entity: {mf.gameObject.name} (static) → {modelAssetPath}");
-            }
-
-            // Skinned meshes
-            var allSmrs = root.GetComponentsInChildren<SkinnedMeshRenderer>();
-            var validSmrs = new List<SkinnedMeshRenderer>();
-            foreach (var s in allSmrs)
-                if (s.sharedMesh != null && s.bones != null && s.bones.Length > 0)
-                    validSmrs.Add(s);
-
-            if (validSmrs.Count == 0) continue;
-
-            // Find primary SMR (most bones) for skeleton/animation
-            SkinnedMeshRenderer primarySmr = validSmrs[0];
-            foreach (var s in validSmrs)
-                if (s.bones.Length > primarySmr.bones.Length)
-                    primarySmr = s;
-
-            string rootName = SanitizeName(root.name);
-
-            // Export all SMRs as one multi-mesh model
-            var smrArray = validSmrs.ToArray();
-            var matPaths = new string[validSmrs.Count];
-            for (int si = 0; si < validSmrs.Count; si++)
-            {
-                string smrName = $"{rootName}_{SanitizeName(validSmrs[si].gameObject.name)}";
-                matPaths[si] = ExportMaterial(validSmrs[si].sharedMaterial, smrName, true);
-            }
-
-            string skinnedModelPath = $"{OutputDir}/meshes/{rootName}.hza";
-            string skinnedModelAssetPath = $"{AssetPrefix}/{rootName}.hza";
-            HZMeshExporter.ExportMultiSkinned(smrArray, matPaths, primarySmr, skinnedModelPath);
-
-            // Export animations
-            string animAssetPath = null;
             var animator = root.GetComponent<Animator>();
-            if (animator != null && animator.runtimeAnimatorController != null)
-            {
-                var clips = animator.runtimeAnimatorController.animationClips;
-                if (clips.Length > 0)
-                {
-                    var boneNameToIndex = new Dictionary<string, int>();
-                    for (int bi = 0; bi < primarySmr.bones.Length; bi++)
-                        if (primarySmr.bones[bi] != null)
-                            boneNameToIndex[primarySmr.bones[bi].name] = bi;
+            if (animator == null) continue;
 
-                    for (int ci = 0; ci < clips.Length; ci++)
+            // Skip all descendants of the skinned root EXCEPT the root itself
+            foreach (var childT in root.GetComponentsInChildren<Transform>(true))
+            {
+                if (childT.gameObject == root) continue;
+                skipGOs.Add(childT.gameObject.GetInstanceID());
+            }
+        }
+
+        // Second pass: export each GameObject as an entity
+        foreach (var root in roots)
+        {
+            foreach (var t in root.GetComponentsInChildren<Transform>(true))
+            {
+                var go = t.gameObject;
+
+                // Skip skeleton bones and SMR children of skinned roots
+                if (skipGOs.Contains(go.GetInstanceID())) continue;
+
+                ulong stableId = goToStableId[go.GetInstanceID()];
+
+                // Find nearest exported ancestor (skip skeleton bones)
+                ulong parentStableId = 0;
+                Transform ancestor = t.parent;
+                while (ancestor != null)
+                {
+                    int ancestorId = ancestor.gameObject.GetInstanceID();
+                    if (!skipGOs.Contains(ancestorId) && goToStableId.TryGetValue(ancestorId, out ulong pid))
                     {
-                        var clip = clips[ci];
-                        string clipName = SanitizeName(clip.name);
-                        string animOutputPath = $"{OutputDir}/animations/{clipName}.hza";
-                        HZAnimationExporter.Export(clip, root, boneNameToIndex, primarySmr.bones.Length, animOutputPath);
-                        Debug.Log($"[HZ] Exported animation: {clip.name} → {animOutputPath}");
+                        parentStableId = pid;
+                        break;
+                    }
+                    ancestor = ancestor.parent;
+                }
+
+                // Base entity info — every entity gets this
+                var info = new HZSceneExporter.EntityExportInfo {
+                    name = go.name,
+                    position = t.localPosition,
+                    rotation = t.localRotation,
+                    scale = t.localScale,
+                    visible = go.activeInHierarchy,
+                    castsShadow = false,
+                    stableId = stableId,
+                    parentStableId = parentStableId,
+                };
+
+                // Check for skinned mesh (root of skinned hierarchy)
+                var allSmrs = go.GetComponentsInChildren<SkinnedMeshRenderer>();
+                var validSmrs = new List<SkinnedMeshRenderer>();
+                // Only consider direct SMRs on this GO or its skeleton children
+                foreach (var s in allSmrs)
+                    if (s.sharedMesh != null && s.bones != null && s.bones.Length > 0)
+                        validSmrs.Add(s);
+
+                if (validSmrs.Count > 0 && go.GetComponent<Animator>() != null)
+                {
+                    // This is a skinned mesh root — export multi-mesh model
+                    SkinnedMeshRenderer primarySmr = validSmrs[0];
+                    foreach (var s in validSmrs)
+                        if (s.bones.Length > primarySmr.bones.Length)
+                            primarySmr = s;
+
+                    string rootName = SanitizeName(go.name);
+                    var smrArray = validSmrs.ToArray();
+                    var matPaths = new string[validSmrs.Count];
+                    for (int si = 0; si < validSmrs.Count; si++)
+                    {
+                        string smrName = $"{rootName}_{SanitizeName(validSmrs[si].gameObject.name)}";
+                        matPaths[si] = ExportMaterial(validSmrs[si].sharedMaterial, smrName, true);
                     }
 
-                    string firstClipName = SanitizeName(clips[0].name);
-                    animAssetPath = $"{AssetPrefix}/{firstClipName}.hza";
+                    string modelPath = $"{OutputDir}/meshes/{rootName}.hza";
+                    info.modelAssetPath = $"{AssetPrefix}/{rootName}.hza";
+                    info.materialAssetPath = matPaths[0];
+                    info.bounds = primarySmr.bounds;
+                    info.castsShadow = true;
+                    info.skinned = true;
+                    HZMeshExporter.ExportMultiSkinned(smrArray, matPaths, primarySmr, modelPath);
+
+                    // Animations
+                    var animator = go.GetComponent<Animator>();
+                    if (animator.runtimeAnimatorController != null)
+                    {
+                        var clips = animator.runtimeAnimatorController.animationClips;
+                        if (clips.Length > 0)
+                        {
+                            var boneNameToIndex = new Dictionary<string, int>();
+                            for (int bi = 0; bi < primarySmr.bones.Length; bi++)
+                                if (primarySmr.bones[bi] != null)
+                                    boneNameToIndex[primarySmr.bones[bi].name] = bi;
+
+                            for (int ci = 0; ci < clips.Length; ci++)
+                            {
+                                var clip = clips[ci];
+                                string clipName = SanitizeName(clip.name);
+                                string animOutputPath = $"{OutputDir}/animations/{clipName}.hza";
+                                HZAnimationExporter.Export(clip, go, boneNameToIndex, primarySmr.bones.Length, animOutputPath);
+                            }
+                            info.animationAssetPath = $"{AssetPrefix}/{SanitizeName(clips[0].name)}.hza";
+                        }
+                    }
+
+                    Debug.Log($"[HZ] Entity: {go.name} (skinned, {validSmrs.Count} meshes)");
                 }
-            }
-
-            var rootT = root.transform;
-            entities.Add(new HZSceneExporter.EntityExportInfo {
-                name = root.name,
-                position = rootT.position,
-                rotation = rootT.rotation,
-                scale = rootT.lossyScale,
-                visible = true,
-                castsShadow = true,
-                bounds = primarySmr.bounds,
-                modelAssetPath = skinnedModelAssetPath,
-                materialAssetPath = matPaths[0],
-                animationAssetPath = animAssetPath,
-                skinned = true,
-            });
-
-            Debug.Log($"[HZ] Scene entity: {root.name} (skinned, {validSmrs.Count} meshes{(animAssetPath != null ? ", animated" : "")}) → {skinnedModelAssetPath}");
-        }
-
-        // Cameras
-        foreach (var root in roots)
-        {
-            var cam = root.GetComponent<Camera>();
-            if (cam == null) continue;
-
-            var t = root.transform;
-            entities.Add(new HZSceneExporter.EntityExportInfo {
-                name = root.name,
-                position = t.position,
-                eulerAngles = t.eulerAngles,
-                scale = t.lossyScale,
-                visible = true,
-                castsShadow = false,
-                isCamera = true,
-                fov = cam.fieldOfView,
-                nearPlane = cam.nearClipPlane,
-                farPlane = cam.farClipPlane,
-                rotation = t.rotation,
-            });
-
-            Debug.Log($"[HZ] Scene entity: {root.name} (camera, fov={cam.fieldOfView})");
-        }
-
-        // Directional lights
-        foreach (var root in roots)
-        {
-            foreach (var light in root.GetComponentsInChildren<Light>())
-            {
-                var t = light.transform;
-                Color c = light.color.linear;
-
-                if (light.type == LightType.Directional)
+                // Static mesh
+                else if (go.TryGetComponent<MeshFilter>(out var mf) && mf.sharedMesh != null
+                         && go.TryGetComponent<MeshRenderer>(out var mr))
                 {
-                    Vector3 fwd = t.forward;
-                    Vector3 dir = new Vector3(-fwd.x, fwd.y, fwd.z);
+                    string safeName = SanitizeName(go.name);
+                    string matAssetPath = ExportMaterial(mr.sharedMaterial, safeName, false);
+                    string modelPath = $"{OutputDir}/meshes/{safeName}.hza";
+                    HZMeshExporter.Export(mf.sharedMesh, matAssetPath, modelPath);
 
-                    entities.Add(new HZSceneExporter.EntityExportInfo {
-                        name = light.gameObject.name,
-                        position = t.position,
-                        rotation = t.rotation,
-                        scale = Vector3.one,
-                        visible = true,
-                        castsShadow = false,
-                        isDirectionalLight = true,
-                        lightDirection = dir,
-                        lightColor = new Vector3(c.r, c.g, c.b),
-                        lightIntensity = light.intensity,
-                        castShadow = false,
-                        shadowDistance = 0,
-                    });
-                    Debug.Log($"[HZ] Scene entity: {light.gameObject.name} (directional light)");
+                    info.modelAssetPath = $"{AssetPrefix}/{safeName}.hza";
+                    info.materialAssetPath = matAssetPath;
+                    info.bounds = mr.bounds;
+                    info.castsShadow = mr.shadowCastingMode != UnityEngine.Rendering.ShadowCastingMode.Off;
+
+                    Debug.Log($"[HZ] Entity: {go.name} (static mesh)");
                 }
-                else if (light.type == LightType.Point)
+                // Camera
+                else if (go.TryGetComponent<Camera>(out var cam))
                 {
-                    entities.Add(new HZSceneExporter.EntityExportInfo {
-                        name = light.gameObject.name,
-                        position = t.position,
-                        rotation = t.rotation,
-                        scale = Vector3.one,
-                        visible = true,
-                        castsShadow = false,
-                        isPointLight = true,
-                        lightColor = new Vector3(c.r, c.g, c.b),
-                        pointLightRadius = light.range,
-                        lightIntensity = light.intensity,
-                    });
-                    Debug.Log($"[HZ] Scene entity: {light.gameObject.name} (point light, range={light.range})");
+                    info.isCamera = true;
+                    info.fov = cam.fieldOfView;
+                    info.nearPlane = cam.nearClipPlane;
+                    info.farPlane = cam.farClipPlane;
+
+                    Debug.Log($"[HZ] Entity: {go.name} (camera)");
                 }
+                // Lights
+                else if (go.TryGetComponent<Light>(out var light))
+                {
+                    Color c = light.color.linear;
+                    if (light.type == LightType.Directional)
+                    {
+                        Vector3 fwd = t.forward;
+                        info.isDirectionalLight = true;
+                        info.lightDirection = new Vector3(-fwd.x, fwd.y, fwd.z);
+                        info.lightColor = new Vector3(c.r, c.g, c.b);
+                        info.lightIntensity = light.intensity;
+                        Debug.Log($"[HZ] Entity: {go.name} (directional light)");
+                    }
+                    else if (light.type == LightType.Point)
+                    {
+                        info.isPointLight = true;
+                        info.lightColor = new Vector3(c.r, c.g, c.b);
+                        info.pointLightRadius = light.range;
+                        info.lightIntensity = light.intensity;
+                        Debug.Log($"[HZ] Entity: {go.name} (point light)");
+                    }
+                    else
+                    {
+                        Debug.Log($"[HZ] Entity: {go.name} (empty)");
+                    }
+                }
+                else
+                {
+                    // Empty / container object
+                    Debug.Log($"[HZ] Entity: {go.name} (empty)");
+                }
+
+                entities.Add(info);
             }
         }
 
-        // Scene settings (ambient light)
+        // Scene settings (synthetic entity, no GameObject)
         {
             Color ambient = RenderSettings.ambientLight.linear;
             entities.Add(new HZSceneExporter.EntityExportInfo {
@@ -457,18 +468,11 @@ public static class HZExportCommands
                 rotation = Quaternion.identity,
                 scale = Vector3.one,
                 visible = true,
-                castsShadow = false,
+                stableId = NextStableId(),
                 isSceneSettings = true,
                 ambientColor = new Vector3(ambient.r, ambient.g, ambient.b),
                 ambientIntensity = RenderSettings.ambientIntensity,
             });
-            Debug.Log($"[HZ] Scene entity: SceneSettings (ambient)");
-        }
-
-        if (entities.Count == 0)
-        {
-            Debug.LogError("[HZ] No exportable entities found in scene");
-            return;
         }
 
         string scenePath = $"{OutputDir}/scenes/SampleScene.hza";

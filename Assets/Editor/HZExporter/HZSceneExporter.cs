@@ -31,6 +31,7 @@ namespace HZExporter
         static readonly ulong HASH_Camera = HZBlobWriter.FNV1a("Camera");
         static readonly ulong HASH_EcsSceneSettings = HZBlobWriter.FNV1a("EcsSceneSettings");
         static readonly ulong HASH_EcsAnimationRef = HZBlobWriter.FNV1a("EcsAnimationRef");
+        static readonly ulong HASH_EcsParent = HZBlobWriter.FNV1a("EcsParent");
         static readonly ulong HASH_EcsDirectionalLight = HZBlobWriter.FNV1a("EcsDirectionalLight");
         static readonly ulong HASH_EcsPointLight = HZBlobWriter.FNV1a("EcsPointLight");
 
@@ -49,6 +50,7 @@ namespace HZExporter
         const int SIZE_EcsDirectionalLight = 36; // v3 direction(12) + v3 color(12) + f32 intensity(4) + b32 cast_shadow(4) + f32 shadow_distance(4)
         const int SIZE_EcsPointLight = 20;       // v3 color(12) + f32 radius(4) + f32 intensity(4)
         const int SIZE_EcsAnimationRef = 24;     // BlobAssetRef(AnimationBlobAsset)
+        const int SIZE_EcsParent = 8;            // EcsEntity (u64)
         const int SIZEOF_ANIMATION_BLOB_ASSET = 72;
 
         // sizeof(ModelBlobAsset) for BlobAssetRef typehash
@@ -85,6 +87,9 @@ namespace HZExporter
             public float lightIntensity;
             public bool castShadow;
             public float shadowDistance;
+            // Hierarchy
+            public ulong parentStableId; // 0 = root (no parent)
+            public ulong stableId;       // assigned by caller
             // Animation
             public string animationAssetPath; // asset-relative path to animation .hza
             // Point light
@@ -108,14 +113,12 @@ namespace HZExporter
         {
             Directory.CreateDirectory(sceneDir);
 
-            var rng = new System.Random();
             string[] entityFilePaths = new string[entities.Length];
 
-            // Write each entity
+            // Write each entity (stableId pre-assigned by caller)
             for (int i = 0; i < entities.Length; i++)
             {
-                ulong stableId = (ulong)(rng.Next() | ((long)rng.Next() << 32));
-                if (stableId == 0) stableId = 1;
+                ulong stableId = entities[i].stableId;
 
                 string entityFileName = $"{stableId}.hza";
                 string entityFilePath = Path.Combine(sceneDir, entityFileName);
@@ -142,7 +145,9 @@ namespace HZExporter
             if (hasMaterial) compCount++; // EcsMaterialRef
             if (hasModel) compCount++; // EcsAABB
             bool hasAnimation = !string.IsNullOrEmpty(info.animationAssetPath);
+            bool hasParent = info.parentStableId != 0;
             if (hasAnimation) compCount++; // EcsAnimationRef
+            if (hasParent) compCount++; // EcsParent
             if (info.isCamera) compCount++; // Camera
             if (info.isDirectionalLight) compCount++; // EcsDirectionalLight
             if (info.isPointLight) compCount++; // EcsPointLight
@@ -242,6 +247,16 @@ namespace HZExporter
             if (hasAnimation)
             {
                 ReserveComponent(HASH_EcsAnimationRef, SIZE_EcsAnimationRef, null); // BlobAssetRef patching
+            }
+
+            // --- EcsParent ---
+            if (hasParent)
+            {
+                ReserveComponent(HASH_EcsParent, SIZE_EcsParent, wr => {
+                    // Write the parent's stable_id as the EcsEntity value.
+                    // scene_patch_entity_refs_load will map this to a live entity.
+                    wr.WriteU64(info.parentStableId);
+                });
             }
 
             // --- EcsAABB ---
