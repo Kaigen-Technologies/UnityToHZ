@@ -29,6 +29,7 @@ namespace HZExporter
         static readonly ulong HASH_EcsMaterialRef = HZBlobWriter.FNV1a("EcsMaterialRef");
         static readonly ulong HASH_EcsAABB = HZBlobWriter.FNV1a("EcsAABB");
         static readonly ulong HASH_Camera = HZBlobWriter.FNV1a("Camera");
+        static readonly ulong HASH_EcsSceneSettings = HZBlobWriter.FNV1a("EcsSceneSettings");
 
         // Component data sizes (must match engine struct sizeof)
         const int SIZE_SceneEntityTag = 1;
@@ -41,6 +42,7 @@ namespace HZExporter
         const int SIZE_EcsAABB = 24;        // 2x vec3
         // Camera: 4x mat4(256) + Frustum(96) + quat(16) + vec3(12) + 4x f32(16) = 396
         const int SIZE_Camera = 396;
+        const int SIZE_EcsSceneSettings = 16;    // v3(12) + f32(4)
 
         // sizeof(ModelBlobAsset) for BlobAssetRef typehash
         const int SIZEOF_MODEL_BLOB_ASSET = 160;
@@ -68,6 +70,10 @@ namespace HZExporter
             public float nearPlane;
             public float farPlane;
             public Quaternion rotation; // Unity quaternion
+            // Scene settings
+            public bool isSceneSettings;
+            public Vector3 ambientColor;
+            public float ambientIntensity;
         }
 
         /// <summary>
@@ -116,6 +122,7 @@ namespace HZExporter
             if (hasMaterial) compCount++; // EcsMaterialRef
             if (hasModel) compCount++; // EcsAABB
             if (info.isCamera) compCount++; // Camera
+            if (info.isSceneSettings) compCount++; // EcsSceneSettings
 
             var w = new HZBlobWriter(4096);
             int blobBase = w.Position;
@@ -237,6 +244,15 @@ namespace HZExporter
                     wr.WriteF32(info.nearPlane);
                     wr.WriteF32(info.farPlane);
                     wr.WriteF32(0); // aspect (computed at runtime)
+                });
+            }
+
+            // --- EcsSceneSettings ---
+            if (info.isSceneSettings)
+            {
+                ReserveComponent(HASH_EcsSceneSettings, SIZE_EcsSceneSettings, wr => {
+                    wr.WriteVec3(info.ambientColor.x, info.ambientColor.y, info.ambientColor.z);
+                    wr.WriteF32(info.ambientIntensity);
                 });
             }
 

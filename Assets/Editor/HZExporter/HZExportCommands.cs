@@ -361,6 +361,23 @@ public static class HZExportCommands
             Debug.Log($"[HZ] Scene entity: {root.name} (camera, fov={cam.fieldOfView})");
         }
 
+        // Scene settings (ambient light)
+        {
+            Color ambient = RenderSettings.ambientLight.linear;
+            entities.Add(new HZSceneExporter.EntityExportInfo {
+                name = "SceneSettings",
+                position = Vector3.zero,
+                eulerAngles = Vector3.zero,
+                scale = Vector3.one,
+                visible = true,
+                castsShadow = false,
+                isSceneSettings = true,
+                ambientColor = new Vector3(ambient.r, ambient.g, ambient.b),
+                ambientIntensity = RenderSettings.ambientIntensity,
+            });
+            Debug.Log($"[HZ] Scene entity: SceneSettings (ambient)");
+        }
+
         if (entities.Count == 0)
         {
             Debug.LogError("[HZ] No exportable entities found in scene");
