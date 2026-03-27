@@ -102,12 +102,8 @@ namespace HZExporter
         }
 
         /// <summary>
-        /// Export a scene: writes manifest .hza + per-entity .hza files.
+        /// Export a scene as .hzt text files (manifest + per-entity).
         /// </summary>
-        /// <param name="entities">Entity data to export</param>
-        /// <param name="scenePath">Output path for the manifest .hza</param>
-        /// <param name="sceneDir">Output directory for entity .hza files</param>
-        /// <param name="sceneDirAssetPath">Asset-relative path to the entity dir (stored in manifest)</param>
         public static void Export(EntityExportInfo[] entities, string scenePath,
             string sceneDir, string sceneDirAssetPath)
         {
@@ -118,23 +114,228 @@ namespace HZExporter
 
             string[] entityFilePaths = new string[entities.Length];
 
-            // Write each entity (stableId pre-assigned by caller)
             for (int i = 0; i < entities.Length; i++)
             {
                 ulong stableId = entities[i].stableId;
-
-                string entityFileName = $"{stableId}.hza";
+                string entityFileName = $"{stableId}.hzt";
                 string entityFilePath = Path.Combine(sceneDir, entityFileName);
                 entityFilePaths[i] = $"{sceneDirAssetPath}/{entityFileName}";
 
-                WriteEntity(entities[i], stableId, entityFilePath);
+                WriteEntityHzt(entities[i], entityFilePath);
             }
 
-            // Write manifest (entity deps handle asset loading)
-            WriteManifest(entityFilePaths, sceneDirAssetPath, scenePath);
+            WriteManifestHzt(entityFilePaths, sceneDirAssetPath, scenePath);
 
             Debug.Log($"[HZSceneExporter] Exported scene → {scenePath} ({entities.Length} entities)");
         }
+
+        // ============= .hzt text format writers =============
+
+        static string F(float v) => v.ToString("F6", System.Globalization.CultureInfo.InvariantCulture);
+
+        static void WriteManifestHzt(string[] entityPaths, string sceneDirAssetPath, string outputPath)
+        {
+            uint entityTypeSize = (uint)SIZEOF_ENTITY_BLOB_ASSET_REF;
+            uint entityTypehash = (uint)HZBlobWriter.TypeHash("EntityBlobAsset", SIZEOF_ENTITY_BLOB_ASSET_REF);
+
+            var sb = new StringBuilder();
+            sb.AppendLine("type SceneBlobAsset");
+            sb.AppendLine("version 3");
+            sb.AppendLine("---");
+            sb.AppendLine($"scene_dir {sceneDirAssetPath}");
+            sb.AppendLine($"entities {entityPaths.Length}");
+            foreach (var path in entityPaths)
+            {
+                sb.AppendLine($"  path {path}");
+                sb.AppendLine($"  type_size {entityTypeSize}");
+                sb.AppendLine($"  typehash {entityTypehash}");
+                sb.AppendLine();
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
+            File.WriteAllText(outputPath, sb.ToString());
+        }
+
+        static void WriteEntityHzt(EntityExportInfo info, string outputPath)
+        {
+            bool hasModel = !string.IsNullOrEmpty(info.modelAssetPath);
+            bool hasMaterial = !string.IsNullOrEmpty(info.materialAssetPath);
+            bool hasAnimation = !string.IsNullOrEmpty(info.animationAssetPath);
+            bool hasParent = info.parentStableId != 0;
+
+            var sb = new StringBuilder();
+            sb.AppendLine("type EntityBlobAsset");
+            sb.AppendLine("version 3");
+            sb.AppendLine("---");
+            sb.AppendLine($"stable_id {info.stableId}");
+
+            // SceneEntityTag
+            sb.AppendLine();
+            sb.AppendLine("component SceneEntityTag");
+            sb.AppendLine("  _ 0");
+
+            // EcsStableId
+            sb.AppendLine();
+            sb.AppendLine("component EcsStableId");
+            sb.AppendLine($"  id {info.stableId}");
+
+            // EntityName — skipped in .hzt (String64Bytes not supported by hzt parser)
+
+            // LocalTransform
+            {
+                // Position: negate X
+                float px = -info.position.x, py = info.position.y, pz = info.position.z;
+                // Rotation: X-mirror (qx, -qy, -qz, qw)
+                var q = info.rotation;
+                float qx = q.x, qy = -q.y, qz = -q.z, qw = q.w;
+
+                sb.AppendLine();
+                sb.AppendLine("component LocalTransform");
+                sb.AppendLine("  position");
+                sb.AppendLine($"    x {F(px)}");
+                sb.AppendLine($"    y {F(py)}");
+                sb.AppendLine($"    z {F(pz)}");
+                sb.AppendLine("  rotation");
+                sb.AppendLine($"    x {F(qx)}");
+                sb.AppendLine($"    y {F(qy)}");
+                sb.AppendLine($"    z {F(qz)}");
+                sb.AppendLine($"    w {F(qw)}");
+                sb.AppendLine("  scale");
+                sb.AppendLine($"    x {F(info.scale.x)}");
+                sb.AppendLine($"    y {F(info.scale.y)}");
+                sb.AppendLine($"    z {F(info.scale.z)}");
+            }
+
+            // EcsVisibility
+            sb.AppendLine();
+            sb.AppendLine("component EcsVisibility");
+            sb.AppendLine($"  visible {(info.visible ? "true" : "false")}");
+            sb.AppendLine($"  casts_shadow {(info.castsShadow ? "true" : "false")}");
+
+            // EcsParent
+            if (hasParent)
+            {
+                sb.AppendLine();
+                sb.AppendLine("component EcsParent");
+                sb.AppendLine($"  parent {info.parentStableId}");
+            }
+
+            // EcsModelRef
+            if (hasModel)
+            {
+                uint modelTypeSize = (uint)SIZEOF_MODEL_BLOB_ASSET;
+                uint modelTypehash = (uint)HZBlobWriter.TypeHash("ModelBlobAsset", SIZEOF_MODEL_BLOB_ASSET);
+                sb.AppendLine();
+                sb.AppendLine("component EcsModelRef");
+                sb.AppendLine($"  model {info.modelAssetPath} {modelTypeSize} {modelTypehash}");
+            }
+
+            // EcsMaterialRef
+            if (hasMaterial)
+            {
+                uint matTypeSize = (uint)SIZEOF_MATERIAL_BLOB_ASSET;
+                uint matTypehash = (uint)HZBlobWriter.TypeHash("MaterialBlobAsset", SIZEOF_MATERIAL_BLOB_ASSET);
+                sb.AppendLine();
+                sb.AppendLine("component EcsMaterialRef");
+                sb.AppendLine($"  material {info.materialAssetPath} {matTypeSize} {matTypehash}");
+            }
+
+            // EcsAnimationRef
+            if (hasAnimation)
+            {
+                uint animTypeSize = (uint)SIZEOF_ANIMATION_BLOB_ASSET;
+                uint animTypehash = (uint)HZBlobWriter.TypeHash("AnimationBlobAsset", SIZEOF_ANIMATION_BLOB_ASSET);
+                sb.AppendLine();
+                sb.AppendLine("component EcsAnimationRef");
+                sb.AppendLine($"  animation {info.animationAssetPath} {animTypeSize} {animTypehash}");
+            }
+
+            // EcsAABB
+            if (hasModel)
+            {
+                var b = info.bounds;
+                sb.AppendLine();
+                sb.AppendLine("component EcsAABB");
+                sb.AppendLine("  value");
+                sb.AppendLine($"    min {F(-b.max.x)} {F(b.min.y)} {F(b.min.z)}");
+                sb.AppendLine($"    max {F(-b.min.x)} {F(b.max.y)} {F(b.max.z)}");
+            }
+
+            // Camera
+            if (info.isCamera)
+            {
+                var mirrored = new Quaternion(info.rotation.x, -info.rotation.y, -info.rotation.z, info.rotation.w);
+                var flip180Y = Quaternion.Euler(0, 180, 0);
+                var cq = mirrored * flip180Y;
+
+                sb.AppendLine();
+                sb.AppendLine("component Camera");
+                sb.AppendLine("  view ");
+                sb.AppendLine("  proj ");
+                sb.AppendLine("  view_proj ");
+                sb.AppendLine("  inv_view_proj ");
+                sb.AppendLine("  frustum");
+                sb.AppendLine("    planes ");
+                sb.AppendLine("  rot");
+                sb.AppendLine($"    x {F(cq.x)}");
+                sb.AppendLine($"    y {F(cq.y)}");
+                sb.AppendLine($"    z {F(cq.z)}");
+                sb.AppendLine($"    w {F(cq.w)}");
+                sb.AppendLine($"  pos {F(-info.position.x)} {F(info.position.y)} {F(info.position.z)}");
+                sb.AppendLine($"  fov {F(info.fov)}");
+                sb.AppendLine($"  near_plane {F(info.nearPlane)}");
+                sb.AppendLine($"  far_plane {F(info.farPlane)}");
+                sb.AppendLine("  aspect 0.000000");
+            }
+
+            // EcsDirectionalLight
+            if (info.isDirectionalLight)
+            {
+                sb.AppendLine();
+                sb.AppendLine("component EcsDirectionalLight");
+                sb.AppendLine("  direction");
+                sb.AppendLine($"    x {F(info.lightDirection.x)}");
+                sb.AppendLine($"    y {F(info.lightDirection.y)}");
+                sb.AppendLine($"    z {F(info.lightDirection.z)}");
+                sb.AppendLine("  color");
+                sb.AppendLine($"    x {F(info.lightColor.x)}");
+                sb.AppendLine($"    y {F(info.lightColor.y)}");
+                sb.AppendLine($"    z {F(info.lightColor.z)}");
+                sb.AppendLine($"  intensity {F(info.lightIntensity)}");
+                sb.AppendLine($"  cast_shadow {(info.castShadow ? "true" : "false")}");
+                sb.AppendLine($"  shadow_distance {F(info.shadowDistance)}");
+            }
+
+            // EcsPointLight
+            if (info.isPointLight)
+            {
+                sb.AppendLine();
+                sb.AppendLine("component EcsPointLight");
+                sb.AppendLine("  color");
+                sb.AppendLine($"    x {F(info.lightColor.x)}");
+                sb.AppendLine($"    y {F(info.lightColor.y)}");
+                sb.AppendLine($"    z {F(info.lightColor.z)}");
+                sb.AppendLine($"  radius {F(info.pointLightRadius)}");
+                sb.AppendLine($"  intensity {F(info.lightIntensity)}");
+            }
+
+            // EcsSceneSettings
+            if (info.isSceneSettings)
+            {
+                sb.AppendLine();
+                sb.AppendLine("component EcsSceneSettings");
+                sb.AppendLine("  ambient_color");
+                sb.AppendLine($"    x {F(info.ambientColor.x)}");
+                sb.AppendLine($"    y {F(info.ambientColor.y)}");
+                sb.AppendLine($"    z {F(info.ambientColor.z)}");
+                sb.AppendLine($"  ambient_intensity {F(info.ambientIntensity)}");
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
+            File.WriteAllText(outputPath, sb.ToString());
+        }
+
+        // ============= Legacy .hza binary writers (kept for non-scene assets) =============
 
         static void WriteEntity(EntityExportInfo info, ulong stableId, string outputPath)
         {

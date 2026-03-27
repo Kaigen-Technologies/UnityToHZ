@@ -477,7 +477,7 @@ public static class HZExportCommands
             });
         }
 
-        string scenePath = $"{OutputDir}/scenes/SampleScene.hza";
+        string scenePath = $"{OutputDir}/scenes/SampleScene.hzt";
         string sceneDir = $"{OutputDir}/scenes/SampleScene";
         string sceneDirAssetPath = $"{AssetPrefix}/SampleScene";
 
