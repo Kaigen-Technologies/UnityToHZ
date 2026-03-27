@@ -1,11 +1,11 @@
 using System.IO;
+using System.Text;
 using UnityEngine;
 
 namespace HZExporter
 {
     /// <summary>
-    /// Exports a Unity Texture2D as a TextureBlobAsset (.hza) + compressed KTX via PVRTexTool.
-    /// Matches the engine exporter's texture pipeline.
+    /// Exports a Unity Texture2D as a TextureBlobAsset (.hzt text or .hza binary) + compressed KTX.
     /// </summary>
     public static class HZTextureExporter
     {
@@ -83,6 +83,52 @@ namespace HZExporter
             Directory.CreateDirectory(Path.GetDirectoryName(outputHzaPath));
             w.WriteToFile(outputHzaPath);
             Debug.Log($"[HZTextureExporter] Exported → {outputHzaPath} ({finalSize} bytes, format={(format == TEX_FORMAT_BC1 ? "BC1" : "BC3")}, srgb={isSrgb})");
+        }
+
+        /// <summary>Export as .hzt text file + PNG + compressed KTX.</summary>
+        public static void ExportHzt(Texture2D texture, string imageBasePath, bool isSrgb,
+            bool hasAlpha, string outputHztPath, string outputPngPath)
+        {
+            // Export PNG
+            Directory.CreateDirectory(Path.GetDirectoryName(outputPngPath));
+            var readable = MakeReadable(texture);
+            byte[] pngData = readable.EncodeToPNG();
+            File.WriteAllBytes(outputPngPath, pngData);
+            if (readable != texture)
+                Object.DestroyImmediate(readable);
+
+            // Compress with PVRTexTool
+            string outputBase = Path.Combine(
+                Path.GetDirectoryName(outputPngPath),
+                Path.GetFileNameWithoutExtension(outputPngPath));
+            string colorSpace = isSrgb ? "sRGB" : "lRGB";
+
+            string formatName;
+            if (hasAlpha)
+            {
+                formatName = "TEX_FORMAT_BC3";
+                RunPVRTexTool($"-i \"{outputPngPath}\" -o \"{outputBase}_bc3.ktx\" -m -f BC3,UBN,{colorSpace}");
+            }
+            else
+            {
+                formatName = "TEX_FORMAT_BC1";
+                RunPVRTexTool($"-i \"{outputPngPath}\" -o \"{outputBase}_bc1.ktx\" -m -f BC1,UBN,{colorSpace}");
+            }
+
+            // Write .hzt
+            var sb = new StringBuilder();
+            sb.AppendLine("type TextureBlobAsset");
+            sb.AppendLine("version 3");
+            sb.AppendLine("---");
+            sb.AppendLine($"image {imageBasePath} u8");
+            sb.AppendLine($"format {formatName}");
+            sb.AppendLine("width 0");
+            sb.AppendLine("height 0");
+            sb.AppendLine($"is_srgb {(isSrgb ? "true" : "false")}");
+
+            Directory.CreateDirectory(Path.GetDirectoryName(outputHztPath));
+            File.WriteAllText(outputHztPath, sb.ToString());
+            Debug.Log($"[HZTextureExporter] Exported → {outputHztPath} (format={formatName}, srgb={isSrgb})");
         }
 
         static void RunPVRTexTool(string args)

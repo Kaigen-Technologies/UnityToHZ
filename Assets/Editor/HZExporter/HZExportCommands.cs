@@ -151,7 +151,7 @@ public static class HZExportCommands
     /// </summary>
     static string ExportMaterial(Material mat, string baseName, bool skinned)
     {
-        string matFilename = $"{baseName}_mat.hza";
+        string matFilename = $"{baseName}_mat.hzt";
         string matOutputPath = $"{OutputDir}/materials/{matFilename}";
         string matAssetPath = $"{AssetPrefix}/{matFilename}";
 
@@ -168,24 +168,22 @@ public static class HZExportCommands
             if (albedo != null)
             {
                 string texName = $"{baseName}_albedo";
-                string texHzaPath = $"{OutputDir}/textures/{texName}_tex.hza";
+                string texHztPath = $"{OutputDir}/textures/{texName}_tex.hzt";
                 string texPngPath = $"{OutputDir}/textures/{texName}.png";
-                texAssetPath = $"{AssetPrefix}/{texName}_tex.hza";
+                texAssetPath = $"{AssetPrefix}/{texName}_tex.hzt";
 
-                // Image base path: engine appends _bc1.ktx (leading / matches engine convention)
                 string imageBasePath = $"/{AssetPrefix}/{texName}";
 
-                // Detect alpha
                 bool hasAlpha = albedo.format == TextureFormat.RGBA32 ||
                                 albedo.format == TextureFormat.ARGB32 ||
                                 albedo.format == TextureFormat.DXT5 ||
                                 albedo.alphaIsTransparency;
 
-                HZTextureExporter.Export(albedo, imageBasePath, true, hasAlpha, texHzaPath, texPngPath);
+                HZTextureExporter.ExportHzt(albedo, imageBasePath, true, hasAlpha, texHztPath, texPngPath);
             }
         }
 
-        HZMaterialExporter.Export(mat, skinned, texAssetPath, matOutputPath);
+        HZMaterialExporter.ExportHzt(mat, skinned, texAssetPath, matOutputPath);
         return matAssetPath;
     }
 

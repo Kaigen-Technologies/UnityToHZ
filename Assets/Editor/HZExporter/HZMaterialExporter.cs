@@ -1,4 +1,5 @@
 using System.IO;
+using System.Text;
 using UnityEngine;
 
 namespace HZExporter
@@ -137,6 +138,58 @@ namespace HZExporter
             Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
             w.WriteToFile(outputPath);
             Debug.Log($"[HZMaterialExporter] Exported → {outputPath} ({finalSize} bytes, {propCount} props, shader={shaderPath})");
+        }
+
+        static string F(float v) => v.ToString("F6", System.Globalization.CultureInfo.InvariantCulture);
+
+        /// <summary>Export material as .hzt text file.</summary>
+        public static void ExportHzt(Material mat, bool skinned, string texturePath, string outputPath)
+        {
+            Color baseColor = Color.white;
+            if (mat != null)
+            {
+                if (mat.HasProperty("_BaseColor"))
+                    baseColor = mat.GetColor("_BaseColor");
+                else if (mat.HasProperty("_Color"))
+                    baseColor = mat.GetColor("_Color");
+            }
+
+            string shaderPath = skinned
+                ? "shaders/standard_skinned_material.hza"
+                : "shaders/standard_static_material.hza";
+
+            bool hasAlbedo = !string.IsNullOrEmpty(texturePath);
+            int propCount = hasAlbedo ? 2 : 1;
+
+            var sb = new StringBuilder();
+            sb.AppendLine("type MaterialBlobAsset");
+            sb.AppendLine("version 3");
+            sb.AppendLine("---");
+            sb.AppendLine($"material_shader {shaderPath} MaterialShaderBlobAsset");
+            sb.AppendLine("depth_test true");
+            sb.AppendLine("depth_write true");
+            sb.AppendLine("depth_compare GPU_COMPARE_GREATER_EQUAL");
+            sb.AppendLine("cull_mode GPU_CULL_BACK");
+            sb.AppendLine("is_transparent false");
+            sb.AppendLine("alpha_cutoff false");
+            sb.AppendLine($"properties {propCount}");
+
+            // color property
+            sb.AppendLine($"  name color");
+            sb.AppendLine($"  type MAT_PROP_VEC4");
+            sb.AppendLine($"  v4 {F(baseColor.r)} {F(baseColor.g)} {F(baseColor.b)} {F(baseColor.a)}");
+
+            if (hasAlbedo)
+            {
+                sb.AppendLine();
+                sb.AppendLine($"  name albedo");
+                sb.AppendLine($"  type MAT_PROP_TEXTURE");
+                sb.AppendLine($"  texture {texturePath} TextureBlobAsset");
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
+            File.WriteAllText(outputPath, sb.ToString());
+            Debug.Log($"[HZMaterialExporter] Exported → {outputPath} ({propCount} props, shader={shaderPath})");
         }
     }
 }
