@@ -261,13 +261,15 @@ public static class HZExportCommands
         Debug.Log("[HZ] Body Block animation export done!");
     }
 
-    // Stable ID counter for hierarchy
-    static ulong s_nextStableId;
+    static System.Random s_stableIdRng;
 
     static ulong NextStableId()
     {
-        s_nextStableId++;
-        return s_nextStableId;
+        byte[] buf = new byte[8];
+        s_stableIdRng.NextBytes(buf);
+        ulong id = System.BitConverter.ToUInt64(buf, 0);
+        if (id == 0) id = 1;
+        return id;
     }
 
     public static void ExportScene()
@@ -276,7 +278,7 @@ public static class HZExportCommands
         var roots = scene.GetRootGameObjects();
         var entities = new List<HZSceneExporter.EntityExportInfo>();
 
-        s_nextStableId = 0;
+        s_stableIdRng = new System.Random();
 
         // Map from GameObject instance ID to stable ID for parent references
         var goToStableId = new Dictionary<int, ulong>();
