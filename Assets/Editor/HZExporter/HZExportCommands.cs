@@ -434,7 +434,9 @@ public static class HZExportCommands
                         info.lightDirection = new Vector3(-fwd.x, fwd.y, fwd.z);
                         info.lightColor = new Vector3(c.r, c.g, c.b);
                         info.lightIntensity = light.intensity;
-                        Debug.Log($"[HZ] Entity: {go.name} (directional light)");
+                        info.castShadow = light.shadows != LightShadows.None;
+                        info.shadowDistance = QualitySettings.shadowDistance;
+                        Debug.Log($"[HZ] Entity: {go.name} (directional light, shadows={info.castShadow})");
                     }
                     else if (light.type == LightType.Point)
                     {
