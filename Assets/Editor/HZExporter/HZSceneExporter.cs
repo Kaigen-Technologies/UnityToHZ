@@ -64,9 +64,12 @@ namespace HZExporter
         public struct EntityExportInfo
         {
             public string name;
-            public Vector3 position;
+            public Vector3 position;      // local
             public Vector3 eulerAngles;
-            public Vector3 scale;
+            public Vector3 scale;         // local
+            public Vector3 worldPosition;
+            public Quaternion worldRotation;
+            public Vector3 worldScale;
             public bool visible;
             public bool castsShadow;
             public Bounds bounds;
@@ -206,10 +209,10 @@ namespace HZExporter
                 sb.AppendLine($"    z {F(info.scale.z)}");
             }
 
-            // WorldTransform (same as local for export; engine recomputes for children)
+            // WorldTransform (actual world-space values)
             {
-                float px = -info.position.x, py = info.position.y, pz = info.position.z;
-                var q = info.rotation;
+                float px = -info.worldPosition.x, py = info.worldPosition.y, pz = info.worldPosition.z;
+                var q = info.worldRotation;
                 float qx = q.x, qy = -q.y, qz = -q.z, qw = q.w;
 
                 sb.AppendLine();
@@ -224,9 +227,9 @@ namespace HZExporter
                 sb.AppendLine($"    z {F(qz)}");
                 sb.AppendLine($"    w {F(qw)}");
                 sb.AppendLine("  scale");
-                sb.AppendLine($"    x {F(info.scale.x)}");
-                sb.AppendLine($"    y {F(info.scale.y)}");
-                sb.AppendLine($"    z {F(info.scale.z)}");
+                sb.AppendLine($"    x {F(info.worldScale.x)}");
+                sb.AppendLine($"    y {F(info.worldScale.y)}");
+                sb.AppendLine($"    z {F(info.worldScale.z)}");
             }
 
             // EcsVisibility
@@ -246,11 +249,9 @@ namespace HZExporter
             // EcsModelRef
             if (hasModel)
             {
-                uint modelTypeSize = (uint)SIZEOF_MODEL_BLOB_ASSET;
-                uint modelTypehash = (uint)HZBlobWriter.TypeHash("ModelBlobAsset", SIZEOF_MODEL_BLOB_ASSET);
                 sb.AppendLine();
                 sb.AppendLine("component EcsModelRef");
-                sb.AppendLine($"  model {info.modelAssetPath} {modelTypeSize} {modelTypehash}");
+                sb.AppendLine($"  model {info.modelAssetPath} ModelBlobAsset");
             }
 
             // EcsMaterialRef

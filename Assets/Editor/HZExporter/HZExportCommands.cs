@@ -363,6 +363,9 @@ public static class HZExportCommands
                     position = t.localPosition,
                     rotation = t.localRotation,
                     scale = t.localScale,
+                    worldPosition = t.position,
+                    worldRotation = t.rotation,
+                    worldScale = t.lossyScale,
                     visible = go.activeInHierarchy,
                     castsShadow = false,
                     stableId = stableId,
@@ -379,7 +382,7 @@ public static class HZExportCommands
 
                 if (validSmrs.Count > 0 && go.GetComponent<Animator>() != null)
                 {
-                    // This is a skinned mesh root — export multi-mesh model
+                    // Skinned mesh root — export as .glb
                     SkinnedMeshRenderer primarySmr = validSmrs[0];
                     foreach (var s in validSmrs)
                         if (s.bones.Length > primarySmr.bones.Length)
@@ -387,20 +390,16 @@ public static class HZExportCommands
 
                     string rootName = SanitizeName(go.name);
                     var smrArray = validSmrs.ToArray();
-                    var matPaths = new string[validSmrs.Count];
+                    var mats = new Material[validSmrs.Count];
                     for (int si = 0; si < validSmrs.Count; si++)
-                    {
-                        string smrName = $"{rootName}_{SanitizeName(validSmrs[si].gameObject.name)}";
-                        matPaths[si] = ExportMaterial(validSmrs[si].sharedMaterial, smrName, true);
-                    }
+                        mats[si] = validSmrs[si].sharedMaterial;
 
-                    string modelPath = $"{OutputDir}/meshes/{rootName}.hza";
-                    info.modelAssetPath = $"{AssetPrefix}/{rootName}.hza";
-                    info.materialAssetPath = matPaths[0];
+                    string glbPath = $"{OutputDir}/glb/{rootName}.glb";
+                    HZGlbWriter.ExportSkinnedMesh(smrArray, mats, primarySmr, glbPath);
+
+                    info.modelAssetPath = $"{AssetPrefix}/{rootName}.glb";
                     info.bounds = primarySmr.bounds;
                     info.castsShadow = true;
-                    info.skinned = true;
-                    HZMeshExporter.ExportMultiSkinned(smrArray, matPaths, primarySmr, modelPath);
 
                     // Animations
                     var animator = go.GetComponent<Animator>();
@@ -425,23 +424,21 @@ public static class HZExportCommands
                         }
                     }
 
-                    Debug.Log($"[HZ] Entity: {go.name} (skinned, {validSmrs.Count} meshes)");
+                    Debug.Log($"[HZ] Entity: {go.name} (skinned glb, {validSmrs.Count} meshes)");
                 }
-                // Static mesh
+                // Static mesh — export as .glb
                 else if (go.TryGetComponent<MeshFilter>(out var mf) && mf.sharedMesh != null
                          && go.TryGetComponent<MeshRenderer>(out var mr))
                 {
                     string safeName = SanitizeName(go.name);
-                    string matAssetPath = ExportMaterial(mr.sharedMaterial, safeName, false);
-                    string modelPath = $"{OutputDir}/meshes/{safeName}.hza";
-                    HZMeshExporter.Export(mf.sharedMesh, matAssetPath, modelPath);
+                    string glbPath = $"{OutputDir}/glb/{safeName}.glb";
+                    HZGlbWriter.ExportStaticMesh(mf.sharedMesh, mr.sharedMaterial, glbPath);
 
-                    info.modelAssetPath = $"{AssetPrefix}/{safeName}.hza";
-                    info.materialAssetPath = matAssetPath;
+                    info.modelAssetPath = $"{AssetPrefix}/{safeName}.glb";
                     info.bounds = mr.bounds;
                     info.castsShadow = mr.shadowCastingMode != UnityEngine.Rendering.ShadowCastingMode.Off;
 
-                    Debug.Log($"[HZ] Entity: {go.name} (static mesh)");
+                    Debug.Log($"[HZ] Entity: {go.name} (static glb)");
                 }
                 // Camera
                 else if (go.TryGetComponent<Camera>(out var cam))
