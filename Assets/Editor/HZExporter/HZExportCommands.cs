@@ -62,6 +62,40 @@ public static class HZExportCommands
         ExportFbxMeshes("Assets/New Folder/X Bot.fbx", "X_Bot");
     }
 
+    public static void ExportXBotGlb()
+    {
+        var prefab = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/New Folder/X Bot.fbx");
+        var instance = Object.Instantiate(prefab);
+
+        var allSmrs = instance.GetComponentsInChildren<SkinnedMeshRenderer>();
+        var validSmrs = new List<SkinnedMeshRenderer>();
+        foreach (var s in allSmrs)
+            if (s.sharedMesh != null && s.bones != null && s.bones.Length > 0)
+                validSmrs.Add(s);
+
+        if (validSmrs.Count == 0)
+        {
+            Debug.LogError("[HZ] No valid SMRs found on X Bot");
+            Object.DestroyImmediate(instance);
+            return;
+        }
+
+        SkinnedMeshRenderer primarySmr = validSmrs[0];
+        foreach (var s in validSmrs)
+            if (s.bones.Length > primarySmr.bones.Length)
+                primarySmr = s;
+
+        var smrArray = validSmrs.ToArray();
+        var mats = new Material[validSmrs.Count];
+        for (int i = 0; i < validSmrs.Count; i++)
+            mats[i] = validSmrs[i].sharedMaterial;
+
+        HZGlbWriter.ExportSkinnedMesh(smrArray, mats, primarySmr, OutputDir + "/glb/XBot.glb");
+
+        Object.DestroyImmediate(instance);
+        Debug.Log("[HZ] X Bot GLB export done!");
+    }
+
     /// <summary>
     /// Loads an FBX at assetPath, finds all Mesh sub-assets, and exports each as a
     /// ModelBlobAsset. Detects SkinnedMeshRenderer to export with skinning data.

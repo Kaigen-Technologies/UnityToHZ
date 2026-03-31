@@ -330,6 +330,416 @@ namespace HZExporter
             Debug.Log($"[HZGlbWriter] Exported → {outputPath} ({totalLength} bytes, {vertexCount} verts, {indexCount} indices)");
         }
 
+        /// <summary>Export multi-mesh skinned model as .glb with skeleton</summary>
+        public static void ExportSkinnedMesh(SkinnedMeshRenderer[] smrs, Material[] materials,
+            SkinnedMeshRenderer primarySmr, string outputPath)
+        {
+            var bones = primarySmr.bones;
+            int jointCount = bones.Length;
+            var bindPoses = primarySmr.sharedMesh.bindposes;
+
+            // Build bone hierarchy
+            var boneToIndex = new Dictionary<Transform, int>();
+            for (int i = 0; i < jointCount; i++)
+                boneToIndex[bones[i]] = i;
+
+            int[] parentIndices = new int[jointCount];
+            for (int i = 0; i < jointCount; i++)
+            {
+                var parent = bones[i].parent;
+                parentIndices[i] = (parent != null && boneToIndex.TryGetValue(parent, out int pi)) ? pi : -1;
+            }
+
+            var bin = new MemoryStream();
+            var json = new StringBuilder();
+
+            // Track buffer views and accessors as we go
+            var bvList = new List<string>();  // JSON fragments for bufferViews
+            var accList = new List<string>(); // JSON fragments for accessors
+
+            int AddBV(int offset, int length, int stride = 0)
+            {
+                int idx = bvList.Count;
+                string s = $"    {{ \"buffer\": 0, \"byteOffset\": {offset}, \"byteLength\": {length}";
+                if (stride > 0) s += $", \"byteStride\": {stride}";
+                s += " }";
+                bvList.Add(s);
+                return idx;
+            }
+
+            int AddAcc(int bv, int compType, int count, string type, float[] min = null, float[] max = null)
+            {
+                int idx = accList.Count;
+                string s = $"    {{ \"bufferView\": {bv}, \"componentType\": {compType}, \"count\": {count}, \"type\": \"{type}\"";
+                if (min != null && max != null)
+                    s += $", \"min\": [{F(min[0])}, {F(min[1])}, {F(min[2])}], \"max\": [{F(max[0])}, {F(max[1])}, {F(max[2])}]";
+                s += " }";
+                accList.Add(s);
+                return idx;
+            }
+
+            // --- Write per-mesh primitive data ---
+            int meshCount = smrs.Length;
+            int[][] meshAccIndices = new int[meshCount][]; // [indicesAcc, posAcc, normAcc, tanAcc, uvAcc, jointsAcc, weightsAcc]
+
+            for (int mi = 0; mi < meshCount; mi++)
+            {
+                var smr = smrs[mi];
+                var mesh = smr.sharedMesh;
+                int vertexCount = mesh.vertexCount;
+                var vertices = mesh.vertices;
+                var normals = mesh.normals;
+                var tangents = mesh.tangents;
+                var uvs = mesh.uv;
+                var triangles = mesh.triangles;
+                int indexCount = triangles.Length;
+                bool useU16 = vertexCount <= 65535;
+
+                // Build bone remap for this SMR
+                int[] boneRemap = new int[smr.bones.Length];
+                for (int bi = 0; bi < smr.bones.Length; bi++)
+                    boneRemap[bi] = (smr.bones[bi] != null && boneToIndex.TryGetValue(smr.bones[bi], out int pi)) ? pi : 0;
+
+                // Indices
+                int idxOff = (int)bin.Position;
+                for (int i = 0; i < indexCount; i += 3)
+                {
+                    if (useU16) { WriteU16(bin, (ushort)triangles[i]); WriteU16(bin, (ushort)triangles[i+2]); WriteU16(bin, (ushort)triangles[i+1]); }
+                    else { WriteU32(bin, (uint)triangles[i]); WriteU32(bin, (uint)triangles[i+2]); WriteU32(bin, (uint)triangles[i+1]); }
+                }
+                int idxSize = (int)bin.Position - idxOff;
+                PadTo4(bin);
+
+                // Positions
+                int posOff = (int)bin.Position;
+                float[] posMin = { float.MaxValue, float.MaxValue, float.MaxValue };
+                float[] posMax = { float.MinValue, float.MinValue, float.MinValue };
+                for (int i = 0; i < vertexCount; i++)
+                {
+                    float x = -vertices[i].x, y = vertices[i].y, z = vertices[i].z;
+                    WriteF32(bin, x); WriteF32(bin, y); WriteF32(bin, z);
+                    posMin[0] = Math.Min(posMin[0], x); posMin[1] = Math.Min(posMin[1], y); posMin[2] = Math.Min(posMin[2], z);
+                    posMax[0] = Math.Max(posMax[0], x); posMax[1] = Math.Max(posMax[1], y); posMax[2] = Math.Max(posMax[2], z);
+                }
+                int posSize = (int)bin.Position - posOff;
+
+                // Normals
+                int normOff = (int)bin.Position;
+                for (int i = 0; i < vertexCount; i++)
+                {
+                    float nx = (i < normals.Length) ? -normals[i].x : 0;
+                    float ny = (i < normals.Length) ? normals[i].y : 0;
+                    float nz = (i < normals.Length) ? normals[i].z : 1;
+                    WriteF32(bin, nx); WriteF32(bin, ny); WriteF32(bin, nz);
+                }
+                int normSize = (int)bin.Position - normOff;
+
+                // Tangents
+                int tanOff = (int)bin.Position;
+                bool hasTan = tangents != null && tangents.Length > 0;
+                if (hasTan)
+                    for (int i = 0; i < vertexCount; i++)
+                    {
+                        WriteF32(bin, (i < tangents.Length) ? -tangents[i].x : 1);
+                        WriteF32(bin, (i < tangents.Length) ? tangents[i].y : 0);
+                        WriteF32(bin, (i < tangents.Length) ? tangents[i].z : 0);
+                        WriteF32(bin, (i < tangents.Length) ? tangents[i].w : 1);
+                    }
+                int tanSize = (int)bin.Position - tanOff;
+
+                // UVs
+                int uvOff = (int)bin.Position;
+                bool hasUV = uvs != null && uvs.Length > 0;
+                if (hasUV)
+                    for (int i = 0; i < vertexCount; i++)
+                    {
+                        WriteF32(bin, (i < uvs.Length) ? uvs[i].x : 0);
+                        WriteF32(bin, (i < uvs.Length) ? uvs[i].y : 0);
+                    }
+                int uvSize = (int)bin.Position - uvOff;
+
+                // Joint indices (u8 x 4, remapped)
+                int jiOff = (int)bin.Position;
+                var boneWeights = mesh.boneWeights;
+                for (int i = 0; i < vertexCount; i++)
+                {
+                    var bw = boneWeights[i];
+                    bin.WriteByte((byte)boneRemap[bw.boneIndex0]);
+                    bin.WriteByte((byte)boneRemap[bw.boneIndex1]);
+                    bin.WriteByte((byte)boneRemap[bw.boneIndex2]);
+                    bin.WriteByte((byte)boneRemap[bw.boneIndex3]);
+                }
+                int jiSize = (int)bin.Position - jiOff;
+
+                // Joint weights (f32 x 4)
+                int jwOff = (int)bin.Position;
+                for (int i = 0; i < vertexCount; i++)
+                {
+                    var bw = boneWeights[i];
+                    WriteF32(bin, bw.weight0); WriteF32(bin, bw.weight1);
+                    WriteF32(bin, bw.weight2); WriteF32(bin, bw.weight3);
+                }
+                int jwSize = (int)bin.Position - jwOff;
+
+                // Register buffer views and accessors
+                int idxBV = AddBV(idxOff, idxSize);
+                int posBV = AddBV(posOff, posSize, 12);
+                int normBV = AddBV(normOff, normSize, 12);
+                int tanBV = hasTan ? AddBV(tanOff, tanSize, 16) : -1;
+                int uvBV = hasUV ? AddBV(uvOff, uvSize, 8) : -1;
+                int jiBV = AddBV(jiOff, jiSize, 4);
+                int jwBV = AddBV(jwOff, jwSize, 16);
+
+                int idxAcc = AddAcc(idxBV, useU16 ? UNSIGNED_SHORT : UNSIGNED_INT, indexCount, "SCALAR");
+                int posAcc = AddAcc(posBV, FLOAT, vertexCount, "VEC3", posMin, posMax);
+                int normAcc = AddAcc(normBV, FLOAT, vertexCount, "VEC3");
+                int tanAcc = hasTan ? AddAcc(tanBV, FLOAT, vertexCount, "VEC4") : -1;
+                int uvAcc = hasUV ? AddAcc(uvBV, FLOAT, vertexCount, "VEC2") : -1;
+                int jiAcc = AddAcc(jiBV, UNSIGNED_BYTE, vertexCount, "VEC4");
+                int jwAcc = AddAcc(jwBV, FLOAT, vertexCount, "VEC4");
+
+                meshAccIndices[mi] = new int[] { idxAcc, posAcc, normAcc, tanAcc, uvAcc, jiAcc, jwAcc };
+            }
+
+            // --- Inverse bind matrices ---
+            PadTo4(bin);
+            int ibmOff = (int)bin.Position;
+            for (int i = 0; i < jointCount; i++)
+            {
+                // Convert bind pose: negate X row and X column
+                var m = bindPoses[i];
+                for (int col = 0; col < 4; col++)
+                    for (int row = 0; row < 4; row++)
+                    {
+                        float v = m[row, col];
+                        bool negRow = (row == 0), negCol = (col == 0);
+                        if (negRow != negCol) v = -v;
+                        WriteF32(bin, v);
+                    }
+            }
+            int ibmSize = (int)bin.Position - ibmOff;
+            int ibmBV = AddBV(ibmOff, ibmSize);
+            int ibmAcc = AddAcc(ibmBV, FLOAT, jointCount, "MAT4");
+
+            // --- Embedded images ---
+            int[] imageBVs = new int[materials.Length];
+            for (int i = 0; i < materials.Length; i++) imageBVs[i] = -1;
+
+            for (int mi = 0; mi < materials.Length; mi++)
+            {
+                Texture2D albedo = null;
+                if (materials[mi] != null)
+                {
+                    if (materials[mi].HasProperty("_BaseMap")) albedo = materials[mi].GetTexture("_BaseMap") as Texture2D;
+                    else if (materials[mi].HasProperty("_MainTex")) albedo = materials[mi].GetTexture("_MainTex") as Texture2D;
+                }
+                if (albedo != null)
+                {
+                    PadTo4(bin);
+                    int imgOff = (int)bin.Position;
+                    var readable = MakeReadable(albedo);
+                    byte[] png = readable.EncodeToPNG();
+                    bin.Write(png, 0, png.Length);
+                    if (readable != albedo) UnityEngine.Object.DestroyImmediate(readable);
+                    PadTo4(bin);
+                    imageBVs[mi] = AddBV(imgOff, png.Length);
+                }
+            }
+
+            byte[] binData = bin.ToArray();
+
+            // --- Build JSON ---
+            json.Append("{\n");
+            json.Append("  \"asset\": { \"version\": \"2.0\", \"generator\": \"HZExporter\" },\n");
+
+            // Buffers
+            json.Append($"  \"buffers\": [{{ \"byteLength\": {binData.Length} }}],\n");
+
+            // Buffer views
+            json.Append("  \"bufferViews\": [\n");
+            json.Append(string.Join(",\n", bvList));
+            json.Append("\n  ],\n");
+
+            // Accessors
+            json.Append("  \"accessors\": [\n");
+            json.Append(string.Join(",\n", accList));
+            json.Append("\n  ],\n");
+
+            // Images + textures
+            var imageIndices = new List<int>(); // material index -> image index
+            bool hasAnyImage = false;
+            for (int i = 0; i < materials.Length; i++)
+                if (imageBVs[i] >= 0) hasAnyImage = true;
+
+            if (hasAnyImage)
+            {
+                json.Append("  \"images\": [\n");
+                int imgIdx = 0;
+                for (int i = 0; i < materials.Length; i++)
+                {
+                    if (imageBVs[i] >= 0)
+                    {
+                        if (imgIdx > 0) json.Append(",\n");
+                        json.Append($"    {{ \"bufferView\": {imageBVs[i]}, \"mimeType\": \"image/png\" }}");
+                        imageIndices.Add(imgIdx);
+                        imgIdx++;
+                    }
+                    else
+                    {
+                        imageIndices.Add(-1);
+                    }
+                }
+                json.Append("\n  ],\n");
+
+                json.Append("  \"textures\": [\n");
+                for (int i = 0; i < imgIdx; i++)
+                {
+                    if (i > 0) json.Append(",\n");
+                    json.Append($"    {{ \"source\": {i} }}");
+                }
+                json.Append("\n  ],\n");
+            }
+            else
+            {
+                for (int i = 0; i < materials.Length; i++) imageIndices.Add(-1);
+            }
+
+            // Materials
+            json.Append("  \"materials\": [\n");
+            for (int mi = 0; mi < materials.Length; mi++)
+            {
+                if (mi > 0) json.Append(",\n");
+                Color bc = Color.white;
+                if (materials[mi] != null)
+                {
+                    if (materials[mi].HasProperty("_BaseColor")) bc = materials[mi].GetColor("_BaseColor");
+                    else if (materials[mi].HasProperty("_Color")) bc = materials[mi].GetColor("_Color");
+                }
+                json.Append("    { \"pbrMetallicRoughness\": { ");
+                json.Append($"\"baseColorFactor\": [{F(bc.r)}, {F(bc.g)}, {F(bc.b)}, {F(bc.a)}]");
+                if (imageIndices[mi] >= 0)
+                    json.Append($", \"baseColorTexture\": {{ \"index\": {imageIndices[mi]} }}");
+                json.Append(" } }");
+            }
+            json.Append("\n  ],\n");
+
+            // Meshes
+            json.Append("  \"meshes\": [\n");
+            for (int mi = 0; mi < meshCount; mi++)
+            {
+                if (mi > 0) json.Append(",\n");
+                var acc = meshAccIndices[mi];
+                string meshName = smrs[mi].sharedMesh.name ?? $"mesh_{mi}";
+                json.Append($"    {{ \"name\": \"{EscapeJson(meshName)}\", \"primitives\": [{{ ");
+                json.Append($"\"indices\": {acc[0]}, \"attributes\": {{ \"POSITION\": {acc[1]}, \"NORMAL\": {acc[2]}");
+                if (acc[3] >= 0) json.Append($", \"TANGENT\": {acc[3]}");
+                if (acc[4] >= 0) json.Append($", \"TEXCOORD_0\": {acc[4]}");
+                json.Append($", \"JOINTS_0\": {acc[5]}, \"WEIGHTS_0\": {acc[6]}");
+                int matIdx = Math.Min(mi, materials.Length - 1);
+                json.Append($" }}, \"material\": {matIdx} }}] }}");
+            }
+            json.Append("\n  ],\n");
+
+            // Nodes: skeleton bones + mesh nodes
+            // Node 0..jointCount-1 = bones, jointCount..jointCount+meshCount-1 = mesh nodes
+            json.Append("  \"nodes\": [\n");
+            for (int i = 0; i < jointCount; i++)
+            {
+                var bone = bones[i];
+                // Local transform relative to parent (converted)
+                var lp = bone.localPosition;
+                var lr = bone.localRotation;
+                var ls = bone.localScale;
+                float px = -lp.x, py = lp.y, pz = lp.z;
+                float qx = lr.x, qy = -lr.y, qz = -lr.z, qw = lr.w;
+
+                json.Append($"    {{ \"name\": \"{EscapeJson(bone.name)}\"");
+                json.Append($", \"translation\": [{F(px)}, {F(py)}, {F(pz)}]");
+                json.Append($", \"rotation\": [{F(qx)}, {F(qy)}, {F(qz)}, {F(qw)}]");
+                json.Append($", \"scale\": [{F(ls.x)}, {F(ls.y)}, {F(ls.z)}]");
+
+                // Children (other bones that have this as parent)
+                var children = new List<int>();
+                for (int c = 0; c < jointCount; c++)
+                    if (parentIndices[c] == i) children.Add(c);
+                if (children.Count > 0)
+                    json.Append($", \"children\": [{string.Join(", ", children)}]");
+
+                json.Append(" },\n");
+            }
+
+            // Mesh nodes
+            for (int mi = 0; mi < meshCount; mi++)
+            {
+                int nodeIdx = jointCount + mi;
+                json.Append($"    {{ \"mesh\": {mi}, \"skin\": 0 }}");
+                if (mi < meshCount - 1) json.Append(",");
+                json.Append("\n");
+            }
+            json.Append("  ],\n");
+
+            // Skins
+            json.Append("  \"skins\": [{\n");
+            json.Append($"    \"inverseBindMatrices\": {ibmAcc},\n");
+            json.Append("    \"joints\": [");
+            for (int i = 0; i < jointCount; i++)
+            {
+                if (i > 0) json.Append(", ");
+                json.Append(i);
+            }
+            json.Append("]\n  }],\n");
+
+            // Scene
+            var sceneNodes = new List<int>();
+            // Root bones (no parent)
+            for (int i = 0; i < jointCount; i++)
+                if (parentIndices[i] == -1) sceneNodes.Add(i);
+            // Mesh nodes
+            for (int mi = 0; mi < meshCount; mi++)
+                sceneNodes.Add(jointCount + mi);
+
+            json.Append("  \"scene\": 0,\n");
+            json.Append($"  \"scenes\": [{{ \"nodes\": [{string.Join(", ", sceneNodes)}] }}]\n");
+            json.Append("}");
+
+            // --- Write GLB ---
+            WriteGlb(json.ToString(), binData, outputPath);
+
+            int totalVerts = 0;
+            foreach (var s in smrs) totalVerts += s.sharedMesh.vertexCount;
+            Debug.Log($"[HZGlbWriter] Exported skinned → {outputPath} ({meshCount} meshes, {jointCount} joints, {totalVerts} verts)");
+        }
+
+        static void WriteGlb(string jsonStr, byte[] binData, string outputPath)
+        {
+            byte[] jsonBytes = Encoding.UTF8.GetBytes(jsonStr);
+            int jsonPadded = (jsonBytes.Length + 3) & ~3;
+            byte[] jsonChunk = new byte[jsonPadded];
+            Array.Copy(jsonBytes, jsonChunk, jsonBytes.Length);
+            for (int i = jsonBytes.Length; i < jsonPadded; i++) jsonChunk[i] = 0x20;
+
+            int binPadded = (binData.Length + 3) & ~3;
+            byte[] binChunk = new byte[binPadded];
+            Array.Copy(binData, binChunk, binData.Length);
+
+            uint totalLength = 12 + 8 + (uint)jsonChunk.Length + 8 + (uint)binChunk.Length;
+
+            Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
+            using (var fs = new FileStream(outputPath, FileMode.Create))
+            using (var w = new BinaryWriter(fs))
+            {
+                w.Write(GLB_MAGIC);
+                w.Write(GLB_VERSION);
+                w.Write(totalLength);
+                w.Write((uint)jsonChunk.Length);
+                w.Write(CHUNK_JSON);
+                w.Write(jsonChunk);
+                w.Write((uint)binChunk.Length);
+                w.Write(CHUNK_BIN);
+                w.Write(binChunk);
+            }
+        }
+
         static string F(float v) => v.ToString("G9", System.Globalization.CultureInfo.InvariantCulture);
 
         static string EscapeJson(string s) => s.Replace("\\", "\\\\").Replace("\"", "\\\"");
