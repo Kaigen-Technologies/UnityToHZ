@@ -206,6 +206,29 @@ namespace HZExporter
                 sb.AppendLine($"    z {F(info.scale.z)}");
             }
 
+            // WorldTransform (same as local for export; engine recomputes for children)
+            {
+                float px = -info.position.x, py = info.position.y, pz = info.position.z;
+                var q = info.rotation;
+                float qx = q.x, qy = -q.y, qz = -q.z, qw = q.w;
+
+                sb.AppendLine();
+                sb.AppendLine("component WorldTransform");
+                sb.AppendLine("  position");
+                sb.AppendLine($"    x {F(px)}");
+                sb.AppendLine($"    y {F(py)}");
+                sb.AppendLine($"    z {F(pz)}");
+                sb.AppendLine("  rotation");
+                sb.AppendLine($"    x {F(qx)}");
+                sb.AppendLine($"    y {F(qy)}");
+                sb.AppendLine($"    z {F(qz)}");
+                sb.AppendLine($"    w {F(qw)}");
+                sb.AppendLine("  scale");
+                sb.AppendLine($"    x {F(info.scale.x)}");
+                sb.AppendLine($"    y {F(info.scale.y)}");
+                sb.AppendLine($"    z {F(info.scale.z)}");
+            }
+
             // EcsVisibility
             sb.AppendLine();
             sb.AppendLine("component EcsVisibility");

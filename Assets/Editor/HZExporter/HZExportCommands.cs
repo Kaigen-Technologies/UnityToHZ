@@ -24,14 +24,10 @@ public static class HZExportCommands
         var mesh = meshFilter.sharedMesh;
         var mat = meshRenderer.sharedMaterial;
 
-        // Export material
-        string matAssetPath = ExportMaterial(mat, "Cube", false);
-
-        // Export mesh with material reference
-        HZMeshExporter.Export(mesh, matAssetPath, OutputDir + "/meshes/Cube.hza");
+        HZGlbWriter.ExportStaticMesh(mesh, mat, OutputDir + "/meshes/Cube.glb");
 
         Object.DestroyImmediate(go);
-        Debug.Log("[HZ] Cube export done!");
+        Debug.Log("[HZ] Cube GLB export done!");
     }
 
     public static void ExportTexturedCube()
