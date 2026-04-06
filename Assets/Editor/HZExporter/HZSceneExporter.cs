@@ -149,9 +149,7 @@ namespace HZExporter
             sb.AppendLine($"entities {entityPaths.Length}");
             foreach (var path in entityPaths)
             {
-                sb.AppendLine($"  path {path}");
-                sb.AppendLine($"  type_size {entityTypeSize}");
-                sb.AppendLine($"  typehash {entityTypehash}");
+                sb.AppendLine($"  {path} EntityBlobAsset");
                 sb.AppendLine();
             }
 
@@ -267,11 +265,9 @@ namespace HZExporter
             // EcsAnimationRef
             if (hasAnimation)
             {
-                uint animTypeSize = (uint)SIZEOF_ANIMATION_BLOB_ASSET;
-                uint animTypehash = (uint)HZBlobWriter.TypeHash("AnimationBlobAsset", SIZEOF_ANIMATION_BLOB_ASSET);
                 sb.AppendLine();
                 sb.AppendLine("component EcsAnimationRef");
-                sb.AppendLine($"  animation {info.animationAssetPath} {animTypeSize} {animTypehash}");
+                sb.AppendLine($"  animation {info.animationAssetPath} AnimationBlobAsset");
             }
 
             // EcsAABB

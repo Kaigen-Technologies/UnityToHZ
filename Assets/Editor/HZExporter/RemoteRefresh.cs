@@ -14,6 +14,7 @@ using UnityEngine;
 ///   "refresh"  — triggers AssetDatabase.Refresh (compiles scripts)
 ///   "log"      — returns last compilation result
 ///   "ping"     — returns "pong"
+///   "exec:Type.Method" — runs a static method on the main thread
 /// </summary>
 [InitializeOnLoad]
 public static class RemoteRefresh
@@ -25,30 +26,17 @@ public static class RemoteRefresh
     static volatile bool s_refreshRequested;
     static volatile string s_execMethod;
 
-    // Persist compile results across domain reloads via temp file
-    static readonly string s_resultFile = Path.Combine(Path.GetTempPath(), "unity_remote_refresh_result.txt");
+    // In-memory compile result. After domain reload, the static constructor
+    // runs again and resets this to "ok" (meaning compile succeeded).
+    static volatile string s_compileResult = "ok";
 
     static RemoteRefresh()
     {
-        // After domain reload from a successful compile, mark ok if still "compiling"
-        string current = ReadResult();
-        if (current == "compiling")
-            WriteResult("ok");
-
+        // Domain reload happened — if we get here, compilation succeeded.
+        s_compileResult = "ok";
         Start();
         EditorApplication.update += OnUpdate;
         CompilationPipeline.assemblyCompilationFinished += OnCompilationFinished;
-    }
-
-    static string ReadResult()
-    {
-        try { return File.Exists(s_resultFile) ? File.ReadAllText(s_resultFile).Trim() : "ok"; }
-        catch { return "ok"; }
-    }
-
-    static void WriteResult(string result)
-    {
-        try { File.WriteAllText(s_resultFile, result); } catch { }
     }
 
     static void Start()
@@ -88,13 +76,13 @@ public static class RemoteRefresh
                 string response;
                 if (cmd == "refresh")
                 {
-                    WriteResult("compiling");
+                    s_compileResult = "compiling";
                     s_refreshRequested = true;
                     response = "refresh_queued";
                 }
                 else if (cmd == "log")
                 {
-                    response = ReadResult();
+                    response = s_compileResult;
                 }
                 else if (cmd == "ping")
                 {
@@ -102,8 +90,7 @@ public static class RemoteRefresh
                 }
                 else if (cmd.StartsWith("exec:"))
                 {
-                    // exec:ClassName.MethodName — runs a static method on main thread
-                    s_execMethod = rawCmd.Substring(5); // preserve case
+                    s_execMethod = rawCmd.Substring(5);
                     response = $"exec_queued:{s_execMethod}";
                 }
                 else
@@ -132,6 +119,12 @@ public static class RemoteRefresh
             s_refreshRequested = false;
             Debug.Log("[RemoteRefresh] Triggering AssetDatabase.Refresh...");
             AssetDatabase.Refresh(ImportAssetOptions.Default);
+            // If Refresh returns without triggering compilation (no changes),
+            // we're still here (no domain reload), so mark as ok.
+            // If compilation IS triggered, domain reload will destroy this instance
+            // and the new static constructor sets s_compileResult = "ok".
+            if (s_compileResult == "compiling")
+                s_compileResult = "ok";
         }
 
         if (s_execMethod != null)
@@ -168,8 +161,8 @@ public static class RemoteRefresh
 
     static void OnCompilationFinished(string assemblyPath, CompilerMessage[] messages)
     {
-        var sb = new StringBuilder();
         int errors = 0;
+        var sb = new StringBuilder();
         foreach (var msg in messages)
         {
             if (msg.type == CompilerMessageType.Error)
@@ -178,9 +171,8 @@ public static class RemoteRefresh
                 sb.AppendLine(msg.message);
             }
         }
-        // Write errors to file — survives domain reload
         if (errors > 0)
-            WriteResult($"ERRORS({errors}):\n{sb}");
-        // Don't write "ok" here — domain reload will do that
+            s_compileResult = $"ERRORS({errors}):\n{sb}";
+        // "ok" is set by the static constructor after domain reload
     }
 }

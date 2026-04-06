@@ -5,12 +5,12 @@ using UnityEditor;
 using HZExporter;
 
 /// <summary>
-/// CLI-callable export commands. Each public static method can be invoked via:
+/// CLI-callable export commands. Each public static method can be invoked via remote TCP:
 ///   unity_cmd.ps1 -cmd "exec:HZExportCommands.MethodName"
 /// </summary>
 public static class HZExportCommands
 {
-    const string OutputDir = "D:/dev/unity/UnityToHZ/ExportedAssets";
+    static readonly string OutputDir = System.IO.Path.GetFullPath("ExportedAssets");
 
     // Asset-relative prefix (how the engine sees the paths, relative to assets/)
     const string AssetPrefix = "unity";

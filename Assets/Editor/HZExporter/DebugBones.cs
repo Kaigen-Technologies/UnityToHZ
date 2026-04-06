@@ -62,7 +62,7 @@ public static class DebugBones
         Object.DestroyImmediate(instance);
         Object.DestroyImmediate(xbotInstance);
 
-        string outPath = "D:/dev/unity/UnityToHZ/ExportedAssets/debug_bones.txt";
+        string outPath = System.IO.Path.GetFullPath("ExportedAssets/debug_bones.txt");
         System.IO.File.WriteAllText(outPath, _sb.ToString());
         Debug.Log($"[DebugBones] Written to {outPath}");
     }

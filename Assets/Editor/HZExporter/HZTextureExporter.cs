@@ -17,7 +17,34 @@ namespace HZExporter
         const uint TEX_FORMAT_BC3 = 2;
         const uint TEX_FORMAT_BC5 = 3;
 
-        const string PVRTEXTOOL_PATH = "D:/dev/gabrieldechichi/hz-engine-v5/tools/PVRTextTool/PVRTexToolCLI.exe";
+        static readonly string PVRTEXTOOL_PATH = FindPVRTexTool();
+
+        static string FindPVRTexTool()
+        {
+            // Check environment variable first
+            string envPath = System.Environment.GetEnvironmentVariable("PVRTEXTOOL_PATH");
+            if (!string.IsNullOrEmpty(envPath) && File.Exists(envPath)) return envPath;
+
+            // Platform-specific default paths
+            string[] candidates;
+            if (Application.platform == RuntimePlatform.OSXEditor)
+            {
+                candidates = new[] {
+                    Path.GetFullPath("../hz-engine-v5/tools/PVRTextTool/PVRTexToolCLI"),
+                    "/usr/local/bin/PVRTexToolCLI",
+                };
+            }
+            else
+            {
+                candidates = new[] {
+                    "D:/dev/gabrieldechichi/hz-engine-v5/tools/PVRTextTool/PVRTexToolCLI.exe",
+                    Path.GetFullPath("../hz-engine-v5/tools/PVRTextTool/PVRTexToolCLI.exe"),
+                };
+            }
+            foreach (var c in candidates)
+                if (File.Exists(c)) return c;
+            return candidates[0]; // fallback — will fail at runtime with a clear error
+        }
 
         /// <summary>
         /// Export a texture as TextureBlobAsset (.hza) + PNG + compressed KTX.
@@ -133,6 +160,11 @@ namespace HZExporter
 
         static void RunPVRTexTool(string args)
         {
+            if (!File.Exists(PVRTEXTOOL_PATH))
+            {
+                Debug.LogWarning($"[HZTextureExporter] PVRTexTool not found at '{PVRTEXTOOL_PATH}', skipping KTX compression");
+                return;
+            }
             var psi = new System.Diagnostics.ProcessStartInfo
             {
                 FileName = PVRTEXTOOL_PATH,
