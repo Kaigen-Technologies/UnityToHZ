@@ -300,6 +300,7 @@ public static class HZExportCommands
         return id;
     }
 
+    [MenuItem("HZ Engine/Export Active Scene")]
     public static void ExportScene()
     {
         var scene = SceneManager.GetActiveScene();
@@ -316,20 +317,24 @@ public static class HZExportCommands
             foreach (var t in root.GetComponentsInChildren<Transform>(true))
                 goToStableId[t.gameObject.GetInstanceID()] = NextStableId();
 
-        // Collect GameObjects to skip: skeleton bones + SMR children of skinned roots
+        // Collect GameObjects to skip: skeleton bones + SMR children of ANY Animator in the hierarchy
         var skipGOs = new HashSet<int>();
         foreach (var root in roots)
         {
-            var animator = root.GetComponent<Animator>();
-            if (animator == null) continue;
-
-            // Skip all descendants of the skinned root EXCEPT the root itself
-            foreach (var childT in root.GetComponentsInChildren<Transform>(true))
+            foreach (var animator in root.GetComponentsInChildren<Animator>(true))
             {
-                if (childT.gameObject == root) continue;
-                skipGOs.Add(childT.gameObject.GetInstanceID());
+                var animGO = animator.gameObject;
+                foreach (var childT in animGO.GetComponentsInChildren<Transform>(true))
+                {
+                    if (childT.gameObject == animGO) continue;
+                    skipGOs.Add(childT.gameObject.GetInstanceID());
+                }
             }
         }
+
+        // GLB dedup: track exported meshes by source asset key → engine asset path
+        // key = asset path for imported meshes (FBX), or mesh instance ID for built-ins
+        var exportedGlbs = new Dictionary<string, string>();
 
         // Second pass: export each GameObject as an entity
         foreach (var root in roots)
@@ -375,29 +380,37 @@ public static class HZExportCommands
                 // Check for skinned mesh (root of skinned hierarchy)
                 var allSmrs = go.GetComponentsInChildren<SkinnedMeshRenderer>();
                 var validSmrs = new List<SkinnedMeshRenderer>();
-                // Only consider direct SMRs on this GO or its skeleton children
                 foreach (var s in allSmrs)
                     if (s.sharedMesh != null && s.bones != null && s.bones.Length > 0)
                         validSmrs.Add(s);
 
                 if (validSmrs.Count > 0 && go.GetComponent<Animator>() != null)
                 {
-                    // Skinned mesh root — export as .glb
                     SkinnedMeshRenderer primarySmr = validSmrs[0];
                     foreach (var s in validSmrs)
                         if (s.bones.Length > primarySmr.bones.Length)
                             primarySmr = s;
 
-                    string rootName = SanitizeName(go.name);
-                    var smrArray = validSmrs.ToArray();
-                    var mats = new Material[validSmrs.Count];
-                    for (int si = 0; si < validSmrs.Count; si++)
-                        mats[si] = validSmrs[si].sharedMaterial;
+                    // Dedup by source FBX asset path
+                    string meshKey = GetMeshKey(primarySmr.sharedMesh);
 
-                    string glbPath = $"{OutputDir}/glb/{rootName}.glb";
-                    HZGlbWriter.ExportSkinnedMesh(smrArray, mats, primarySmr, glbPath);
+                    if (!exportedGlbs.TryGetValue(meshKey, out string glbAssetPath))
+                    {
+                        string glbName = GetMeshSourceName(primarySmr.sharedMesh);
+                        string glbPath = $"{OutputDir}/glb/{glbName}.glb";
+                        glbAssetPath = $"{AssetPrefix}/{glbName}.glb";
 
-                    info.modelAssetPath = $"{AssetPrefix}/{rootName}.glb";
+                        var smrArray = validSmrs.ToArray();
+                        var mats = new Material[validSmrs.Count];
+                        for (int si = 0; si < validSmrs.Count; si++)
+                            mats[si] = validSmrs[si].sharedMaterial;
+
+                        HZGlbWriter.ExportSkinnedMesh(smrArray, mats, primarySmr, glbPath);
+                        exportedGlbs[meshKey] = glbAssetPath;
+                        Debug.Log($"[HZ] Exported GLB: {glbName}.glb (skinned, from {meshKey})");
+                    }
+
+                    info.modelAssetPath = glbAssetPath;
                     info.bounds = primarySmr.bounds;
                     info.castsShadow = true;
 
@@ -424,21 +437,31 @@ public static class HZExportCommands
                         }
                     }
 
-                    Debug.Log($"[HZ] Entity: {go.name} (skinned glb, {validSmrs.Count} meshes)");
+                    Debug.Log($"[HZ] Entity: {go.name} (skinned, model={info.modelAssetPath})");
                 }
-                // Static mesh — export as .glb
+                // Static mesh — export as .glb, dedup by source mesh
                 else if (go.TryGetComponent<MeshFilter>(out var mf) && mf.sharedMesh != null
                          && go.TryGetComponent<MeshRenderer>(out var mr))
                 {
-                    string safeName = SanitizeName(go.name);
-                    string glbPath = $"{OutputDir}/glb/{safeName}.glb";
-                    HZGlbWriter.ExportStaticMesh(mf.sharedMesh, mr.sharedMaterial, glbPath);
+                    Mesh mesh = mf.sharedMesh;
+                    string meshKey = GetMeshKey(mesh);
 
-                    info.modelAssetPath = $"{AssetPrefix}/{safeName}.glb";
+                    if (!exportedGlbs.TryGetValue(meshKey, out string glbAssetPath))
+                    {
+                        string glbName = GetMeshSourceName(mesh);
+                        string glbPath = $"{OutputDir}/glb/{glbName}.glb";
+                        glbAssetPath = $"{AssetPrefix}/{glbName}.glb";
+
+                        HZGlbWriter.ExportStaticMesh(mesh, mr.sharedMaterial, glbPath);
+                        exportedGlbs[meshKey] = glbAssetPath;
+                        Debug.Log($"[HZ] Exported GLB: {glbName}.glb (static, from {meshKey})");
+                    }
+
+                    info.modelAssetPath = glbAssetPath;
                     info.bounds = mr.bounds;
                     info.castsShadow = mr.shadowCastingMode != UnityEngine.Rendering.ShadowCastingMode.Off;
 
-                    Debug.Log($"[HZ] Entity: {go.name} (static glb)");
+                    Debug.Log($"[HZ] Entity: {go.name} (static, model={info.modelAssetPath})");
                 }
                 // Camera
                 else if (go.TryGetComponent<Camera>(out var cam))
@@ -504,12 +527,37 @@ public static class HZExportCommands
             });
         }
 
-        string scenePath = $"{OutputDir}/scenes/SampleScene.hzt";
-        string sceneDir = $"{OutputDir}/scenes/SampleScene";
-        string sceneDirAssetPath = $"{AssetPrefix}/SampleScene";
+        string sceneName = SanitizeName(scene.name);
+        string scenePath = $"{OutputDir}/scenes/{sceneName}.hzt";
+        string sceneDir = $"{OutputDir}/scenes/{sceneName}";
+        string sceneDirAssetPath = $"{AssetPrefix}/{sceneName}";
 
         HZSceneExporter.Export(entities.ToArray(), scenePath, sceneDir, sceneDirAssetPath);
-        Debug.Log($"[HZ] Scene export done! {entities.Count} entities");
+        Debug.Log($"[HZ] Scene export done! {entities.Count} entities, {exportedGlbs.Count} unique GLBs");
+    }
+
+    /// <summary>
+    /// Get a stable GLB name from the mesh's source asset.
+    /// FBX imports → FBX filename. Built-in/primitives → mesh name.
+    /// </summary>
+    /// <summary>
+    /// Get the dedup key for a mesh. FBX imports use asset path. Built-in meshes
+    /// (from Library/) use asset path + mesh name since multiple primitives share the same asset.
+    /// </summary>
+    static string GetMeshKey(Mesh mesh)
+    {
+        string assetPath = AssetDatabase.GetAssetPath(mesh);
+        if (string.IsNullOrEmpty(assetPath) || assetPath.StartsWith("Library/"))
+            return $"builtin:{mesh.name}";
+        return assetPath;
+    }
+
+    static string GetMeshSourceName(Mesh mesh)
+    {
+        string assetPath = AssetDatabase.GetAssetPath(mesh);
+        if (!string.IsNullOrEmpty(assetPath) && !assetPath.StartsWith("Library/"))
+            return SanitizeName(System.IO.Path.GetFileNameWithoutExtension(assetPath));
+        return SanitizeName(mesh.name);
     }
 
     static string SanitizeName(string name)
