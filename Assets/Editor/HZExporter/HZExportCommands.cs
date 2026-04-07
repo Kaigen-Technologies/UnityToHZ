@@ -333,8 +333,11 @@ public static class HZExportCommands
         }
 
         // GLB dedup: track exported meshes by source asset key → engine asset path
-        // key = asset path for imported meshes (FBX), or mesh instance ID for built-ins
         var exportedGlbs = new Dictionary<string, string>();
+
+        // Deferred skinned mesh exports: collect animations per character before exporting
+        // Key = character name (FBX filename with @... stripped)
+        var deferredSkinned = new Dictionary<string, DeferredSkinnedExport>();
 
         // Second pass: export each GameObject as an entity
         foreach (var root in roots)
@@ -391,53 +394,65 @@ public static class HZExportCommands
                         if (s.bones.Length > primarySmr.bones.Length)
                             primarySmr = s;
 
-                    // Dedup by source FBX asset path
-                    string meshKey = GetMeshKey(primarySmr.sharedMesh);
+                    // Character name = FBX filename with @... stripped
+                    string charName = GetCharacterName(primarySmr.sharedMesh);
+                    string glbAssetPath = $"{AssetPrefix}/{charName}.glb";
 
-                    if (!exportedGlbs.TryGetValue(meshKey, out string glbAssetPath))
+                    // Defer export — collect mesh info on first encounter
+                    if (!deferredSkinned.ContainsKey(charName))
                     {
-                        string glbName = GetMeshSourceName(primarySmr.sharedMesh);
-                        string glbPath = $"{OutputDir}/glb/{glbName}.glb";
-                        glbAssetPath = $"{AssetPrefix}/{glbName}.glb";
-
                         var smrArray = validSmrs.ToArray();
                         var mats = new Material[validSmrs.Count];
                         for (int si = 0; si < validSmrs.Count; si++)
                             mats[si] = validSmrs[si].sharedMaterial;
 
-                        HZGlbWriter.ExportSkinnedMesh(smrArray, mats, primarySmr, glbPath);
-                        exportedGlbs[meshKey] = glbAssetPath;
-                        Debug.Log($"[HZ] Exported GLB: {glbName}.glb (skinned, from {meshKey})");
+                        deferredSkinned[charName] = new DeferredSkinnedExport {
+                            smrs = smrArray,
+                            materials = mats,
+                            primarySmr = primarySmr,
+                            glbPath = $"{OutputDir}/glb/{charName}.glb",
+                            glbAssetPath = glbAssetPath,
+                            animClips = new List<HZGlbWriter.AnimClipInfo>(),
+                        };
                     }
 
                     info.modelAssetPath = glbAssetPath;
                     info.bounds = primarySmr.bounds;
                     info.castsShadow = true;
 
-                    // Animations
+                    // Collect animation clips for this character
                     var animator = go.GetComponent<Animator>();
                     if (animator.runtimeAnimatorController != null)
                     {
-                        var clips = animator.runtimeAnimatorController.animationClips;
-                        if (clips.Length > 0)
-                        {
-                            var boneNameToIndex = new Dictionary<string, int>();
-                            for (int bi = 0; bi < primarySmr.bones.Length; bi++)
-                                if (primarySmr.bones[bi] != null)
-                                    boneNameToIndex[primarySmr.bones[bi].name] = bi;
+                        var deferred = deferredSkinned[charName];
+                        var existingNames = new HashSet<string>();
+                        foreach (var existing in deferred.animClips)
+                            existingNames.Add(existing.name);
 
-                            for (int ci = 0; ci < clips.Length; ci++)
+                        foreach (var clip in animator.runtimeAnimatorController.animationClips)
+                        {
+                            string clipName = SanitizeName(clip.name);
+                            if (!existingNames.Contains(clipName))
                             {
-                                var clip = clips[ci];
-                                string clipName = SanitizeName(clip.name);
-                                string animOutputPath = $"{OutputDir}/animations/{clipName}.hza";
-                                HZAnimationExporter.Export(clip, go, boneNameToIndex, primarySmr.bones.Length, animOutputPath);
+                                deferred.animClips.Add(new HZGlbWriter.AnimClipInfo {
+                                    clip = clip,
+                                    name = clipName,
+                                    skeletonRoot = go,
+                                });
+                                existingNames.Add(clipName);
                             }
-                            info.animationAssetPath = $"{AssetPrefix}/{SanitizeName(clips[0].name)}.hza";
+                        }
+
+                        if (deferred.animClips.Count > 0)
+                        {
+                            // Point to the cooked animation .hza that the engine extracts from the GLB
+                            // Engine cooks unity/SeaGull.glb → cooked/unity/SeaGull/{clipName}.hza
+                            string firstClipName = SanitizeName(animator.runtimeAnimatorController.animationClips[0].name);
+                            info.animationAssetPath = $"{AssetPrefix}/{charName}/{firstClipName}.hza";
                         }
                     }
 
-                    Debug.Log($"[HZ] Entity: {go.name} (skinned, model={info.modelAssetPath})");
+                    Debug.Log($"[HZ] Entity: {go.name} (skinned, model={glbAssetPath})");
                 }
                 // Static mesh — export as .glb, dedup by source mesh
                 else if (go.TryGetComponent<MeshFilter>(out var mf) && mf.sharedMesh != null
@@ -511,6 +526,16 @@ public static class HZExportCommands
             }
         }
 
+        // Export deferred skinned meshes (with collected animations)
+        foreach (var kvp in deferredSkinned)
+        {
+            var d = kvp.Value;
+            var animArray = d.animClips.Count > 0 ? d.animClips.ToArray() : null;
+            HZGlbWriter.ExportSkinnedMesh(d.smrs, d.materials, d.primarySmr, d.glbPath, animArray);
+            int animCount = animArray?.Length ?? 0;
+            Debug.Log($"[HZ] Exported GLB: {kvp.Key}.glb (skinned, {animCount} animations)");
+        }
+
         // Scene settings (synthetic entity, no GameObject)
         {
             Color ambient = RenderSettings.ambientLight.linear;
@@ -536,14 +561,28 @@ public static class HZExportCommands
         Debug.Log($"[HZ] Scene export done! {entities.Count} entities, {exportedGlbs.Count} unique GLBs");
     }
 
+    struct DeferredSkinnedExport
+    {
+        public SkinnedMeshRenderer[] smrs;
+        public Material[] materials;
+        public SkinnedMeshRenderer primarySmr;
+        public string glbPath;
+        public string glbAssetPath;
+        public List<HZGlbWriter.AnimClipInfo> animClips;
+    }
+
     /// <summary>
-    /// Get a stable GLB name from the mesh's source asset.
-    /// FBX imports → FBX filename. Built-in/primitives → mesh name.
+    /// Get character name from mesh FBX path. Strips @... suffix.
+    /// E.g. "Big@Idle.fbx" → "Big", "SeaGull.fbx" → "SeaGull"
     /// </summary>
-    /// <summary>
-    /// Get the dedup key for a mesh. FBX imports use asset path. Built-in meshes
-    /// (from Library/) use asset path + mesh name since multiple primitives share the same asset.
-    /// </summary>
+    static string GetCharacterName(Mesh mesh)
+    {
+        string name = GetMeshSourceName(mesh);
+        int atIdx = name.IndexOf('@');
+        if (atIdx > 0) name = name.Substring(0, atIdx);
+        return name;
+    }
+
     static string GetMeshKey(Mesh mesh)
     {
         string assetPath = AssetDatabase.GetAssetPath(mesh);
@@ -558,6 +597,133 @@ public static class HZExportCommands
         if (!string.IsNullOrEmpty(assetPath) && !assetPath.StartsWith("Library/"))
             return SanitizeName(System.IO.Path.GetFileNameWithoutExtension(assetPath));
         return SanitizeName(mesh.name);
+    }
+
+    /// <summary>
+    /// Export Big@Idle.fbx animation using the old .hza exporter + dump reference values as text.
+    /// </summary>
+    public static void ExportBigIdleReference()
+    {
+        // Load the SeaGull model to get the skeleton (it uses the "Big" rig)
+        string modelFbx = "Assets/StylizedCharacterPack/Models/SeaGull.fbx";
+        string animFbx = "Assets/StylizedCharacterPack/Animations/Big@Idle.fbx";
+
+        var modelPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(modelFbx);
+        var modelInstance = Object.Instantiate(modelPrefab);
+        var smr = modelInstance.GetComponentInChildren<SkinnedMeshRenderer>();
+
+        if (smr == null || smr.bones == null || smr.bones.Length == 0)
+        {
+            Debug.LogError("[HZ] No SMR found on SeaGull");
+            Object.DestroyImmediate(modelInstance);
+            return;
+        }
+
+        // Build bone name → index from the model's skeleton
+        var boneNameToIndex = new Dictionary<string, int>();
+        for (int i = 0; i < smr.bones.Length; i++)
+            if (smr.bones[i] != null)
+                boneNameToIndex[smr.bones[i].name] = i;
+
+        int jointCount = smr.bones.Length;
+        Object.DestroyImmediate(modelInstance);
+
+        // Load animation clip from Big@Idle.fbx
+        var assets = AssetDatabase.LoadAllAssetsAtPath(animFbx);
+        AnimationClip clip = null;
+        foreach (var asset in assets)
+        {
+            if (asset is AnimationClip ac && !ac.name.StartsWith("__preview__"))
+            {
+                clip = ac;
+                break;
+            }
+        }
+
+        if (clip == null)
+        {
+            Debug.LogError($"[HZ] No AnimationClip found in {animFbx}");
+            return;
+        }
+
+        Debug.Log($"[HZ] Big@Idle clip: name={clip.name}, length={clip.length}s, " +
+                  $"skeleton has {jointCount} joints, matched bones={boneNameToIndex.Count}");
+
+        // Export .hza using old exporter
+        var animPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(animFbx);
+        var animInstance = Object.Instantiate(animPrefab);
+
+        var animBoneMap = new Dictionary<string, int>();
+        var animSmr = animInstance.GetComponentInChildren<SkinnedMeshRenderer>();
+        if (animSmr != null)
+        {
+            foreach (var bone in animSmr.bones)
+                if (bone != null && boneNameToIndex.TryGetValue(bone.name, out int idx))
+                    animBoneMap[bone.name] = idx;
+        }
+        // Fallback: match by transform names in hierarchy
+        if (animBoneMap.Count == 0)
+        {
+            foreach (var t in animInstance.GetComponentsInChildren<Transform>())
+                if (boneNameToIndex.TryGetValue(t.name, out int idx) && !animBoneMap.ContainsKey(t.name))
+                    animBoneMap[t.name] = idx;
+        }
+
+        Debug.Log($"[HZ] Matched {animBoneMap.Count}/{jointCount} bones for Big@Idle");
+
+        string hzaPath = $"{OutputDir}/animations/Big_Idle_ref.hza";
+        HZAnimationExporter.Export(clip, animInstance, animBoneMap, jointCount, hzaPath);
+
+        // Also dump reference text with sampled values
+        float sampleRate = 30f;
+        float duration = clip.length;
+        int keyframeCount = Mathf.Max(1, Mathf.RoundToInt(duration * sampleRate) + 1);
+
+        var transformByName = new Dictionary<string, Transform>();
+        foreach (var t in animInstance.GetComponentsInChildren<Transform>())
+            if (!transformByName.ContainsKey(t.name))
+                transformByName[t.name] = t;
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"# Big@Idle reference animation");
+        sb.AppendLine($"# clip={clip.name} duration={duration} keyframes={keyframeCount} joints={jointCount} matched={animBoneMap.Count}");
+        sb.AppendLine($"# format: keyframe time | joint_index bone_name | tx ty tz | rx ry rz rw | sx sy sz");
+        sb.AppendLine();
+
+        // Sample first 3 keyframes and last keyframe
+        int[] sampleFrames = keyframeCount <= 4
+            ? new int[keyframeCount]
+            : new int[] { 0, 1, 2, keyframeCount - 1 };
+        if (keyframeCount <= 4)
+            for (int i = 0; i < keyframeCount; i++) sampleFrames[i] = i;
+
+        foreach (int ki in sampleFrames)
+        {
+            float time = (ki < keyframeCount - 1) ? ki / sampleRate : duration;
+            clip.SampleAnimation(animInstance, time);
+
+            sb.AppendLine($"keyframe {ki} time={time:F6}");
+            foreach (var kvp in animBoneMap)
+            {
+                if (!transformByName.TryGetValue(kvp.Key, out Transform bt)) continue;
+                var pos = bt.localPosition;
+                var rot = bt.localRotation;
+                var scl = bt.localScale;
+
+                // Show both raw Unity values and converted values
+                sb.AppendLine($"  joint[{kvp.Value}] {kvp.Key}");
+                sb.AppendLine($"    unity:     pos=({pos.x:F6}, {pos.y:F6}, {pos.z:F6}) rot=({rot.x:F6}, {rot.y:F6}, {rot.z:F6}, {rot.w:F6}) scl=({scl.x:F6}, {scl.y:F6}, {scl.z:F6})");
+                sb.AppendLine($"    converted: pos=({-pos.x:F6}, {pos.y:F6}, {pos.z:F6}) rot=({rot.x:F6}, {-rot.y:F6}, {-rot.z:F6}, {rot.w:F6}) scl=({scl.x:F6}, {scl.y:F6}, {scl.z:F6})");
+            }
+            sb.AppendLine();
+        }
+
+        string refPath = $"{OutputDir}/animations/Big_Idle_ref.txt";
+        System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(refPath));
+        System.IO.File.WriteAllText(refPath, sb.ToString());
+        Debug.Log($"[HZ] Reference dump → {refPath}");
+
+        Object.DestroyImmediate(animInstance);
     }
 
     static string SanitizeName(string name)

@@ -114,7 +114,7 @@ namespace HZExporter
                 for (int i = 0; i < vertexCount; i++)
                 {
                     float u = (i < uvs.Length) ? uvs[i].x : 0;
-                    float v = (i < uvs.Length) ? uvs[i].y : 0;
+                    float v = (i < uvs.Length) ? 1.0f - uvs[i].y : 0;
                     WriteF32(bin, u); WriteF32(bin, v);
                 }
             }
@@ -330,9 +330,17 @@ namespace HZExporter
             Debug.Log($"[HZGlbWriter] Exported → {outputPath} ({totalLength} bytes, {vertexCount} verts, {indexCount} indices)");
         }
 
-        /// <summary>Export multi-mesh skinned model as .glb with skeleton</summary>
+        /// <summary>Animation clip info for GLB export</summary>
+        public struct AnimClipInfo
+        {
+            public AnimationClip clip;
+            public string name;
+            public GameObject skeletonRoot;
+        }
+
+        /// <summary>Export multi-mesh skinned model as .glb with skeleton and optional animations</summary>
         public static void ExportSkinnedMesh(SkinnedMeshRenderer[] smrs, Material[] materials,
-            SkinnedMeshRenderer primarySmr, string outputPath)
+            SkinnedMeshRenderer primarySmr, string outputPath, AnimClipInfo[] animClips = null)
         {
             var bones = primarySmr.bones;
             int jointCount = bones.Length;
@@ -372,7 +380,10 @@ namespace HZExporter
                 int idx = accList.Count;
                 string s = $"    {{ \"bufferView\": {bv}, \"componentType\": {compType}, \"count\": {count}, \"type\": \"{type}\"";
                 if (min != null && max != null)
-                    s += $", \"min\": [{F(min[0])}, {F(min[1])}, {F(min[2])}], \"max\": [{F(max[0])}, {F(max[1])}, {F(max[2])}]";
+                {
+                    s += ", \"min\": [" + string.Join(", ", Array.ConvertAll(min, v => F(v))) + "]";
+                    s += ", \"max\": [" + string.Join(", ", Array.ConvertAll(max, v => F(v))) + "]";
+                }
                 s += " }";
                 accList.Add(s);
                 return idx;
@@ -454,7 +465,7 @@ namespace HZExporter
                     for (int i = 0; i < vertexCount; i++)
                     {
                         WriteF32(bin, (i < uvs.Length) ? uvs[i].x : 0);
-                        WriteF32(bin, (i < uvs.Length) ? uvs[i].y : 0);
+                        WriteF32(bin, (i < uvs.Length) ? 1.0f - uvs[i].y : 0);
                     }
                 int uvSize = (int)bin.Position - uvOff;
 
@@ -520,6 +531,149 @@ namespace HZExporter
             int ibmSize = (int)bin.Position - ibmOff;
             int ibmBV = AddBV(ibmOff, ibmSize);
             int ibmAcc = AddAcc(ibmBV, FLOAT, jointCount, "MAT4");
+
+            // --- Force T-pose and save rest pose before animation baking ---
+            // Disable all Animators to reset skeleton to import pose
+            var animators = primarySmr.GetComponentsInParent<Animator>(true);
+            foreach (var a in animators) a.enabled = false;
+            // Also check the root's animators
+            if (primarySmr.rootBone != null)
+            {
+                foreach (var a in primarySmr.rootBone.root.GetComponentsInChildren<Animator>(true))
+                    a.enabled = false;
+            }
+            // Force Unity to update transforms with Animator disabled (T-pose)
+            primarySmr.transform.root.gameObject.SetActive(false);
+            primarySmr.transform.root.gameObject.SetActive(true);
+
+            var restPositions = new Vector3[jointCount];
+            var restRotations = new Quaternion[jointCount];
+            var restScales = new Vector3[jointCount];
+            for (int i = 0; i < jointCount; i++)
+            {
+                restPositions[i] = bones[i].localPosition;
+                restRotations[i] = bones[i].localRotation;
+                restScales[i] = bones[i].localScale;
+            }
+            // Re-enable animators (needed for SampleAnimation during baking)
+            foreach (var a in animators) a.enabled = true;
+            if (primarySmr.rootBone != null)
+            {
+                foreach (var a in primarySmr.rootBone.root.GetComponentsInChildren<Animator>(true))
+                    a.enabled = true;
+            }
+
+            // --- Bake animations ---
+            const float SAMPLE_RATE = 30f;
+            // Each anim: { name, timestampAcc, channelData[] }
+            // channelData: { nodeIdx, translationAcc, rotationAcc, scaleAcc }
+            var animDatas = new List<(string name, int timestampAcc, List<(int node, int tAcc, int rAcc, int sAcc)> channels)>();
+
+            if (animClips != null && animClips.Length > 0)
+            {
+                foreach (var animInfo in animClips)
+                {
+                    var clip = animInfo.clip;
+                    var animRoot = animInfo.skeletonRoot;
+                    float duration = clip.length;
+                    int keyframeCount = Mathf.Max(1, Mathf.RoundToInt(duration * SAMPLE_RATE) + 1);
+
+                    // Use bones[] directly — they ARE the scene transforms.
+                    // SampleAnimation poses them, so we read local TRS from each bone[i].
+                    // This avoids the duplicate-name problem (e.g. two "leftCalf" bones).
+                    var animBones = new List<(Transform t, int jointIndex)>();
+                    for (int bi = 0; bi < bones.Length; bi++)
+                        if (bones[bi] != null)
+                            animBones.Add((bones[bi], bi));
+
+                    if (animBones.Count == 0)
+                    {
+                        Debug.LogWarning($"[HZGlbWriter] No bones for animation '{clip.name}', skipping");
+                        continue;
+                    }
+
+                    // Write timestamps
+                    PadTo4(bin);
+                    int tsOff = (int)bin.Position;
+                    for (int ki = 0; ki < keyframeCount; ki++)
+                    {
+                        float time = (ki < keyframeCount - 1) ? ki / SAMPLE_RATE : duration;
+                        WriteF32(bin, time);
+                    }
+                    int tsBV = AddBV(tsOff, keyframeCount * 4);
+                    int tsAcc = AddAcc(tsBV, FLOAT, keyframeCount, "SCALAR",
+                        new float[] { 0 }, new float[] { duration });
+
+                    // Sample and write per-bone TRS data
+                    // First, sample all keyframes
+                    var sampledT = new Vector3[keyframeCount][];
+                    var sampledR = new Quaternion[keyframeCount][];
+                    var sampledS = new Vector3[keyframeCount][];
+
+                    for (int ki = 0; ki < keyframeCount; ki++)
+                    {
+                        float time = (ki < keyframeCount - 1) ? ki / SAMPLE_RATE : duration;
+                        clip.SampleAnimation(animRoot, time);
+
+                        sampledT[ki] = new Vector3[animBones.Count];
+                        sampledR[ki] = new Quaternion[animBones.Count];
+                        sampledS[ki] = new Vector3[animBones.Count];
+
+                        for (int bi = 0; bi < animBones.Count; bi++)
+                        {
+                            var bt = animBones[bi].t;
+                            sampledT[ki][bi] = bt.localPosition;
+                            sampledR[ki][bi] = bt.localRotation;
+                            sampledS[ki][bi] = bt.localScale;
+                        }
+                    }
+
+                    // Write per-bone accessors
+                    var channels = new List<(int node, int tAcc, int rAcc, int sAcc)>();
+                    for (int bi = 0; bi < animBones.Count; bi++)
+                    {
+                        int nodeIdx = animBones[bi].jointIndex; // glTF node index = bone index
+
+                        // Translation (vec3)
+                        PadTo4(bin);
+                        int tOff = (int)bin.Position;
+                        for (int ki = 0; ki < keyframeCount; ki++)
+                        {
+                            var p = sampledT[ki][bi];
+                            WriteF32(bin, -p.x); WriteF32(bin, p.y); WriteF32(bin, p.z);
+                        }
+                        int tBV = AddBV(tOff, keyframeCount * 12);
+                        int tAcc2 = AddAcc(tBV, FLOAT, keyframeCount, "VEC3");
+
+                        // Rotation (vec4 quaternion)
+                        PadTo4(bin);
+                        int rOff = (int)bin.Position;
+                        for (int ki = 0; ki < keyframeCount; ki++)
+                        {
+                            var q = sampledR[ki][bi];
+                            WriteF32(bin, q.x); WriteF32(bin, -q.y); WriteF32(bin, -q.z); WriteF32(bin, q.w);
+                        }
+                        int rBV = AddBV(rOff, keyframeCount * 16);
+                        int rAcc2 = AddAcc(rBV, FLOAT, keyframeCount, "VEC4");
+
+                        // Scale (vec3)
+                        PadTo4(bin);
+                        int sOff = (int)bin.Position;
+                        for (int ki = 0; ki < keyframeCount; ki++)
+                        {
+                            var s = sampledS[ki][bi];
+                            WriteF32(bin, s.x); WriteF32(bin, s.y); WriteF32(bin, s.z);
+                        }
+                        int sBV = AddBV(sOff, keyframeCount * 12);
+                        int sAcc2 = AddAcc(sBV, FLOAT, keyframeCount, "VEC3");
+
+                        channels.Add((nodeIdx, tAcc2, rAcc2, sAcc2));
+                    }
+
+                    animDatas.Add((animInfo.name, tsAcc, channels));
+                    Debug.Log($"[HZGlbWriter] Baked animation '{animInfo.name}': {keyframeCount} keyframes, {animBones.Count} bones");
+                }
+            }
 
             // --- Embedded images ---
             int[] imageBVs = new int[materials.Length];
@@ -646,10 +800,10 @@ namespace HZExporter
             for (int i = 0; i < jointCount; i++)
             {
                 var bone = bones[i];
-                // Local transform relative to parent (converted)
-                var lp = bone.localPosition;
-                var lr = bone.localRotation;
-                var ls = bone.localScale;
+                // Use saved rest pose (not live transforms which may be corrupted by animation sampling)
+                var lp = restPositions[i];
+                var lr = restRotations[i];
+                var ls = restScales[i];
                 float px = -lp.x, py = lp.y, pz = lp.z;
                 float qx = lr.x, qy = -lr.y, qz = -lr.z, qw = lr.w;
 
@@ -688,6 +842,45 @@ namespace HZExporter
                 json.Append(i);
             }
             json.Append("]\n  }],\n");
+
+            // Animations
+            if (animDatas.Count > 0)
+            {
+                json.Append("  \"animations\": [\n");
+                for (int ai = 0; ai < animDatas.Count; ai++)
+                {
+                    var (animName, tsAcc2, channels2) = animDatas[ai];
+                    if (ai > 0) json.Append(",\n");
+                    json.Append($"    {{ \"name\": \"{EscapeJson(animName)}\",\n");
+
+                    // Samplers: 3 per bone (T, R, S)
+                    json.Append("      \"samplers\": [\n");
+                    for (int ci = 0; ci < channels2.Count; ci++)
+                    {
+                        var (node, tA, rA, sA) = channels2[ci];
+                        if (ci > 0) json.Append(",\n");
+                        json.Append($"        {{ \"input\": {tsAcc2}, \"output\": {tA}, \"interpolation\": \"LINEAR\" }},\n");
+                        json.Append($"        {{ \"input\": {tsAcc2}, \"output\": {rA}, \"interpolation\": \"LINEAR\" }},\n");
+                        json.Append($"        {{ \"input\": {tsAcc2}, \"output\": {sA}, \"interpolation\": \"LINEAR\" }}");
+                    }
+                    json.Append("\n      ],\n");
+
+                    // Channels: 3 per bone (translation, rotation, scale)
+                    json.Append("      \"channels\": [\n");
+                    for (int ci = 0; ci < channels2.Count; ci++)
+                    {
+                        var (node, tA, rA, sA) = channels2[ci];
+                        int samplerBase = ci * 3;
+                        if (ci > 0) json.Append(",\n");
+                        json.Append($"        {{ \"sampler\": {samplerBase}, \"target\": {{ \"node\": {node}, \"path\": \"translation\" }} }},\n");
+                        json.Append($"        {{ \"sampler\": {samplerBase + 1}, \"target\": {{ \"node\": {node}, \"path\": \"rotation\" }} }},\n");
+                        json.Append($"        {{ \"sampler\": {samplerBase + 2}, \"target\": {{ \"node\": {node}, \"path\": \"scale\" }} }}");
+                    }
+                    json.Append("\n      ]\n");
+                    json.Append("    }");
+                }
+                json.Append("\n  ],\n");
+            }
 
             // Scene
             var sceneNodes = new List<int>();
