@@ -120,32 +120,31 @@ namespace HZExporter
             }
             int uvSize = (int)bin.Position - uvOffset;
 
-            // --- Embedded texture ---
-            int imageOffset = -1;
-            int imageSize = 0;
-            byte[] pngData = null;
-            Texture2D albedoTex = null;
+            // --- Embedded textures ---
+            // Each entry: (offset, size) in the bin stream
+            var imageEntries = new List<(int off, int size, string name)>();
 
-            if (material != null)
+            void EmbedTex(Material m, string p1, string p2, string name, bool isNormal = false)
             {
-                if (material.HasProperty("_BaseMap"))
-                    albedoTex = material.GetTexture("_BaseMap") as Texture2D;
-                else if (material.HasProperty("_MainTex"))
-                    albedoTex = material.GetTexture("_MainTex") as Texture2D;
+                if (m == null) return;
+                Texture2D tex = null;
+                if (m.HasProperty(p1)) tex = m.GetTexture(p1) as Texture2D;
+                if (tex == null && p2 != null && m.HasProperty(p2)) tex = m.GetTexture(p2) as Texture2D;
+                if (tex == null) return;
+                PadTo4(bin);
+                int off = (int)bin.Position;
+                var readable = MakeReadable(tex, isNormal);
+                byte[] png = readable.EncodeToPNG();
+                bin.Write(png, 0, png.Length);
+                if (readable != tex) UnityEngine.Object.DestroyImmediate(readable);
+                PadTo4(bin);
+                imageEntries.Add((off, png.Length, name));
             }
 
-            if (albedoTex != null)
-            {
-                PadTo4(bin);
-                imageOffset = (int)bin.Position;
-                var readable = MakeReadable(albedoTex);
-                pngData = readable.EncodeToPNG();
-                bin.Write(pngData, 0, pngData.Length);
-                imageSize = pngData.Length;
-                if (readable != albedoTex)
-                    UnityEngine.Object.DestroyImmediate(readable);
-                PadTo4(bin);
-            }
+            EmbedTex(material, "_BaseMap", "_MainTex", "albedo");
+            EmbedTex(material, "_BumpMap", null, "normal", true);
+            EmbedTex(material, "_MetallicGlossMap", null, "metallic_roughness");
+            EmbedTex(material, "_OcclusionMap", null, "occlusion");
 
             byte[] binData = bin.ToArray();
 
@@ -180,12 +179,12 @@ namespace HZExporter
                 uvBV = bvIdx++;
             }
 
-            // BV5: image (optional)
-            int imageBV = -1;
-            if (imageOffset >= 0)
+            // Image buffer views
+            int[] imageBVs = new int[imageEntries.Count];
+            for (int ii = 0; ii < imageEntries.Count; ii++)
             {
-                bufferViews.Add(new { buffer = 0, byteOffset = imageOffset, byteLength = imageSize });
-                imageBV = bvIdx++;
+                bufferViews.Add(new { buffer = 0, byteOffset = imageEntries[ii].off, byteLength = imageEntries[ii].size });
+                imageBVs[ii] = bvIdx++;
             }
 
             int accIdx = 0;
@@ -251,28 +250,60 @@ namespace HZExporter
             }
             json.Append("  ],\n");
 
-            // Images + textures (optional)
-            if (imageBV >= 0)
+            // Images + textures
+            if (imageEntries.Count > 0)
             {
-                json.Append($"  \"images\": [{{ \"bufferView\": {imageBV}, \"mimeType\": \"image/png\" }}],\n");
-                json.Append("  \"textures\": [{ \"source\": 0 }],\n");
+                json.Append("  \"images\": [\n");
+                for (int ii = 0; ii < imageEntries.Count; ii++)
+                {
+                    if (ii > 0) json.Append(",\n");
+                    json.Append($"    {{ \"bufferView\": {imageBVs[ii]}, \"mimeType\": \"image/png\", \"name\": \"{imageEntries[ii].name}\" }}");
+                }
+                json.Append("\n  ],\n");
+                json.Append("  \"textures\": [\n");
+                for (int ii = 0; ii < imageEntries.Count; ii++)
+                {
+                    if (ii > 0) json.Append(",\n");
+                    json.Append($"    {{ \"source\": {ii} }}");
+                }
+                json.Append("\n  ],\n");
             }
 
-            // Materials
-            json.Append("  \"materials\": [{\n");
-            json.Append("    \"pbrMetallicRoughness\": {\n");
+            // Materials — find texture indices by name
+            int albedoTexIdx = -1, normalTexIdx = -1, mrTexIdx = -1, occTexIdx = -1;
+            for (int ii = 0; ii < imageEntries.Count; ii++)
+            {
+                if (imageEntries[ii].name == "albedo") albedoTexIdx = ii;
+                else if (imageEntries[ii].name == "normal") normalTexIdx = ii;
+                else if (imageEntries[ii].name == "metallic_roughness") mrTexIdx = ii;
+                else if (imageEntries[ii].name == "occlusion") occTexIdx = ii;
+            }
+
             Color baseColor = Color.white;
+            float smoothness = 0.5f, metallic = 0f;
+            Color emissionColor = Color.black;
             if (material != null)
             {
                 if (material.HasProperty("_BaseColor")) baseColor = material.GetColor("_BaseColor");
                 else if (material.HasProperty("_Color")) baseColor = material.GetColor("_Color");
+                if (material.HasProperty("_Smoothness")) smoothness = material.GetFloat("_Smoothness");
+                if (material.HasProperty("_Metallic")) metallic = material.GetFloat("_Metallic");
+                if (material.HasProperty("_EmissionColor")) emissionColor = material.GetColor("_EmissionColor");
             }
+
+            json.Append("  \"materials\": [{\n");
+            json.Append("    \"pbrMetallicRoughness\": {\n");
             json.Append($"      \"baseColorFactor\": [{F(baseColor.r)}, {F(baseColor.g)}, {F(baseColor.b)}, {F(baseColor.a)}]");
-            if (imageBV >= 0)
-            {
-                json.Append(",\n      \"baseColorTexture\": { \"index\": 0 }");
-            }
-            json.Append("\n    }\n  }],\n");
+            if (albedoTexIdx >= 0) json.Append($",\n      \"baseColorTexture\": {{ \"index\": {albedoTexIdx} }}");
+            if (mrTexIdx >= 0) json.Append($",\n      \"metallicRoughnessTexture\": {{ \"index\": {mrTexIdx} }}");
+            json.Append($",\n      \"metallicFactor\": {F(metallic)}");
+            json.Append($",\n      \"roughnessFactor\": {F(1f - smoothness)}");
+            json.Append("\n    }");
+            if (normalTexIdx >= 0) json.Append($",\n    \"normalTexture\": {{ \"index\": {normalTexIdx} }}");
+            if (occTexIdx >= 0) json.Append($",\n    \"occlusionTexture\": {{ \"index\": {occTexIdx} }}");
+            if (emissionColor.r > 0 || emissionColor.g > 0 || emissionColor.b > 0)
+                json.Append($",\n    \"emissiveFactor\": [{F(emissionColor.r)}, {F(emissionColor.g)}, {F(emissionColor.b)}]");
+            json.Append("\n  }],\n");
 
             // Meshes
             json.Append("  \"meshes\": [{\n");
@@ -675,29 +706,32 @@ namespace HZExporter
                 }
             }
 
-            // --- Embedded images ---
-            int[] imageBVs = new int[materials.Length];
-            for (int i = 0; i < materials.Length; i++) imageBVs[i] = -1;
-
+            // --- Embedded images (all texture types per material) ---
+            // For each material, embed albedo, normal, metallic_roughness, occlusion
+            var skinnedImageEntries = new List<(int bv, int matIdx, string name)>();
             for (int mi = 0; mi < materials.Length; mi++)
             {
-                Texture2D albedo = null;
-                if (materials[mi] != null)
+                var mat = materials[mi];
+                if (mat == null) continue;
+                void EmbedSkinnedTex(string p1, string p2, string texName, bool isNormal = false)
                 {
-                    if (materials[mi].HasProperty("_BaseMap")) albedo = materials[mi].GetTexture("_BaseMap") as Texture2D;
-                    else if (materials[mi].HasProperty("_MainTex")) albedo = materials[mi].GetTexture("_MainTex") as Texture2D;
-                }
-                if (albedo != null)
-                {
+                    Texture2D tex = null;
+                    if (mat.HasProperty(p1)) tex = mat.GetTexture(p1) as Texture2D;
+                    if (tex == null && p2 != null && mat.HasProperty(p2)) tex = mat.GetTexture(p2) as Texture2D;
+                    if (tex == null) return;
                     PadTo4(bin);
-                    int imgOff = (int)bin.Position;
-                    var readable = MakeReadable(albedo);
+                    int off = (int)bin.Position;
+                    var readable = MakeReadable(tex, isNormal);
                     byte[] png = readable.EncodeToPNG();
                     bin.Write(png, 0, png.Length);
-                    if (readable != albedo) UnityEngine.Object.DestroyImmediate(readable);
+                    if (readable != tex) UnityEngine.Object.DestroyImmediate(readable);
                     PadTo4(bin);
-                    imageBVs[mi] = AddBV(imgOff, png.Length);
+                    skinnedImageEntries.Add((AddBV(off, png.Length), mi, texName));
                 }
+                EmbedSkinnedTex("_BaseMap", "_MainTex", "albedo");
+                EmbedSkinnedTex("_BumpMap", null, "normal", true);
+                EmbedSkinnedTex("_MetallicGlossMap", null, "metallic_roughness");
+                EmbedSkinnedTex("_OcclusionMap", null, "occlusion");
             }
 
             byte[] binData = bin.ToArray();
@@ -719,61 +753,68 @@ namespace HZExporter
             json.Append(string.Join(",\n", accList));
             json.Append("\n  ],\n");
 
-            // Images + textures
-            var imageIndices = new List<int>(); // material index -> image index
-            bool hasAnyImage = false;
-            for (int i = 0; i < materials.Length; i++)
-                if (imageBVs[i] >= 0) hasAnyImage = true;
-
-            if (hasAnyImage)
+            // Images + textures + materials
+            if (skinnedImageEntries.Count > 0)
             {
                 json.Append("  \"images\": [\n");
-                int imgIdx = 0;
-                for (int i = 0; i < materials.Length; i++)
+                for (int i = 0; i < skinnedImageEntries.Count; i++)
                 {
-                    if (imageBVs[i] >= 0)
-                    {
-                        if (imgIdx > 0) json.Append(",\n");
-                        json.Append($"    {{ \"bufferView\": {imageBVs[i]}, \"mimeType\": \"image/png\" }}");
-                        imageIndices.Add(imgIdx);
-                        imgIdx++;
-                    }
-                    else
-                    {
-                        imageIndices.Add(-1);
-                    }
+                    if (i > 0) json.Append(",\n");
+                    json.Append($"    {{ \"bufferView\": {skinnedImageEntries[i].bv}, \"mimeType\": \"image/png\", \"name\": \"{skinnedImageEntries[i].name}\" }}");
                 }
                 json.Append("\n  ],\n");
 
                 json.Append("  \"textures\": [\n");
-                for (int i = 0; i < imgIdx; i++)
+                for (int i = 0; i < skinnedImageEntries.Count; i++)
                 {
                     if (i > 0) json.Append(",\n");
                     json.Append($"    {{ \"source\": {i} }}");
                 }
                 json.Append("\n  ],\n");
             }
-            else
+
+            // Build per-material texture index lookup: [matIdx] → {albedo, normal, mr, occ}
+            var matTexMap = new Dictionary<int, int[]>();
+            for (int i = 0; i < skinnedImageEntries.Count; i++)
             {
-                for (int i = 0; i < materials.Length; i++) imageIndices.Add(-1);
+                int mi2 = skinnedImageEntries[i].matIdx;
+                if (!matTexMap.ContainsKey(mi2)) matTexMap[mi2] = new int[] { -1, -1, -1, -1 };
+                string n = skinnedImageEntries[i].name;
+                if (n == "albedo") matTexMap[mi2][0] = i;
+                else if (n == "normal") matTexMap[mi2][1] = i;
+                else if (n == "metallic_roughness") matTexMap[mi2][2] = i;
+                else if (n == "occlusion") matTexMap[mi2][3] = i;
             }
 
-            // Materials
             json.Append("  \"materials\": [\n");
-            for (int mi = 0; mi < materials.Length; mi++)
+            for (int mi2 = 0; mi2 < materials.Length; mi2++)
             {
-                if (mi > 0) json.Append(",\n");
+                if (mi2 > 0) json.Append(",\n");
                 Color bc = Color.white;
-                if (materials[mi] != null)
+                float sm = 0.5f, met = 0f;
+                Color emC = Color.black;
+                if (materials[mi2] != null)
                 {
-                    if (materials[mi].HasProperty("_BaseColor")) bc = materials[mi].GetColor("_BaseColor");
-                    else if (materials[mi].HasProperty("_Color")) bc = materials[mi].GetColor("_Color");
+                    if (materials[mi2].HasProperty("_BaseColor")) bc = materials[mi2].GetColor("_BaseColor");
+                    else if (materials[mi2].HasProperty("_Color")) bc = materials[mi2].GetColor("_Color");
+                    if (materials[mi2].HasProperty("_Smoothness")) sm = materials[mi2].GetFloat("_Smoothness");
+                    if (materials[mi2].HasProperty("_Metallic")) met = materials[mi2].GetFloat("_Metallic");
+                    if (materials[mi2].HasProperty("_EmissionColor")) emC = materials[mi2].GetColor("_EmissionColor");
                 }
-                json.Append("    { \"pbrMetallicRoughness\": { ");
-                json.Append($"\"baseColorFactor\": [{F(bc.r)}, {F(bc.g)}, {F(bc.b)}, {F(bc.a)}]");
-                if (imageIndices[mi] >= 0)
-                    json.Append($", \"baseColorTexture\": {{ \"index\": {imageIndices[mi]} }}");
-                json.Append(" } }");
+                int[] ti = matTexMap.ContainsKey(mi2) ? matTexMap[mi2] : new int[] { -1, -1, -1, -1 };
+
+                json.Append("    {\n      \"pbrMetallicRoughness\": {\n");
+                json.Append($"        \"baseColorFactor\": [{F(bc.r)}, {F(bc.g)}, {F(bc.b)}, {F(bc.a)}]");
+                if (ti[0] >= 0) json.Append($",\n        \"baseColorTexture\": {{ \"index\": {ti[0]} }}");
+                if (ti[2] >= 0) json.Append($",\n        \"metallicRoughnessTexture\": {{ \"index\": {ti[2]} }}");
+                json.Append($",\n        \"metallicFactor\": {F(met)}");
+                json.Append($",\n        \"roughnessFactor\": {F(1f - sm)}");
+                json.Append("\n      }");
+                if (ti[1] >= 0) json.Append($",\n      \"normalTexture\": {{ \"index\": {ti[1]} }}");
+                if (ti[3] >= 0) json.Append($",\n      \"occlusionTexture\": {{ \"index\": {ti[3]} }}");
+                if (emC.r > 0 || emC.g > 0 || emC.b > 0)
+                    json.Append($",\n      \"emissiveFactor\": [{F(emC.r)}, {F(emC.g)}, {F(emC.b)}]");
+                json.Append("\n    }");
             }
             json.Append("\n  ],\n");
 
@@ -947,8 +988,10 @@ namespace HZExporter
             if (r != 0) for (int i = 0; i < 4 - r; i++) s.WriteByte(0);
         }
 
-        static Texture2D MakeReadable(Texture2D src)
+        static Texture2D MakeReadable(Texture2D src, bool isNormalMap = false)
         {
+            if (isNormalMap)
+                return MakeReadableNormalMap(src);
             if (src.isReadable) return src;
             RenderTexture tmp = RenderTexture.GetTemporary(src.width, src.height, 0, RenderTextureFormat.Default, RenderTextureReadWrite.sRGB);
             Graphics.Blit(src, tmp);
@@ -960,6 +1003,41 @@ namespace HZExporter
             RenderTexture.active = prev;
             RenderTexture.ReleaseTemporary(tmp);
             return readable;
+        }
+
+        /// <summary>
+        /// Unity stores normal maps as DXT5nm (X in alpha, Y in green).
+        /// This unpacks to standard RGB normal map (X, Y, Z) for glTF.
+        /// </summary>
+        static Texture2D MakeReadableNormalMap(Texture2D src)
+        {
+            // Blit in linear space to get raw packed data
+            RenderTexture tmp = RenderTexture.GetTemporary(src.width, src.height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            Graphics.Blit(src, tmp);
+            RenderTexture prev = RenderTexture.active;
+            RenderTexture.active = tmp;
+            Texture2D packed = new Texture2D(src.width, src.height, TextureFormat.RGBA32, false, true);
+            packed.ReadPixels(new Rect(0, 0, src.width, src.height), 0, 0);
+            packed.Apply();
+            RenderTexture.active = prev;
+            RenderTexture.ReleaseTemporary(tmp);
+
+            // Unpack: X = alpha * 2 - 1, Y = green * 2 - 1, Z = sqrt(1 - X² - Y²)
+            Color[] pixels = packed.GetPixels();
+            for (int i = 0; i < pixels.Length; i++)
+            {
+                float nx = pixels[i].a * 2f - 1f;
+                float ny = pixels[i].g * 2f - 1f;
+                float nz = Mathf.Sqrt(Mathf.Max(0f, 1f - nx * nx - ny * ny));
+                // Encode back to [0,1] range for PNG
+                pixels[i] = new Color(nx * 0.5f + 0.5f, ny * 0.5f + 0.5f, nz * 0.5f + 0.5f, 1f);
+            }
+
+            Texture2D unpacked = new Texture2D(src.width, src.height, TextureFormat.RGBA32, false, true);
+            unpacked.SetPixels(pixels);
+            unpacked.Apply();
+            UnityEngine.Object.DestroyImmediate(packed);
+            return unpacked;
         }
     }
 }
