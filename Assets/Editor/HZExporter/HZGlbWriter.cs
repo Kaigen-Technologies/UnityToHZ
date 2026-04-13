@@ -121,10 +121,11 @@ namespace HZExporter
             int uvSize = (int)bin.Position - uvOffset;
 
             // --- Embedded textures ---
-            // Each entry: (offset, size) in the bin stream
-            var imageEntries = new List<(int off, int size, string name)>();
+            // name = Unity asset name (project-unique, enables engine-side dedup across glbs)
+            // role: 0=albedo, 1=normal, 2=orm, 3=emissive
+            var imageEntries = new List<(int off, int size, string name, int role)>();
 
-            void EmbedTex(Material m, string p1, string p2, string name, bool isNormal = false)
+            void EmbedTex(Material m, string p1, string p2, int role, bool isNormal = false)
             {
                 if (m == null) return;
                 Texture2D tex = null;
@@ -138,13 +139,33 @@ namespace HZExporter
                 bin.Write(png, 0, png.Length);
                 if (readable != tex) UnityEngine.Object.DestroyImmediate(readable);
                 PadTo4(bin);
-                imageEntries.Add((off, png.Length, name));
+                string texName = SanitizeName(tex.name ?? $"tex_role{role}");
+                imageEntries.Add((off, png.Length, texName, role));
             }
 
-            EmbedTex(material, "_BaseMap", "_MainTex", "albedo");
-            EmbedTex(material, "_BumpMap", null, "normal", true);
-            EmbedTex(material, "_MetallicGlossMap", null, "metallic_roughness");
-            EmbedTex(material, "_OcclusionMap", null, "occlusion");
+            void EmbedORM(Material m)
+            {
+                if (m == null) return;
+                Texture2D mgTex = null, aoTex = null;
+                if (m.HasProperty("_MetallicGlossMap")) mgTex = m.GetTexture("_MetallicGlossMap") as Texture2D;
+                if (m.HasProperty("_OcclusionMap")) aoTex = m.GetTexture("_OcclusionMap") as Texture2D;
+                if (mgTex == null && aoTex == null) return;
+                var orm = MakeORM(mgTex, aoTex);
+                if (orm == null) return;
+                PadTo4(bin);
+                int off = (int)bin.Position;
+                byte[] png = orm.EncodeToPNG();
+                bin.Write(png, 0, png.Length);
+                UnityEngine.Object.DestroyImmediate(orm);
+                PadTo4(bin);
+                string ormName = SanitizeName((m.name ?? "material") + "_ORM");
+                imageEntries.Add((off, png.Length, ormName, 2));
+            }
+
+            EmbedTex(material, "_BaseMap", "_MainTex", role: 0);
+            EmbedTex(material, "_BumpMap", null, role: 1, isNormal: true);
+            EmbedORM(material);
+            EmbedTex(material, "_EmissionMap", null, role: 3);
 
             byte[] binData = bin.ToArray();
 
@@ -269,14 +290,17 @@ namespace HZExporter
                 json.Append("\n  ],\n");
             }
 
-            // Materials — find texture indices by name
-            int albedoTexIdx = -1, normalTexIdx = -1, mrTexIdx = -1, occTexIdx = -1;
+            // Materials — find texture indices by role
+            int albedoTexIdx = -1, normalTexIdx = -1, ormTexIdx = -1, emissiveTexIdx = -1;
             for (int ii = 0; ii < imageEntries.Count; ii++)
             {
-                if (imageEntries[ii].name == "albedo") albedoTexIdx = ii;
-                else if (imageEntries[ii].name == "normal") normalTexIdx = ii;
-                else if (imageEntries[ii].name == "metallic_roughness") mrTexIdx = ii;
-                else if (imageEntries[ii].name == "occlusion") occTexIdx = ii;
+                switch (imageEntries[ii].role)
+                {
+                    case 0: albedoTexIdx = ii; break;
+                    case 1: normalTexIdx = ii; break;
+                    case 2: ormTexIdx = ii; break;
+                    case 3: emissiveTexIdx = ii; break;
+                }
             }
 
             Color baseColor = Color.white;
@@ -291,18 +315,21 @@ namespace HZExporter
                 if (material.HasProperty("_EmissionColor")) emissionColor = material.GetColor("_EmissionColor");
             }
 
+            string matName = SanitizeName(material?.name ?? "material_0");
             json.Append("  \"materials\": [{\n");
+            json.Append($"    \"name\": \"{EscapeJson(matName)}\",\n");
             json.Append("    \"pbrMetallicRoughness\": {\n");
             json.Append($"      \"baseColorFactor\": [{F(baseColor.r)}, {F(baseColor.g)}, {F(baseColor.b)}, {F(baseColor.a)}]");
             if (albedoTexIdx >= 0) json.Append($",\n      \"baseColorTexture\": {{ \"index\": {albedoTexIdx} }}");
-            if (mrTexIdx >= 0) json.Append($",\n      \"metallicRoughnessTexture\": {{ \"index\": {mrTexIdx} }}");
+            if (ormTexIdx >= 0) json.Append($",\n      \"metallicRoughnessTexture\": {{ \"index\": {ormTexIdx} }}");
             json.Append($",\n      \"metallicFactor\": {F(metallic)}");
             json.Append($",\n      \"roughnessFactor\": {F(1f - smoothness)}");
             json.Append("\n    }");
             if (normalTexIdx >= 0) json.Append($",\n    \"normalTexture\": {{ \"index\": {normalTexIdx} }}");
-            if (occTexIdx >= 0) json.Append($",\n    \"occlusionTexture\": {{ \"index\": {occTexIdx} }}");
+            if (ormTexIdx >= 0) json.Append($",\n    \"occlusionTexture\": {{ \"index\": {ormTexIdx} }}");
             if (emissionColor.r > 0 || emissionColor.g > 0 || emissionColor.b > 0)
                 json.Append($",\n    \"emissiveFactor\": [{F(emissionColor.r)}, {F(emissionColor.g)}, {F(emissionColor.b)}]");
+            if (emissiveTexIdx >= 0) json.Append($",\n    \"emissiveTexture\": {{ \"index\": {emissiveTexIdx} }}");
             json.Append("\n  }],\n");
 
             // Meshes
@@ -707,13 +734,14 @@ namespace HZExporter
             }
 
             // --- Embedded images (all texture types per material) ---
-            // For each material, embed albedo, normal, metallic_roughness, occlusion
-            var skinnedImageEntries = new List<(int bv, int matIdx, string name)>();
+            // name = Unity asset name (project-unique, enables engine-side dedup across glbs)
+            // role: 0=albedo, 1=normal, 2=orm, 3=emissive
+            var skinnedImageEntries = new List<(int bv, int matIdx, string name, int role)>();
             for (int mi = 0; mi < materials.Length; mi++)
             {
                 var mat = materials[mi];
                 if (mat == null) continue;
-                void EmbedSkinnedTex(string p1, string p2, string texName, bool isNormal = false)
+                void EmbedSkinnedTex(string p1, string p2, int role, bool isNormal = false)
                 {
                     Texture2D tex = null;
                     if (mat.HasProperty(p1)) tex = mat.GetTexture(p1) as Texture2D;
@@ -726,12 +754,30 @@ namespace HZExporter
                     bin.Write(png, 0, png.Length);
                     if (readable != tex) UnityEngine.Object.DestroyImmediate(readable);
                     PadTo4(bin);
-                    skinnedImageEntries.Add((AddBV(off, png.Length), mi, texName));
+                    string texName = SanitizeName(tex.name ?? $"tex_role{role}");
+                    skinnedImageEntries.Add((AddBV(off, png.Length), mi, texName, role));
                 }
-                EmbedSkinnedTex("_BaseMap", "_MainTex", "albedo");
-                EmbedSkinnedTex("_BumpMap", null, "normal", true);
-                EmbedSkinnedTex("_MetallicGlossMap", null, "metallic_roughness");
-                EmbedSkinnedTex("_OcclusionMap", null, "occlusion");
+                void EmbedSkinnedORM()
+                {
+                    Texture2D mgTex = null, aoTex = null;
+                    if (mat.HasProperty("_MetallicGlossMap")) mgTex = mat.GetTexture("_MetallicGlossMap") as Texture2D;
+                    if (mat.HasProperty("_OcclusionMap")) aoTex = mat.GetTexture("_OcclusionMap") as Texture2D;
+                    if (mgTex == null && aoTex == null) return;
+                    var orm = MakeORM(mgTex, aoTex);
+                    if (orm == null) return;
+                    PadTo4(bin);
+                    int off = (int)bin.Position;
+                    byte[] png = orm.EncodeToPNG();
+                    bin.Write(png, 0, png.Length);
+                    UnityEngine.Object.DestroyImmediate(orm);
+                    PadTo4(bin);
+                    string ormName = SanitizeName((mat.name ?? "material") + "_ORM");
+                    skinnedImageEntries.Add((AddBV(off, png.Length), mi, ormName, 2));
+                }
+                EmbedSkinnedTex("_BaseMap", "_MainTex", role: 0);
+                EmbedSkinnedTex("_BumpMap", null, role: 1, isNormal: true);
+                EmbedSkinnedORM();
+                EmbedSkinnedTex("_EmissionMap", null, role: 3);
             }
 
             byte[] binData = bin.ToArray();
@@ -773,17 +819,14 @@ namespace HZExporter
                 json.Append("\n  ],\n");
             }
 
-            // Build per-material texture index lookup: [matIdx] → {albedo, normal, mr, occ}
+            // Build per-material texture index lookup: [matIdx] → {albedo, normal, orm, emissive}
             var matTexMap = new Dictionary<int, int[]>();
             for (int i = 0; i < skinnedImageEntries.Count; i++)
             {
                 int mi2 = skinnedImageEntries[i].matIdx;
                 if (!matTexMap.ContainsKey(mi2)) matTexMap[mi2] = new int[] { -1, -1, -1, -1 };
-                string n = skinnedImageEntries[i].name;
-                if (n == "albedo") matTexMap[mi2][0] = i;
-                else if (n == "normal") matTexMap[mi2][1] = i;
-                else if (n == "metallic_roughness") matTexMap[mi2][2] = i;
-                else if (n == "occlusion") matTexMap[mi2][3] = i;
+                int r = skinnedImageEntries[i].role;
+                if (r >= 0 && r < 4) matTexMap[mi2][r] = i;
             }
 
             json.Append("  \"materials\": [\n");
@@ -803,7 +846,8 @@ namespace HZExporter
                 }
                 int[] ti = matTexMap.ContainsKey(mi2) ? matTexMap[mi2] : new int[] { -1, -1, -1, -1 };
 
-                json.Append("    {\n      \"pbrMetallicRoughness\": {\n");
+                string smatName = SanitizeName(materials[mi2]?.name ?? $"material_{mi2}");
+                json.Append($"    {{\n      \"name\": \"{EscapeJson(smatName)}\",\n      \"pbrMetallicRoughness\": {{\n");
                 json.Append($"        \"baseColorFactor\": [{F(bc.r)}, {F(bc.g)}, {F(bc.b)}, {F(bc.a)}]");
                 if (ti[0] >= 0) json.Append($",\n        \"baseColorTexture\": {{ \"index\": {ti[0]} }}");
                 if (ti[2] >= 0) json.Append($",\n        \"metallicRoughnessTexture\": {{ \"index\": {ti[2]} }}");
@@ -811,9 +855,10 @@ namespace HZExporter
                 json.Append($",\n        \"roughnessFactor\": {F(1f - sm)}");
                 json.Append("\n      }");
                 if (ti[1] >= 0) json.Append($",\n      \"normalTexture\": {{ \"index\": {ti[1]} }}");
-                if (ti[3] >= 0) json.Append($",\n      \"occlusionTexture\": {{ \"index\": {ti[3]} }}");
+                if (ti[2] >= 0) json.Append($",\n      \"occlusionTexture\": {{ \"index\": {ti[2]} }}");
                 if (emC.r > 0 || emC.g > 0 || emC.b > 0)
                     json.Append($",\n      \"emissiveFactor\": [{F(emC.r)}, {F(emC.g)}, {F(emC.b)}]");
+                if (ti[3] >= 0) json.Append($",\n      \"emissiveTexture\": {{ \"index\": {ti[3]} }}");
                 json.Append("\n    }");
             }
             json.Append("\n  ],\n");
@@ -978,6 +1023,9 @@ namespace HZExporter
 
         static string EscapeJson(string s) => s.Replace("\\", "\\\\").Replace("\"", "\\\"");
 
+        static string SanitizeName(string name) =>
+            (name ?? "").Replace(" ", "_").Replace("/", "_").Replace("\\", "_");
+
         static void WriteU16(MemoryStream s, ushort v) { s.WriteByte((byte)(v & 0xFF)); s.WriteByte((byte)(v >> 8)); }
         static void WriteU32(MemoryStream s, uint v) { var b = BitConverter.GetBytes(v); s.Write(b, 0, 4); }
         static void WriteF32(MemoryStream s, float v) { var b = BitConverter.GetBytes(v); s.Write(b, 0, 4); }
@@ -1009,6 +1057,80 @@ namespace HZExporter
         /// Unity stores normal maps as DXT5nm (X in alpha, Y in green).
         /// This unpacks to standard RGB normal map (X, Y, Z) for glTF.
         /// </summary>
+        /// <summary>
+        /// Pack ORM texture: R=Occlusion, G=Roughness(1-smoothness), B=Metallic.
+        /// metallicGlossTex: Unity _MetallicGlossMap (R=metallic, A=smoothness). Can be null.
+        /// occlusionTex: Unity _OcclusionMap (R=occlusion). Can be null.
+        /// </summary>
+        static Texture2D MakeORM(Texture2D metallicGlossTex, Texture2D occlusionTex)
+        {
+            // Determine size from whichever texture exists
+            Texture2D sizeSrc = metallicGlossTex != null ? metallicGlossTex : occlusionTex;
+            if (sizeSrc == null) return null;
+            int w = sizeSrc.width, h = sizeSrc.height;
+
+            Color[] mgPixels = null;
+            if (metallicGlossTex != null)
+            {
+                var readable = BlitReadLinear(metallicGlossTex);
+                mgPixels = readable.GetPixels();
+                if (readable != metallicGlossTex) UnityEngine.Object.DestroyImmediate(readable);
+            }
+
+            Color[] aoPixels = null;
+            if (occlusionTex != null)
+            {
+                // Resize occlusion to match if needed
+                var readable = BlitReadLinear(occlusionTex);
+                if (readable.width != w || readable.height != h)
+                {
+                    var resized = new Texture2D(w, h, TextureFormat.RGBA32, false, true);
+                    RenderTexture rt = RenderTexture.GetTemporary(w, h, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+                    Graphics.Blit(readable, rt);
+                    RenderTexture.active = rt;
+                    resized.ReadPixels(new Rect(0, 0, w, h), 0, 0);
+                    resized.Apply();
+                    RenderTexture.active = null;
+                    RenderTexture.ReleaseTemporary(rt);
+                    if (readable != occlusionTex) UnityEngine.Object.DestroyImmediate(readable);
+                    readable = resized;
+                }
+                aoPixels = readable.GetPixels();
+                if (readable != occlusionTex) UnityEngine.Object.DestroyImmediate(readable);
+            }
+
+            int count = w * h;
+            var ormPixels = new Color[count];
+            for (int i = 0; i < count; i++)
+            {
+                float occlusion = aoPixels != null ? aoPixels[i].r : 1f;
+                float metallic = mgPixels != null ? mgPixels[i].r : 0f;
+                float smoothness = mgPixels != null ? mgPixels[i].a : 0.5f;
+                float roughness = 1f - smoothness;
+                ormPixels[i] = new Color(occlusion, roughness, metallic, 1f);
+            }
+
+            var result = new Texture2D(w, h, TextureFormat.RGBA32, false, true);
+            result.SetPixels(ormPixels);
+            result.Apply();
+            return result;
+        }
+
+        static Texture2D BlitReadLinear(Texture2D src)
+        {
+            if (src.isReadable) return src;
+            RenderTexture tmp = RenderTexture.GetTemporary(src.width, src.height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            Graphics.Blit(src, tmp);
+            RenderTexture prev = RenderTexture.active;
+            RenderTexture.active = tmp;
+            Texture2D readable = new Texture2D(src.width, src.height, TextureFormat.RGBA32, false, true);
+            readable.ReadPixels(new Rect(0, 0, src.width, src.height), 0, 0);
+            readable.Apply();
+            RenderTexture.active = prev;
+            RenderTexture.ReleaseTemporary(tmp);
+            return readable;
+        }
+
         static Texture2D MakeReadableNormalMap(Texture2D src)
         {
             // Blit in linear space to get raw packed data

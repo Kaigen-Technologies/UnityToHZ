@@ -46,7 +46,7 @@ namespace HZExporter
         const int SIZE_EcsAABB = 24;        // 2x vec3
         // Camera: 4x mat4(256) + Frustum(96) + quat(16) + vec3(12) + 4x f32(16) = 396
         const int SIZE_Camera = 396;
-        const int SIZE_EcsSceneSettings = 16;    // v3(12) + f32(4)
+        const int SIZE_EcsSceneSettings = 32;    // v3(12) + f32(4) + ColorF32(16)
         const int SIZE_EcsDirectionalLight = 36; // v3 direction(12) + v3 color(12) + f32 intensity(4) + b32 cast_shadow(4) + f32 shadow_distance(4)
         const int SIZE_EcsPointLight = 20;       // v3 color(12) + f32 radius(4) + f32 intensity(4)
         const int SIZE_EcsAnimationRef = 24;     // BlobAssetRef(AnimationBlobAsset)
@@ -102,6 +102,7 @@ namespace HZExporter
             public bool isSceneSettings;
             public Vector3 ambientColor;
             public float ambientIntensity;
+            public Color shadowColor;
         }
 
         /// <summary>
@@ -349,6 +350,11 @@ namespace HZExporter
                 sb.AppendLine($"    y {F(info.ambientColor.y)}");
                 sb.AppendLine($"    z {F(info.ambientColor.z)}");
                 sb.AppendLine($"  ambient_intensity {F(info.ambientIntensity)}");
+                sb.AppendLine("  shadow_color");
+                sb.AppendLine($"    r {F(info.shadowColor.r)}");
+                sb.AppendLine($"    g {F(info.shadowColor.g)}");
+                sb.AppendLine($"    b {F(info.shadowColor.b)}");
+                sb.AppendLine($"    a {F(info.shadowColor.a)}");
             }
 
             Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
@@ -550,6 +556,7 @@ namespace HZExporter
                 ReserveComponent(HASH_EcsSceneSettings, SIZE_EcsSceneSettings, wr => {
                     wr.WriteVec3(info.ambientColor.x, info.ambientColor.y, info.ambientColor.z);
                     wr.WriteF32(info.ambientIntensity);
+                    wr.WriteVec4(info.shadowColor.r, info.shadowColor.g, info.shadowColor.b, info.shadowColor.a);
                 });
             }
 

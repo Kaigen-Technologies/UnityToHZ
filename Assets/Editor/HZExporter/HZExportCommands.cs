@@ -491,7 +491,7 @@ public static class HZExportCommands
                 // Lights
                 else if (go.TryGetComponent<Light>(out var light))
                 {
-                    Color c = light.color.linear;
+                    Color c = LinearToSrgb(light.color.linear);
                     if (light.type == LightType.Directional)
                     {
                         Vector3 fwd = t.forward;
@@ -538,7 +538,8 @@ public static class HZExportCommands
 
         // Scene settings (synthetic entity, no GameObject)
         {
-            Color ambient = RenderSettings.ambientLight.linear;
+            Color ambient = LinearToSrgb(RenderSettings.ambientLight.linear);
+            Color shadowCol = LinearToSrgb(RenderSettings.subtractiveShadowColor.linear);
             entities.Add(new HZSceneExporter.EntityExportInfo {
                 name = "SceneSettings",
                 position = Vector3.zero,
@@ -549,6 +550,7 @@ public static class HZExportCommands
                 isSceneSettings = true,
                 ambientColor = new Vector3(ambient.r, ambient.g, ambient.b),
                 ambientIntensity = RenderSettings.ambientIntensity,
+                shadowColor = shadowCol,
             });
         }
 
@@ -597,6 +599,64 @@ public static class HZExportCommands
         if (!string.IsNullOrEmpty(assetPath) && !assetPath.StartsWith("Library/"))
             return SanitizeName(System.IO.Path.GetFileNameWithoutExtension(assetPath));
         return SanitizeName(mesh.name);
+    }
+
+    public static void DebugMetallicMap()
+    {
+        var mat = AssetDatabase.LoadAssetAtPath<Material>("Assets/StylizedCharacterPack/Materials/Characters/SeaGull_Material.mat");
+        if (mat == null) { Debug.LogError("[HZ] SeaGull material not found"); return; }
+
+        Texture2D tex = null;
+        if (mat.HasProperty("_MetallicGlossMap")) tex = mat.GetTexture("_MetallicGlossMap") as Texture2D;
+        if (tex == null) { Debug.LogError("[HZ] No _MetallicGlossMap"); return; }
+
+        Debug.Log($"[HZ] MetallicGlossMap: {tex.name}, {tex.width}x{tex.height}, format={tex.format}, readable={tex.isReadable}");
+
+        // Blit to read pixels
+        var tmp = RenderTexture.GetTemporary(tex.width, tex.height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+        Graphics.Blit(tex, tmp);
+        RenderTexture.active = tmp;
+        var read = new Texture2D(tex.width, tex.height, TextureFormat.RGBA32, false, true);
+        read.ReadPixels(new UnityEngine.Rect(0, 0, tex.width, tex.height), 0, 0);
+        read.Apply();
+        RenderTexture.active = null;
+        RenderTexture.ReleaseTemporary(tmp);
+
+        // Dump R, G, B, A channels as separate greyscale PNGs
+        int w = tex.width, h = tex.height;
+        var pixels = read.GetPixels();
+        string outDir = System.IO.Path.GetFullPath("ExportedAssets/debug");
+        System.IO.Directory.CreateDirectory(outDir);
+
+        for (int ch = 0; ch < 4; ch++)
+        {
+            string chName = ch == 0 ? "R" : ch == 1 ? "G" : ch == 2 ? "B" : "A";
+            var chTex = new Texture2D(w, h, TextureFormat.RGBA32, false, true);
+            var chPixels = new Color[pixels.Length];
+            for (int i = 0; i < pixels.Length; i++)
+            {
+                float v = ch == 0 ? pixels[i].r : ch == 1 ? pixels[i].g : ch == 2 ? pixels[i].b : pixels[i].a;
+                chPixels[i] = new Color(v, v, v, 1f);
+            }
+            chTex.SetPixels(chPixels);
+            chTex.Apply();
+            byte[] png = chTex.EncodeToPNG();
+            string path = $"{outDir}/metallic_gloss_{chName}.png";
+            System.IO.File.WriteAllBytes(path, png);
+            Debug.Log($"[HZ] Dumped channel {chName} → {path} ({png.Length} bytes)");
+            Object.DestroyImmediate(chTex);
+        }
+
+        // Also log some pixel values
+        int cx = w / 2, cy = h / 2;
+        var pc = read.GetPixel(cx, cy);
+        Debug.Log($"[HZ] center pixel({cx},{cy}): R={pc.r:F4} G={pc.g:F4} B={pc.b:F4} A={pc.a:F4}");
+        var pb = read.GetPixel(100, 100);
+        Debug.Log($"[HZ] pixel(100,100): R={pb.r:F4} G={pb.g:F4} B={pb.b:F4} A={pb.a:F4}");
+        var pw = read.GetPixel(300, 1400);
+        Debug.Log($"[HZ] pixel(300,1400): R={pw.r:F4} G={pw.g:F4} B={pw.b:F4} A={pw.a:F4}");
+
+        Object.DestroyImmediate(read);
     }
 
     /// <summary>
@@ -724,6 +784,25 @@ public static class HZExportCommands
         Debug.Log($"[HZ] Reference dump → {refPath}");
 
         Object.DestroyImmediate(animInstance);
+    }
+
+    /// <summary>
+    /// Apply linear→sRGB so the engine's sRGB→linear gives back Unity's value.
+    /// </summary>
+    static float LinearToSrgb(float x)
+    {
+        if (x <= 0.0031308f) return x * 12.92f;
+        return 1.055f * Mathf.Pow(x, 1f / 2.4f) - 0.055f;
+    }
+
+    static Vector3 LinearToSrgb(Vector3 v)
+    {
+        return new Vector3(LinearToSrgb(v.x), LinearToSrgb(v.y), LinearToSrgb(v.z));
+    }
+
+    static Color LinearToSrgb(Color c)
+    {
+        return new Color(LinearToSrgb(c.r), LinearToSrgb(c.g), LinearToSrgb(c.b), c.a);
     }
 
     static string SanitizeName(string name)
