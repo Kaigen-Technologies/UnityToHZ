@@ -809,4 +809,110 @@ public static class HZExportCommands
     {
         return name.Replace(" ", "_").Replace("/", "_").Replace("\\", "_");
     }
+
+    /// <summary>
+    /// Diagnostic: dump every SkinnedMeshRenderer in the active scene with its bones[] array.
+    /// Flags null entries, identifies probable MagicaCloth2 proxy SMRs, and shows which one
+    /// the current primarySmr picker would choose.
+    /// </summary>
+    public static void DumpSkinnedBones()
+    {
+        string outPath = System.IO.Path.Combine(OutputDir, "dump_bones.txt");
+        var sw = new System.IO.StreamWriter(outPath, false);
+        void WLog(string s) { Debug.Log(s); sw.WriteLine(s); }
+
+        var scene = SceneManager.GetActiveScene();
+        var roots = scene.GetRootGameObjects();
+        WLog($"[DumpBones] Scene: {scene.name}, {roots.Length} roots");
+
+        foreach (var root in roots)
+        {
+            var smrs = root.GetComponentsInChildren<SkinnedMeshRenderer>(true);
+            if (smrs.Length == 0) continue;
+
+            WLog($"[DumpBones] === Root: {root.name} ({smrs.Length} SMRs) ===");
+
+            // Simulate primary picker logic
+            SkinnedMeshRenderer primary = null;
+            foreach (var s in smrs)
+            {
+                if (s.sharedMesh == null || s.bones == null || s.bones.Length == 0) continue;
+                if (primary == null || s.bones.Length > primary.bones.Length) primary = s;
+            }
+
+            foreach (var smr in smrs)
+            {
+                string path = GetTransformPath(smr.transform, root.transform);
+                var bones = smr.bones;
+                var mesh = smr.sharedMesh;
+
+                // Detect MC2: walk up parents looking for a MagicaCloth component (by type name, avoids compile-time ref)
+                string mc2Owner = null;
+                for (var t = smr.transform; t != null; t = t.parent)
+                {
+                    var comps = t.GetComponents<Component>();
+                    foreach (var c in comps)
+                    {
+                        if (c == null) continue;
+                        var tn = c.GetType().FullName;
+                        if (tn != null && tn.Contains("MagicaCloth"))
+                        {
+                            mc2Owner = $"{t.name}:{c.GetType().Name}";
+                            break;
+                        }
+                    }
+                    if (mc2Owner != null) break;
+                }
+
+                int nullCount = 0;
+                if (bones != null)
+                    foreach (var b in bones) if (b == null) nullCount++;
+
+                string primaryMark = (smr == primary) ? "  <-- primarySmr" : "";
+                WLog($"[DumpBones] SMR '{smr.name}' path='{path}' " +
+                     $"mesh='{(mesh != null ? mesh.name : "<null>")}' " +
+                     $"bones={bones?.Length ?? 0} nulls={nullCount} " +
+                     $"rootBone='{(smr.rootBone != null ? smr.rootBone.name : "<null>")}' " +
+                     $"mc2={mc2Owner ?? "no"}{primaryMark}");
+
+                if (nullCount > 0 && bones != null)
+                {
+                    for (int i = 0; i < bones.Length; i++)
+                        if (bones[i] == null)
+                            WLog($"[DumpBones]   null bone at index {i}");
+                }
+
+                if (bones != null && bones.Length > 0)
+                {
+                    // Dump EVERY bone entry so we can see exactly what's there
+                    for (int i = 0; i < bones.Length; i++)
+                    {
+                        var b = bones[i];
+                        string bname = b != null ? b.name : "<NULL>";
+                        string bpath = b != null ? GetTransformPath(b, root.transform) : "<NULL>";
+                        WLog($"[DumpBones]   bone[{i}]={bname} path={bpath}");
+                    }
+                }
+            }
+        }
+
+        WLog("[DumpBones] done");
+        sw.Flush();
+        sw.Close();
+        Debug.Log($"[DumpBones] wrote {outPath}");
+    }
+
+    static string GetTransformPath(Transform t, Transform root)
+    {
+        if (t == root) return t.name;
+        var sb = new System.Text.StringBuilder(t.name);
+        var cur = t.parent;
+        while (cur != null && cur != root)
+        {
+            sb.Insert(0, cur.name + "/");
+            cur = cur.parent;
+        }
+        if (cur == root) sb.Insert(0, root.name + "/");
+        return sb.ToString();
+    }
 }

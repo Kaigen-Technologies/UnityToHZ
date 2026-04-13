@@ -8,15 +8,18 @@ Everything can be done from the command line. **Do not ask the user to click any
 
 ### Remote Unity control (TCP port 7321)
 
-A TCP listener (`RemoteRefresh.cs`, port 7321) runs inside Unity Editor. It accepts commands via raw TCP.
+A TCP listener (`RemoteRefresh.cs`, port 7321) runs inside the Unity Editor main process (asset-import worker processes skip it via `Application.isBatchMode`). It accepts raw TCP commands.
 
-**macOS:**
+**macOS — always prefer the wrapper scripts for `refresh`/`exec:*`.** They handle the required focus dance automatically: on macOS the Editor's main-thread update loop only ticks while Unity is frontmost, so `refresh` and `exec:*` commands need Unity briefly activated (~1s) to drain. The scripts force Unity frontmost, send the command, wait for the tick, and restore whichever app had focus before — so there's no lingering focus steal.
+
 ```bash
-printf 'ping' | nc -w 2 localhost 7321                              # Health check → "pong"
-printf 'refresh' | nc -w 2 localhost 7321                           # Trigger C# compilation
-printf 'log' | nc -w 2 localhost 7321                               # Get compile result ("ok" or errors)
-printf 'exec:ClassName.MethodName' | nc -w 2 localhost 7321         # Run static no-arg method
+./tools/unity_cmd.sh ping                                    # Health check → "pong"
+./tools/unity_cmd.sh log                                     # Compile result ("ok" / "ERRORS(...)" / "compiling")
+./tools/unity_cmd.sh "exec:ClassName.MethodName"             # Run static no-arg method
+./tools/unity_refresh.sh [timeout-seconds]                   # Trigger compile, block until ok/ERRORS/timeout (default 90s)
 ```
+
+Raw `printf '<cmd>' | nc -w 2 localhost 7321` still works for `ping` and `log` (no main-thread tick needed). For `refresh` or `exec:*` via raw `nc`, you must separately force Unity frontmost or the command just sits queued.
 
 **Windows (PowerShell):**
 ```powershell
@@ -27,30 +30,31 @@ $CMD = "powershell -ExecutionPolicy Bypass -File 'tools/unity_cmd.ps1'"
 & $CMD -cmd "exec:ClassName.MethodName"
 ```
 
-There is also `tools/unity_cmd.sh` for macOS which wraps `nc` and activates Unity via `osascript`.
-
 The `exec:` command is the primary way to **run exports, tests, and any Unity logic** from CLI. For parameterized operations, create static wrapper methods with hardcoded args.
 
-### macOS background update issue (IMPORTANT)
+### macOS one-time setup
 
-On macOS, Unity's `EditorApplication.update` loop pauses when Unity is not the focused application. `RemoteRefresh.cs` includes `Application.runInBackground = true` and a `QueuePlayerLoopUpdate` timer to mitigate this, but **it is unreliable after domain reloads**.
+```bash
+defaults write com.unity3d.UnityEditor5.x NSAppSleepDisabled -bool YES   # disable App Nap for Unity
+```
 
-If commands are queued (`exec_queued:...`) but never execute (no output appears, ExportedAssets stays empty):
-1. **Restart Unity**: `osascript -e 'tell application "Unity" to quit' && sleep 3 && open -a "/Applications/Unity/Hub/Editor/6000.3.12f1/Unity.app" --args -projectPath "/Users/gabrieldechichi/dev/unity/UnityToHZ"`
-2. Wait for it to be ready: poll `printf 'ping' | nc -w 2 localhost 7321` every 5s until "pong"
-3. Then retry the command
+### Troubleshooting
 
-If Unity is stuck and `osascript` can't activate it (e.g. fullscreen app blocking), restart is the only reliable option.
+Commands silently succeed (`exec_queued:...`) but method never runs → check there is exactly one listener:
+```bash
+lsof -nP -iTCP:7321 -sTCP:LISTEN                # should list one Unity PID, not several
+```
+If you see multiple Unity processes bound to 7321, an asset-import worker has started its own listener — verify `Application.isBatchMode` check in `RemoteRefresh` is intact and `SO_REUSEADDR` is NOT being set.
 
 ### Available export commands
 
 ```bash
-printf 'exec:HZExportCommands.ExportScene' | nc -w 2 localhost 7321          # Export active scene
-printf 'exec:HZExportCommands.OpenSampleScene' | nc -w 2 localhost 7321      # Switch to SampleScene
-printf 'exec:HZExportCommands.OpenAssetsShowcase' | nc -w 2 localhost 7321   # Switch to AssetsShowcase
-printf 'exec:HZExportCommands.ExportXBot' | nc -w 2 localhost 7321           # Export X Bot mesh
-printf 'exec:HZExportCommands.ExportBodyBlock' | nc -w 2 localhost 7321      # Export Body Block animation
-printf 'exec:HZExportCommands.ExportTestCube' | nc -w 2 localhost 7321       # Export test cube GLB
+./tools/unity_cmd.sh "exec:HZExportCommands.ExportScene"          # Export active scene
+./tools/unity_cmd.sh "exec:HZExportCommands.OpenSampleScene"      # Switch to SampleScene
+./tools/unity_cmd.sh "exec:HZExportCommands.OpenAssetsShowcase"   # Switch to AssetsShowcase
+./tools/unity_cmd.sh "exec:HZExportCommands.ExportXBot"           # Export X Bot mesh
+./tools/unity_cmd.sh "exec:HZExportCommands.ExportBodyBlock"      # Export Body Block animation
+./tools/unity_cmd.sh "exec:HZExportCommands.ExportTestCube"       # Export test cube GLB
 ```
 
 ### Python validators
@@ -66,26 +70,22 @@ python tools/dump_animation_hza.py <file.hza>   # Validate AnimationBlobAsset
 ### Writing and testing C# scripts
 
 1. Write/edit `.cs` files under `Assets/Editor/HZExporter/`
-2. `printf 'refresh' | nc -w 2 localhost 7321` — trigger compilation
-3. Wait ~15s for compile + domain reload
-4. `printf 'log' | nc -w 2 localhost 7321` — check for errors ("ok" = success)
-5. If errors, fix and repeat from step 1
-6. If "compiling" persists forever, Unity's update loop is stuck — restart Unity (see above)
+2. `./tools/unity_refresh.sh` — triggers compile and blocks until it completes; exits 0 on ok, 1 on compile errors (printed to stderr), 2 on timeout
+3. If errors, fix and repeat from step 1
 
 ### Running exports
 
 1. Write a static no-arg method (e.g., `HZExportCommands.ExportXBot()`)
-2. Compile it (refresh + log)
-3. `printf 'exec:HZExportCommands.ExportXBot' | nc -w 2 localhost 7321`
-4. Wait ~20-30s for export to complete
-5. Check `ExportedAssets/` for output
+2. `./tools/unity_refresh.sh` — compile it
+3. `./tools/unity_cmd.sh "exec:HZExportCommands.ExportXBot"` — returns `exec_queued:...` immediately
+4. Wait ~20-30s for the export to finish on the main thread, then check `ExportedAssets/` for output (the exec is fire-and-forget; use file presence or Editor.log to confirm completion)
 
 ### Notes
 
-- The TCP listener auto-starts via `[InitializeOnLoad]` and survives domain reloads
-- Compile status is tracked in-memory (volatile field), reset to "ok" after domain reload
-- `ExportScene` exports the currently active scene — use `OpenSampleScene`/`OpenAssetsShowcase` to switch
-- Connection error = Unity not open or listener not running
+- The TCP listener auto-starts via `[InitializeOnLoad]` and survives domain reloads. Only the main editor binds it (batch-mode asset-import workers skip via `Application.isBatchMode`).
+- Compile status is derived from `EditorApplication.isCompiling` + `assemblyCompilationFinished` callbacks. `log` returns `compiling` while a refresh is pending or a compile is in flight, `ok` after success (domain reload resets state), `ERRORS(n):...` if the compile failed.
+- `ExportScene` exports the currently active scene — use `OpenSampleScene`/`OpenAssetsShowcase` to switch.
+- Connection error = Unity not open or listener not running (see Troubleshooting).
 
 ## Project Structure
 

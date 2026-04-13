@@ -11,7 +11,7 @@ using UnityEngine;
 /// <summary>
 /// Listens on TCP port 7321 for commands from external processes.
 /// Supported commands:
-///   "refresh"  — triggers AssetDatabase.Refresh (compiles scripts)
+///   "refresh"  — CompilationPipeline.RequestScriptCompilation (forces compile)
 ///   "log"      — returns last compilation result
 ///   "ping"     — returns "pong"
 ///   "exec:Type.Method" — runs a static method on the main thread
@@ -26,6 +26,14 @@ public static class RemoteRefresh
     static volatile bool s_refreshRequested;
     static volatile string s_execMethod;
 
+    // Mirror of EditorApplication.isCompiling, updated on the main thread
+    // and read from the TCP listener thread.
+    static volatile bool s_isCompiling;
+    // Set true when a refresh was requested; cleared after a compile has
+    // started+finished OR a grace window elapses with no compile (no changes).
+    static volatile bool s_compilePending;
+    static int s_pendingGraceTicks;
+
     // In-memory compile result. After domain reload, the static constructor
     // runs again and resets this to "ok" (meaning compile succeeded).
     static volatile string s_compileResult = "ok";
@@ -34,6 +42,14 @@ public static class RemoteRefresh
     {
         // Domain reload happened — if we get here, compilation succeeded.
         s_compileResult = "ok";
+
+        // CRITICAL: skip batchmode processes. Asset Import Workers (spawned
+        // with -batchMode) also run [InitializeOnLoad], and SO_REUSEADDR lets
+        // them share the port — so TCP commands would be round-robin'd between
+        // the main editor and the workers, silently dropping most of them.
+        if (Application.isBatchMode) return;
+
+        Application.runInBackground = true;
         Start();
         EditorApplication.update += OnUpdate;
         CompilationPipeline.assemblyCompilationFinished += OnCompilationFinished;
@@ -53,7 +69,9 @@ public static class RemoteRefresh
         try
         {
             s_listener = new TcpListener(IPAddress.Loopback, Port);
-            s_listener.Server.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+            // Intentionally NO SO_REUSEADDR: asset import workers share this
+            // assembly and would otherwise also bind the port, causing TCP
+            // commands to be round-robin'd between editor and workers.
             s_listener.Start();
 
             while (s_running)
@@ -76,13 +94,17 @@ public static class RemoteRefresh
                 string response;
                 if (cmd == "refresh")
                 {
-                    s_compileResult = "compiling";
                     s_refreshRequested = true;
+                    s_compilePending = true;
                     response = "refresh_queued";
                 }
                 else if (cmd == "log")
                 {
-                    response = s_compileResult;
+                    // Report "compiling" until the refresh has been drained
+                    // AND any actual compile has completed. This avoids the
+                    // old bug where the handler flipped to "ok" before the
+                    // async compile had a chance to fail.
+                    response = (s_compilePending || s_isCompiling) ? "compiling" : s_compileResult;
                 }
                 else if (cmd == "ping")
                 {
@@ -117,14 +139,36 @@ public static class RemoteRefresh
         if (s_refreshRequested)
         {
             s_refreshRequested = false;
-            Debug.Log("[RemoteRefresh] Triggering AssetDatabase.Refresh...");
+            s_pendingGraceTicks = 0;
+            Debug.Log("[RemoteRefresh] Triggering script compilation...");
+            // AssetDatabase.Refresh won't recompile if mtimes/content look
+            // unchanged; RequestScriptCompilation forces a real compile.
+            // Domain reload resets s_compileResult to "ok" on success; an
+            // errored compile is captured in assemblyCompilationFinished.
             AssetDatabase.Refresh(ImportAssetOptions.Default);
-            // If Refresh returns without triggering compilation (no changes),
-            // we're still here (no domain reload), so mark as ok.
-            // If compilation IS triggered, domain reload will destroy this instance
-            // and the new static constructor sets s_compileResult = "ok".
-            if (s_compileResult == "compiling")
-                s_compileResult = "ok";
+            CompilationPipeline.RequestScriptCompilation();
+        }
+
+        // Mirror isCompiling so the TCP thread can read it safely.
+        bool nowCompiling = EditorApplication.isCompiling;
+        s_isCompiling = nowCompiling;
+
+        // Clear s_compilePending once compile has actually started+finished.
+        // If no compile is ever seen (nothing to compile), clear after a short
+        // grace window so `log` doesn't hang on "compiling" forever.
+        if (s_compilePending)
+        {
+            if (nowCompiling)
+            {
+                // Compile is running — stay pending; the tick count is only
+                // meaningful while isCompiling is false.
+                s_pendingGraceTicks = 0;
+            }
+            else if (++s_pendingGraceTicks > 30)
+            {
+                // ~30 idle ticks with no compile — treat as no-op refresh.
+                s_compilePending = false;
+            }
         }
 
         if (s_execMethod != null)
