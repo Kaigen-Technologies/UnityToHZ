@@ -405,14 +405,17 @@ namespace HZExporter
             int jointCount = bones.Length;
             var bindPoses = primarySmr.sharedMesh.bindposes;
 
-            // Build bone hierarchy
+            // bones[] may contain null slots (e.g. MagicaCloth2 deletes leaf _end terminators
+            // that the SMR still references by index). Skin weights never point at these slots,
+            // so we keep the indexing intact and emit identity placeholders for the nulls.
             var boneToIndex = new Dictionary<Transform, int>();
             for (int i = 0; i < jointCount; i++)
-                boneToIndex[bones[i]] = i;
+                if (bones[i] != null) boneToIndex[bones[i]] = i;
 
             int[] parentIndices = new int[jointCount];
             for (int i = 0; i < jointCount; i++)
             {
+                if (bones[i] == null) { parentIndices[i] = -1; continue; }
                 var parent = bones[i].parent;
                 parentIndices[i] = (parent != null && boneToIndex.TryGetValue(parent, out int pi)) ? pi : -1;
             }
@@ -470,6 +473,29 @@ namespace HZExporter
                 for (int bi = 0; bi < smr.bones.Length; bi++)
                     boneRemap[bi] = (smr.bones[bi] != null && boneToIndex.TryGetValue(smr.bones[bi], out int pi)) ? pi : 0;
 
+                // Each SMR has its own mesh.bindposes, but glTF stores ONE inverseBindMatrices list
+                // per skin (we emit primary's). If this SMR's bindposes differ from primary's, its
+                // vertices must be pre-transformed so primary's IBM applies correctly.
+                // Math: primary_bp · v' = smr_bp · v  →  v' = primary_bp^-1 · smr_bp · v, which is
+                // bone-independent because both bindposes factor as (bone.worldToLocal · M_bind).
+                // IMPORTANT: derive from bindposes directly, NOT from current Transform values — if
+                // the SMR GameObject was moved after authoring (common with cloth/proxy setups), the
+                // current Transform no longer reflects bind-time state, but bindposes still do.
+                Matrix4x4 preXform = Matrix4x4.identity;
+                if (smr != primarySmr && bindPoses.Length > 0 && mesh.bindposes.Length > 0)
+                {
+                    // Find a bone index where both bindposes reference a live Transform (safest).
+                    int refIdx = 0;
+                    for (int bi = 0; bi < System.Math.Min(bindPoses.Length, mesh.bindposes.Length); bi++)
+                    {
+                        if (bi < primarySmr.bones.Length && bi < smr.bones.Length
+                            && primarySmr.bones[bi] != null && smr.bones[bi] != null)
+                        { refIdx = bi; break; }
+                    }
+                    preXform = bindPoses[refIdx].inverse * mesh.bindposes[refIdx];
+                }
+                Matrix4x4 preXformNormal = preXform.inverse.transpose; // for normals/tangents (no translation)
+
                 // Indices
                 int idxOff = (int)bin.Position;
                 for (int i = 0; i < indexCount; i += 3)
@@ -486,7 +512,8 @@ namespace HZExporter
                 float[] posMax = { float.MinValue, float.MinValue, float.MinValue };
                 for (int i = 0; i < vertexCount; i++)
                 {
-                    float x = -vertices[i].x, y = vertices[i].y, z = vertices[i].z;
+                    Vector3 p = preXform.MultiplyPoint3x4(vertices[i]);
+                    float x = -p.x, y = p.y, z = p.z;
                     WriteF32(bin, x); WriteF32(bin, y); WriteF32(bin, z);
                     posMin[0] = Math.Min(posMin[0], x); posMin[1] = Math.Min(posMin[1], y); posMin[2] = Math.Min(posMin[2], z);
                     posMax[0] = Math.Max(posMax[0], x); posMax[1] = Math.Max(posMax[1], y); posMax[2] = Math.Max(posMax[2], z);
@@ -497,23 +524,26 @@ namespace HZExporter
                 int normOff = (int)bin.Position;
                 for (int i = 0; i < vertexCount; i++)
                 {
-                    float nx = (i < normals.Length) ? -normals[i].x : 0;
-                    float ny = (i < normals.Length) ? normals[i].y : 0;
-                    float nz = (i < normals.Length) ? normals[i].z : 1;
+                    Vector3 n = (i < normals.Length)
+                        ? preXformNormal.MultiplyVector(normals[i]).normalized
+                        : new Vector3(0, 0, 1);
+                    float nx = -n.x, ny = n.y, nz = n.z;
                     WriteF32(bin, nx); WriteF32(bin, ny); WriteF32(bin, nz);
                 }
                 int normSize = (int)bin.Position - normOff;
 
-                // Tangents
+                // Tangents (xyz is a direction, w is handedness sign — don't transform w)
                 int tanOff = (int)bin.Position;
                 bool hasTan = tangents != null && tangents.Length > 0;
                 if (hasTan)
                     for (int i = 0; i < vertexCount; i++)
                     {
-                        WriteF32(bin, (i < tangents.Length) ? -tangents[i].x : 1);
-                        WriteF32(bin, (i < tangents.Length) ? tangents[i].y : 0);
-                        WriteF32(bin, (i < tangents.Length) ? tangents[i].z : 0);
-                        WriteF32(bin, (i < tangents.Length) ? tangents[i].w : 1);
+                        Vector4 t4 = (i < tangents.Length) ? tangents[i] : new Vector4(1, 0, 0, 1);
+                        Vector3 td = preXformNormal.MultiplyVector(new Vector3(t4.x, t4.y, t4.z)).normalized;
+                        WriteF32(bin, -td.x);
+                        WriteF32(bin, td.y);
+                        WriteF32(bin, td.z);
+                        WriteF32(bin, t4.w);
                     }
                 int tanSize = (int)bin.Position - tanOff;
 
@@ -528,16 +558,29 @@ namespace HZExporter
                     }
                 int uvSize = (int)bin.Position - uvOff;
 
-                // Joint indices (u8 x 4, remapped)
+                // Joint indices: u8 when skeleton has ≤256 joints, else u16 (glTF spec allows both).
+                // Unity meshes with many bones (e.g. characters with dynamic bone chains) blow past 255
+                // and a (byte) cast silently wraps, mis-skinning every vertex weighted to a high-index bone.
+                bool jointsU16 = jointCount > 255;
                 int jiOff = (int)bin.Position;
                 var boneWeights = mesh.boneWeights;
                 for (int i = 0; i < vertexCount; i++)
                 {
                     var bw = boneWeights[i];
-                    bin.WriteByte((byte)boneRemap[bw.boneIndex0]);
-                    bin.WriteByte((byte)boneRemap[bw.boneIndex1]);
-                    bin.WriteByte((byte)boneRemap[bw.boneIndex2]);
-                    bin.WriteByte((byte)boneRemap[bw.boneIndex3]);
+                    int j0 = boneRemap[bw.boneIndex0];
+                    int j1 = boneRemap[bw.boneIndex1];
+                    int j2 = boneRemap[bw.boneIndex2];
+                    int j3 = boneRemap[bw.boneIndex3];
+                    if (jointsU16)
+                    {
+                        WriteU16(bin, (ushort)j0); WriteU16(bin, (ushort)j1);
+                        WriteU16(bin, (ushort)j2); WriteU16(bin, (ushort)j3);
+                    }
+                    else
+                    {
+                        bin.WriteByte((byte)j0); bin.WriteByte((byte)j1);
+                        bin.WriteByte((byte)j2); bin.WriteByte((byte)j3);
+                    }
                 }
                 int jiSize = (int)bin.Position - jiOff;
 
@@ -557,7 +600,7 @@ namespace HZExporter
                 int normBV = AddBV(normOff, normSize, 12);
                 int tanBV = hasTan ? AddBV(tanOff, tanSize, 16) : -1;
                 int uvBV = hasUV ? AddBV(uvOff, uvSize, 8) : -1;
-                int jiBV = AddBV(jiOff, jiSize, 4);
+                int jiBV = AddBV(jiOff, jiSize, jointsU16 ? 8 : 4);
                 int jwBV = AddBV(jwOff, jwSize, 16);
 
                 int idxAcc = AddAcc(idxBV, useU16 ? UNSIGNED_SHORT : UNSIGNED_INT, indexCount, "SCALAR");
@@ -565,7 +608,7 @@ namespace HZExporter
                 int normAcc = AddAcc(normBV, FLOAT, vertexCount, "VEC3");
                 int tanAcc = hasTan ? AddAcc(tanBV, FLOAT, vertexCount, "VEC4") : -1;
                 int uvAcc = hasUV ? AddAcc(uvBV, FLOAT, vertexCount, "VEC2") : -1;
-                int jiAcc = AddAcc(jiBV, UNSIGNED_BYTE, vertexCount, "VEC4");
+                int jiAcc = AddAcc(jiBV, jointsU16 ? UNSIGNED_SHORT : UNSIGNED_BYTE, vertexCount, "VEC4");
                 int jwAcc = AddAcc(jwBV, FLOAT, vertexCount, "VEC4");
 
                 meshAccIndices[mi] = new int[] { idxAcc, posAcc, normAcc, tanAcc, uvAcc, jiAcc, jwAcc };
@@ -610,6 +653,13 @@ namespace HZExporter
             var restScales = new Vector3[jointCount];
             for (int i = 0; i < jointCount; i++)
             {
+                if (bones[i] == null)
+                {
+                    restPositions[i] = Vector3.zero;
+                    restRotations[i] = Quaternion.identity;
+                    restScales[i] = Vector3.one;
+                    continue;
+                }
                 restPositions[i] = bones[i].localPosition;
                 restRotations[i] = bones[i].localRotation;
                 restScales[i] = bones[i].localScale;
@@ -894,7 +944,8 @@ namespace HZExporter
                 float px = -lp.x, py = lp.y, pz = lp.z;
                 float qx = lr.x, qy = -lr.y, qz = -lr.z, qw = lr.w;
 
-                json.Append($"    {{ \"name\": \"{EscapeJson(bone.name)}\"");
+                string nodeName = bone != null ? bone.name : $"__null_bone_{i}";
+                json.Append($"    {{ \"name\": \"{EscapeJson(nodeName)}\"");
                 json.Append($", \"translation\": [{F(px)}, {F(py)}, {F(pz)}]");
                 json.Append($", \"rotation\": [{F(qx)}, {F(qy)}, {F(qz)}, {F(qw)}]");
                 json.Append($", \"scale\": [{F(ls.x)}, {F(ls.y)}, {F(ls.z)}]");

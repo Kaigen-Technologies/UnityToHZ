@@ -915,4 +915,210 @@ public static class HZExportCommands
         if (cur == root) sb.Insert(0, root.name + "/");
         return sb.ToString();
     }
+
+    /// <summary>
+    /// Mirror the exporter's primary-SMR picker + per-SMR boneRemap, then count how many
+    /// vertex weights would fall into the "remap=0 fallback" slot due to null/missing bones.
+    /// That's the set of vertices that get skinned to the root and produce visual explosions.
+    /// </summary>
+    public static void AnalyzeSkinWeights()
+    {
+        string outPath = System.IO.Path.Combine(OutputDir, "skin_weight_analysis.txt");
+        var sw = new System.IO.StreamWriter(outPath, false);
+        void WLog(string s) { Debug.Log(s); sw.WriteLine(s); }
+
+        var scene = SceneManager.GetActiveScene();
+        var roots = scene.GetRootGameObjects();
+
+        foreach (var root in roots)
+        {
+            var allSmrs = root.GetComponentsInChildren<SkinnedMeshRenderer>(true);
+            var validSmrs = new List<SkinnedMeshRenderer>();
+            foreach (var s in allSmrs)
+                if (s.sharedMesh != null && s.bones != null && s.bones.Length > 0)
+                    validSmrs.Add(s);
+            if (validSmrs.Count == 0) continue;
+
+            SkinnedMeshRenderer primary = validSmrs[0];
+            foreach (var s in validSmrs)
+                if (s.bones.Length > primary.bones.Length) primary = s;
+
+            var primaryBones = primary.bones;
+            var boneToIndex = new Dictionary<Transform, int>();
+            for (int i = 0; i < primaryBones.Length; i++)
+                if (primaryBones[i] != null) boneToIndex[primaryBones[i]] = i;
+
+            WLog($"[Analyze] === Root '{root.name}' — primary SMR '{primary.name}' bones={primaryBones.Length} ===");
+
+            int globalBadVerts = 0;
+            int globalBadWeight = 0;
+
+            foreach (var smr in validSmrs)
+            {
+                var bones = smr.bones;
+                int[] remap = new int[bones.Length];
+                bool[] isFallback = new bool[bones.Length];
+                int nullInSmr = 0, missingFromPrimary = 0;
+                for (int i = 0; i < bones.Length; i++)
+                {
+                    if (bones[i] == null)
+                    {
+                        remap[i] = 0; isFallback[i] = true; nullInSmr++;
+                    }
+                    else if (!boneToIndex.TryGetValue(bones[i], out remap[i]))
+                    {
+                        remap[i] = 0; isFallback[i] = true; missingFromPrimary++;
+                    }
+                }
+
+                var mesh = smr.sharedMesh;
+                var bws = mesh.boneWeights;
+                int badVerts = 0;
+                float totalBadWeight = 0f;
+                var badBoneHist = new Dictionary<int, int>(); // bone index in smr.bones → count
+                for (int v = 0; v < bws.Length; v++)
+                {
+                    var bw = bws[v];
+                    bool hit = false;
+                    void Check(int bi, float w)
+                    {
+                        if (bi >= 0 && bi < bones.Length && isFallback[bi] && w > 0f)
+                        {
+                            hit = true;
+                            totalBadWeight += w;
+                            badBoneHist.TryGetValue(bi, out int c);
+                            badBoneHist[bi] = c + 1;
+                        }
+                    }
+                    Check(bw.boneIndex0, bw.weight0);
+                    Check(bw.boneIndex1, bw.weight1);
+                    Check(bw.boneIndex2, bw.weight2);
+                    Check(bw.boneIndex3, bw.weight3);
+                    if (hit) badVerts++;
+                }
+
+                string tag = (smr == primary) ? " <PRIMARY>" : "";
+                WLog($"[Analyze] SMR '{smr.name}'{tag} bones={bones.Length} " +
+                     $"null_in_smr={nullInSmr} missing_from_primary={missingFromPrimary} " +
+                     $"bad_verts={badVerts}/{bws.Length} totalBadWeight={totalBadWeight:F2}");
+
+                if (badBoneHist.Count > 0)
+                {
+                    // Top 10 offending slots
+                    var list = new List<KeyValuePair<int, int>>(badBoneHist);
+                    list.Sort((a, b) => b.Value.CompareTo(a.Value));
+                    int show = System.Math.Min(10, list.Count);
+                    for (int i = 0; i < show; i++)
+                    {
+                        int bi = list[i].Key;
+                        int cnt = list[i].Value;
+                        string bn = bones[bi] != null ? bones[bi].name : "<NULL>";
+                        bool inPrimary = bones[bi] != null && boneToIndex.ContainsKey(bones[bi]);
+                        WLog($"[Analyze]   slot[{bi}]={bn} hits={cnt} inPrimary={inPrimary}");
+                    }
+                }
+
+                globalBadVerts += badVerts;
+                globalBadWeight += (int)totalBadWeight;
+            }
+
+            WLog($"[Analyze] === TOTAL bad_verts={globalBadVerts} totalBadWeight={globalBadWeight} ===");
+
+            // Compare bindposes across SMRs: if two SMRs use the same bone but have different
+            // bindpose matrices for it, a single shared inverseBindMatrices list in glTF is wrong.
+            var primaryBP = primary.sharedMesh.bindposes;
+            int bindposeMismatches = 0;
+            foreach (var smr in validSmrs)
+            {
+                if (smr == primary) continue;
+                var bps = smr.sharedMesh.bindposes;
+                int mismatchCount = 0;
+                float maxDelta = 0f;
+                int firstMismatch = -1;
+                int compareCount = System.Math.Min(bps.Length, primaryBP.Length);
+                for (int i = 0; i < compareCount; i++)
+                {
+                    if (smr.bones[i] == null || primaryBones[i] == null) continue;
+                    if (smr.bones[i] != primaryBones[i]) continue; // only compare when same bone
+                    float d = 0f;
+                    for (int r = 0; r < 4; r++)
+                        for (int c = 0; c < 4; c++)
+                            d += System.Math.Abs(bps[i][r, c] - primaryBP[i][r, c]);
+                    if (d > 1e-4f)
+                    {
+                        mismatchCount++;
+                        if (firstMismatch < 0) firstMismatch = i;
+                        if (d > maxDelta) maxDelta = d;
+                    }
+                }
+                if (mismatchCount > 0)
+                {
+                    bindposeMismatches++;
+                    WLog($"[Analyze] BINDPOSE MISMATCH: SMR '{smr.name}' differs from primary on {mismatchCount}/{compareCount} bones (firstIdx={firstMismatch} maxDelta={maxDelta:F4})");
+                }
+                else
+                {
+                    WLog($"[Analyze] SMR '{smr.name}' bindposes match primary");
+                }
+            }
+            WLog($"[Analyze] === {bindposeMismatches}/{validSmrs.Count - 1} SMRs have bindpose mismatches ===");
+
+            // Dump preXform translation + bindpose-based delta for every SMR — look for large values
+            WLog($"[Analyze] preXform per SMR (primary.worldToLocal * smr.localToWorld) vs bp[0]-based delta:");
+            foreach (var smr in validSmrs)
+            {
+                Matrix4x4 pre = primary.transform.worldToLocalMatrix * smr.transform.localToWorldMatrix;
+                Vector3 t = (Vector3)pre.GetColumn(3);
+                string bpDelta = "n/a";
+                if (primary.sharedMesh.bindposes.Length > 0 && smr.sharedMesh.bindposes.Length > 0)
+                {
+                    var pbp = primary.sharedMesh.bindposes[0];
+                    var mbp = smr.sharedMesh.bindposes[0];
+                    var deltaMat = pbp.inverse * mbp;  // the correct preXform per math
+                    Vector3 dt = (Vector3)deltaMat.GetColumn(3);
+                    bpDelta = $"({dt.x:F3},{dt.y:F3},{dt.z:F3})";
+                }
+                WLog($"[Analyze]   {smr.name}: preXform_t=({t.x:F3},{t.y:F3},{t.z:F3})  bp-based={bpDelta}  pos={smr.transform.position}");
+            }
+
+            // Print primary & mismatching SMR transforms and sample bindpose matrices
+            void DumpTransform(SkinnedMeshRenderer s)
+            {
+                WLog($"[Analyze]   transform.position={s.transform.position} rotation={s.transform.rotation.eulerAngles} lossyScale={s.transform.lossyScale}");
+                WLog($"[Analyze]   localToWorld=\n{s.transform.localToWorldMatrix}");
+                var bp = s.sharedMesh.bindposes;
+                if (bp.Length > 0) WLog($"[Analyze]   bindpose[0]=\n{bp[0]}");
+                if (bp.Length > 38) WLog($"[Analyze]   bindpose[38]=\n{bp[38]}");
+            }
+            WLog($"[Analyze] PRIMARY '{primary.name}':");
+            DumpTransform(primary);
+            foreach (var smr in validSmrs)
+            {
+                if (smr == primary) continue;
+                if (smr.name != "head_Def" && smr.name != "Headgear") continue;
+                WLog($"[Analyze] MISMATCH '{smr.name}':");
+                DumpTransform(smr);
+                // Computed preXform
+                Matrix4x4 pre = primary.transform.worldToLocalMatrix * smr.transform.localToWorldMatrix;
+                WLog($"[Analyze]   preXform (primary.worldToLocal * smr.localToWorld)=\n{pre}");
+                // Expected: primary_bp[i] should equal preXform * smr_bp[i] (?)
+                // Actually: delta between bindposes if they include SMR xform
+                if (primary.sharedMesh.bindposes.Length > 0 && smr.sharedMesh.bindposes.Length > 0)
+                {
+                    var pbp = primary.sharedMesh.bindposes[38];
+                    var mbp = smr.sharedMesh.bindposes[38];
+                    // primary_bp = bone.worldToLocal * primary.localToWorld
+                    // mesh_bp    = bone.worldToLocal * mesh.localToWorld
+                    // primary_bp * mesh_bp^-1 = primary.localToWorld * mesh.worldToLocal
+                    var delta = pbp * mbp.inverse;
+                    WLog($"[Analyze]   bindpose_delta[38] (primary_bp * mesh_bp.inv)=\n{delta}");
+                    var expected = primary.transform.localToWorldMatrix * smr.transform.worldToLocalMatrix;
+                    WLog($"[Analyze]   expected (primary.localToWorld * smr.worldToLocal)=\n{expected}");
+                }
+            }
+        }
+
+        sw.Flush(); sw.Close();
+        Debug.Log($"[Analyze] wrote {outPath}");
+    }
 }
