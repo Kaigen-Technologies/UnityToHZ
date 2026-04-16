@@ -1,0 +1,35 @@
+{
+  "default": "Universal Render Pipeline/Lit",
+  "shaders": [
+    {
+      "unityShader": "Universal Render Pipeline/Lit",
+      "engineShader": "shaders/standard_static_material.hza",
+      "engineSkinnedShader": "shaders/standard_skinned_material.hza",
+      "properties": [
+        { "unity": "_BaseColor",        "slot": "baseColor",   "kind": "color4" },
+        { "unity": "_Color",            "slot": "baseColor",   "kind": "color4" },
+        { "unity": "_Metallic",         "slot": "metallic",    "kind": "float" },
+        { "unity": "_Smoothness",       "slot": "roughness",   "kind": "float_oneMinus" },
+        { "unity": "_EmissionColor",    "slot": "emissive",    "kind": "color3" },
+        { "unity": "_BaseMap",          "slot": "albedoTex",   "kind": "texture" },
+        { "unity": "_MainTex",          "slot": "albedoTex",   "kind": "texture" },
+        { "unity": "_BumpMap",          "slot": "normalTex",   "kind": "texture_normal" },
+        { "unity": "_EmissionMap",      "slot": "emissiveTex", "kind": "texture" },
+        { "unity": "_MetallicGlossMap", "slot": "ormTex",      "kind": "texture_orm_metalsmooth" },
+        { "unity": "_OcclusionMap",     "slot": "ormTex",      "kind": "texture_orm_occlusion" }
+      ]
+    },
+    {
+      "unityShader": "Shader Graphs/FloorTriplanar",
+      "engineShader": "shaders/standard_static_material.hza",
+      "engineSkinnedShader": "shaders/standard_skinned_material.hza",
+      "properties": [
+        { "unity": "_Color",           "slot": "baseColor",   "kind": "color4" },
+        { "unity": "_MainTexture",     "slot": "albedoTex",   "kind": "texture" },
+        { "unity": "_Normal",          "slot": "normalTex",   "kind": "texture_normal" },
+        { "unity": "_AO",              "slot": "ormTex",      "kind": "texture_orm_occlusion" },
+        { "unity": "_Matallic_Smooth", "slot": "ormTex",      "kind": "texture_orm_metalsmooth" }
+      ]
+    }
+  ]
+}

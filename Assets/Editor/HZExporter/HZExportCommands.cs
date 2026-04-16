@@ -15,6 +15,21 @@ public static class HZExportCommands
     // Asset-relative prefix (how the engine sees the paths, relative to assets/)
     const string AssetPrefix = "unity";
 
+    /// <summary>Test-export a cube using the FloorTriplanar shader-graph material so we can
+    /// verify HZShaderMap picks up the new JSON entry and routes _MainTexture/_Normal/etc.</summary>
+    public static void ExportFloorTriplanarTest()
+    {
+        var mat = AssetDatabase.LoadAssetAtPath<Material>(
+            "Assets/StylizedCharacterPack/Materials/Shaders/MetalPannel_ShaderMat.mat");
+        if (mat == null) { Debug.LogError("[HZ] MetalPannel_ShaderMat.mat not found"); return; }
+        Debug.Log($"[HZ] Testing shader='{mat.shader.name}'");
+        var go = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        HZGlbWriter.ExportStaticMesh(go.GetComponent<MeshFilter>().sharedMesh,
+            new Material[] { mat },
+            OutputDir + "/glb/FloorTriplanar_Test.glb");
+        Object.DestroyImmediate(go);
+    }
+
     [MenuItem("HZ Engine/Export Test Cube")]
     public static void ExportTestCube()
     {
@@ -332,8 +347,10 @@ public static class HZExportCommands
             }
         }
 
-        // GLB dedup: track exported meshes by source asset key → engine asset path
+        // GLB dedup: key by (mesh, materials[]) — same mesh with different material assignments
+        // must produce distinct GLBs since materials (including textures) are embedded.
         var exportedGlbs = new Dictionary<string, string>();
+        var usedGlbNames = new HashSet<string>();
 
         // Deferred skinned mesh exports: collect animations per character before exporting
         // Key = character name (FBX filename with @... stripped)
@@ -454,22 +471,24 @@ public static class HZExportCommands
 
                     Debug.Log($"[HZ] Entity: {go.name} (skinned, model={glbAssetPath})");
                 }
-                // Static mesh — export as .glb, dedup by source mesh
+                // Static mesh — export as .glb, dedup by (mesh, material combo).
                 else if (go.TryGetComponent<MeshFilter>(out var mf) && mf.sharedMesh != null
                          && go.TryGetComponent<MeshRenderer>(out var mr))
                 {
                     Mesh mesh = mf.sharedMesh;
-                    string meshKey = GetMeshKey(mesh);
+                    Material[] mats = mr.sharedMaterials;
+                    string meshMatKey = $"{GetMeshKey(mesh)}::{GetMaterialsSignature(mats)}";
 
-                    if (!exportedGlbs.TryGetValue(meshKey, out string glbAssetPath))
+                    if (!exportedGlbs.TryGetValue(meshMatKey, out string glbAssetPath))
                     {
-                        string glbName = GetMeshSourceName(mesh);
+                        string glbName = UniqueGlbName(GetMeshSourceName(mesh), mats, usedGlbNames);
+                        usedGlbNames.Add(glbName);
                         string glbPath = $"{OutputDir}/glb/{glbName}.glb";
                         glbAssetPath = $"{AssetPrefix}/{glbName}.glb";
 
-                        HZGlbWriter.ExportStaticMesh(mesh, mr.sharedMaterials, glbPath);
-                        exportedGlbs[meshKey] = glbAssetPath;
-                        Debug.Log($"[HZ] Exported GLB: {glbName}.glb (static, from {meshKey})");
+                        HZGlbWriter.ExportStaticMesh(mesh, mats, glbPath);
+                        exportedGlbs[meshMatKey] = glbAssetPath;
+                        Debug.Log($"[HZ] Exported GLB: {glbName}.glb (static, from {meshMatKey})");
                     }
 
                     info.modelAssetPath = glbAssetPath;
@@ -583,6 +602,41 @@ public static class HZExportCommands
         int atIdx = name.IndexOf('@');
         if (atIdx > 0) name = name.Substring(0, atIdx);
         return name;
+    }
+
+    /// <summary>
+    /// Stable signature for a material array — by asset path when the material is a project asset,
+    /// else by instance-id fallback. Drives dedup: two entities sharing the same mesh + same
+    /// material combo reuse one GLB; different materials → separate GLBs.
+    /// </summary>
+    static string GetMaterialsSignature(Material[] mats)
+    {
+        if (mats == null || mats.Length == 0) return "none";
+        var parts = new string[mats.Length];
+        for (int i = 0; i < mats.Length; i++)
+        {
+            var m = mats[i];
+            if (m == null) { parts[i] = "null"; continue; }
+            string ap = AssetDatabase.GetAssetPath(m);
+            parts[i] = !string.IsNullOrEmpty(ap) ? ap : $"iid:{m.GetInstanceID()}";
+        }
+        return string.Join("|", parts);
+    }
+
+    /// <summary>
+    /// Produce a unique GLB filename: prefer `baseName`; on collision, append the first
+    /// material's sanitized name, then a numeric suffix as needed. Preserves the legacy
+    /// short name for the first entity that hits each baseName.
+    /// </summary>
+    static string UniqueGlbName(string baseName, Material[] mats, HashSet<string> used)
+    {
+        if (!used.Contains(baseName)) return baseName;
+        string matSuffix = (mats != null && mats.Length > 0 && mats[0] != null)
+            ? SanitizeName(mats[0].name) : "mat";
+        string candidate = $"{baseName}_{matSuffix}";
+        int n = 2;
+        while (used.Contains(candidate)) { candidate = $"{baseName}_{matSuffix}_{n++}"; }
+        return candidate;
     }
 
     static string GetMeshKey(Mesh mesh)
