@@ -26,46 +26,69 @@ namespace HZExporter
         const int UNSIGNED_INT = 5125;
         const int FLOAT = 5126;
 
-        /// <summary>Export a single static mesh as .glb</summary>
+        /// <summary>Export a single static mesh as .glb. Overload for single-material callers.</summary>
         public static void ExportStaticMesh(Mesh mesh, Material material, string outputPath)
         {
+            ExportStaticMesh(mesh, new[] { material }, outputPath);
+        }
+
+        /// <summary>
+        /// Export a static mesh as .glb. Supports meshes with multiple submeshes — each submesh
+        /// becomes a separate glTF primitive sharing the same vertex buffers, with its own
+        /// material. `materials[i]` pairs with submesh `i`; if fewer materials are provided than
+        /// submeshes, the last material repeats (matching Unity's MeshRenderer behavior).
+        /// </summary>
+        public static void ExportStaticMesh(Mesh mesh, Material[] materials, string outputPath)
+        {
+            if (materials == null || materials.Length == 0) materials = new Material[] { null };
+
             var bin = new MemoryStream();
             var bufferViews = new List<object>();
-            var accessors = new List<object>();
 
             var vertices = mesh.vertices;
             var normals = mesh.normals;
             var tangents = mesh.tangents;
             var uvs = mesh.uv;
-            var triangles = mesh.triangles;
             int vertexCount = mesh.vertexCount;
-            int indexCount = triangles.Length;
             bool useU16 = vertexCount <= 65535;
+            int submeshCount = Math.Max(1, mesh.subMeshCount);
 
-            // --- Convert and write binary data ---
-
-            // Indices (flip winding: swap [1] and [2])
-            int indicesOffset = (int)bin.Position;
-            if (useU16)
+            // --- Per-submesh indices (flip winding: swap [1] and [2]) ---
+            var submeshIndexInfo = new (int offset, int size, int count)[submeshCount];
+            int totalIndexCount = 0;
+            for (int s = 0; s < submeshCount; s++)
             {
-                for (int i = 0; i < indexCount; i += 3)
+                if (mesh.GetTopology(s) != MeshTopology.Triangles)
                 {
-                    WriteU16(bin, (ushort)triangles[i + 0]);
-                    WriteU16(bin, (ushort)triangles[i + 2]);
-                    WriteU16(bin, (ushort)triangles[i + 1]);
+                    Debug.LogWarning($"[HZGlbWriter] Mesh '{mesh.name}' submesh {s} is not Triangles topology — skipping");
+                    submeshIndexInfo[s] = (0, 0, 0);
+                    continue;
                 }
-            }
-            else
-            {
-                for (int i = 0; i < indexCount; i += 3)
+                var subTris = mesh.GetTriangles(s);
+                int indicesOffset = (int)bin.Position;
+                if (useU16)
                 {
-                    WriteU32(bin, (uint)triangles[i + 0]);
-                    WriteU32(bin, (uint)triangles[i + 2]);
-                    WriteU32(bin, (uint)triangles[i + 1]);
+                    for (int i = 0; i < subTris.Length; i += 3)
+                    {
+                        WriteU16(bin, (ushort)subTris[i + 0]);
+                        WriteU16(bin, (ushort)subTris[i + 2]);
+                        WriteU16(bin, (ushort)subTris[i + 1]);
+                    }
                 }
+                else
+                {
+                    for (int i = 0; i < subTris.Length; i += 3)
+                    {
+                        WriteU32(bin, (uint)subTris[i + 0]);
+                        WriteU32(bin, (uint)subTris[i + 2]);
+                        WriteU32(bin, (uint)subTris[i + 1]);
+                    }
+                }
+                int indicesSize = (int)bin.Position - indicesOffset;
+                PadTo4(bin);
+                submeshIndexInfo[s] = (indicesOffset, indicesSize, subTris.Length);
+                totalIndexCount += subTris.Length;
             }
-            int indicesSize = (int)bin.Position - indicesOffset;
-            PadTo4(bin);
 
             // Positions (negate X for LH→RH)
             int posOffset = (int)bin.Position;
@@ -121,12 +144,12 @@ namespace HZExporter
             }
             int uvSize = (int)bin.Position - uvOffset;
 
-            // --- Embedded textures ---
-            // name = Unity asset name (project-unique, enables engine-side dedup across glbs)
+            // --- Embedded textures (per material × per role) ---
+            // Each entry: (off, size, name, matIdx, role)
             // role: 0=albedo, 1=normal, 2=orm, 3=emissive
-            var imageEntries = new List<(int off, int size, string name, int role)>();
+            var imageEntries = new List<(int off, int size, string name, int matIdx, int role)>();
 
-            void EmbedTex(Material m, string p1, string p2, int role, bool isNormal = false)
+            void EmbedTex(Material m, int matIdx, string p1, string p2, int role, bool isNormal = false)
             {
                 if (m == null) return;
                 Texture2D tex = null;
@@ -141,10 +164,10 @@ namespace HZExporter
                 if (readable != tex) UnityEngine.Object.DestroyImmediate(readable);
                 PadTo4(bin);
                 string texName = SanitizeName(tex.name ?? $"tex_role{role}");
-                imageEntries.Add((off, png.Length, texName, role));
+                imageEntries.Add((off, png.Length, texName, matIdx, role));
             }
 
-            void EmbedORM(Material m)
+            void EmbedORM(Material m, int matIdx)
             {
                 if (m == null) return;
                 Texture2D mgTex = null, aoTex = null;
@@ -160,32 +183,38 @@ namespace HZExporter
                 UnityEngine.Object.DestroyImmediate(orm);
                 PadTo4(bin);
                 string ormName = SanitizeName((m.name ?? "material") + "_ORM");
-                imageEntries.Add((off, png.Length, ormName, 2));
+                imageEntries.Add((off, png.Length, ormName, matIdx, 2));
             }
 
-            EmbedTex(material, "_BaseMap", "_MainTex", role: 0);
-            EmbedTex(material, "_BumpMap", null, role: 1, isNormal: true);
-            EmbedORM(material);
-            EmbedTex(material, "_EmissionMap", null, role: 3);
+            for (int mi = 0; mi < materials.Length; mi++)
+            {
+                var m = materials[mi];
+                EmbedTex(m, mi, "_BaseMap", "_MainTex", role: 0);
+                EmbedTex(m, mi, "_BumpMap", null, role: 1, isNormal: true);
+                EmbedORM(m, mi);
+                EmbedTex(m, mi, "_EmissionMap", null, role: 3);
+            }
 
             byte[] binData = bin.ToArray();
 
             // --- Build buffer views and accessors ---
             int bvIdx = 0;
 
-            // BV0: indices
-            bufferViews.Add(new { buffer = 0, byteOffset = indicesOffset, byteLength = indicesSize });
-            int indicesBV = bvIdx++;
+            // BV0..N-1: one indices bufferView per submesh (skip empty/non-triangle submeshes).
+            int[] submeshIndicesBV = new int[submeshCount];
+            for (int s = 0; s < submeshCount; s++)
+            {
+                if (submeshIndexInfo[s].size == 0) { submeshIndicesBV[s] = -1; continue; }
+                bufferViews.Add(new { buffer = 0, byteOffset = submeshIndexInfo[s].offset, byteLength = submeshIndexInfo[s].size });
+                submeshIndicesBV[s] = bvIdx++;
+            }
 
-            // BV1: positions
             bufferViews.Add(new { buffer = 0, byteOffset = posOffset, byteLength = posSize, byteStride = 12 });
             int posBV = bvIdx++;
 
-            // BV2: normals
             bufferViews.Add(new { buffer = 0, byteOffset = normOffset, byteLength = normSize, byteStride = 12 });
             int normBV = bvIdx++;
 
-            // BV3: tangents (optional)
             int tanBV = -1;
             if (hasTangents)
             {
@@ -193,7 +222,6 @@ namespace HZExporter
                 tanBV = bvIdx++;
             }
 
-            // BV4: uvs (optional)
             int uvBV = -1;
             if (hasUVs)
             {
@@ -201,7 +229,6 @@ namespace HZExporter
                 uvBV = bvIdx++;
             }
 
-            // Image buffer views
             int[] imageBVs = new int[imageEntries.Count];
             for (int ii = 0; ii < imageEntries.Count; ii++)
             {
@@ -209,25 +236,11 @@ namespace HZExporter
                 imageBVs[ii] = bvIdx++;
             }
 
-            int accIdx = 0;
-
-            // Acc0: indices
-            int indicesAcc = accIdx++;
-            // Acc1: positions
-            int posAcc = accIdx++;
-            // Acc2: normals
-            int normAcc = accIdx++;
-            // Acc3: tangents
-            int tanAcc = hasTangents ? accIdx++ : -1;
-            // Acc4: uvs
-            int uvAcc = hasUVs ? accIdx++ : -1;
-
             // --- Build JSON ---
             var json = new StringBuilder();
             json.Append("{\n");
             json.Append("  \"asset\": { \"version\": \"2.0\", \"generator\": \"HZExporter\" },\n");
 
-            // Buffers
             json.Append($"  \"buffers\": [{{ \"byteLength\": {binData.Length} }}],\n");
 
             // Buffer views
@@ -247,27 +260,35 @@ namespace HZExporter
             }
             json.Append("  ],\n");
 
-            // Accessors
+            // Accessors: per-submesh indices first, then shared pos/normal/tan/uv.
+            int accIdx = 0;
+            int[] submeshIndicesAcc = new int[submeshCount];
             json.Append("  \"accessors\": [\n");
-            // indices
-            json.Append($"    {{ \"bufferView\": {indicesBV}, \"componentType\": {(useU16 ? UNSIGNED_SHORT : UNSIGNED_INT)}, \"count\": {indexCount}, \"type\": \"SCALAR\" }},\n");
-            // positions
+            for (int s = 0; s < submeshCount; s++)
+            {
+                if (submeshIndicesBV[s] < 0) { submeshIndicesAcc[s] = -1; continue; }
+                json.Append($"    {{ \"bufferView\": {submeshIndicesBV[s]}, \"componentType\": {(useU16 ? UNSIGNED_SHORT : UNSIGNED_INT)}, \"count\": {submeshIndexInfo[s].count}, \"type\": \"SCALAR\" }},\n");
+                submeshIndicesAcc[s] = accIdx++;
+            }
+            int posAcc = accIdx++;
             json.Append($"    {{ \"bufferView\": {posBV}, \"componentType\": {FLOAT}, \"count\": {vertexCount}, \"type\": \"VEC3\", ");
             json.Append($"\"min\": [{F(posMin[0])}, {F(posMin[1])}, {F(posMin[2])}], \"max\": [{F(posMax[0])}, {F(posMax[1])}, {F(posMax[2])}] }},\n");
-            // normals
+            int normAcc = accIdx++;
             json.Append($"    {{ \"bufferView\": {normBV}, \"componentType\": {FLOAT}, \"count\": {vertexCount}, \"type\": \"VEC3\" }}");
             if (hasTangents || hasUVs) json.Append(",");
             json.Append("\n");
-            // tangents
+            int tanAcc = -1;
             if (hasTangents)
             {
+                tanAcc = accIdx++;
                 json.Append($"    {{ \"bufferView\": {tanBV}, \"componentType\": {FLOAT}, \"count\": {vertexCount}, \"type\": \"VEC4\" }}");
                 if (hasUVs) json.Append(",");
                 json.Append("\n");
             }
-            // uvs
+            int uvAcc = -1;
             if (hasUVs)
             {
+                uvAcc = accIdx++;
                 json.Append($"    {{ \"bufferView\": {uvBV}, \"componentType\": {FLOAT}, \"count\": {vertexCount}, \"type\": \"VEC2\" }}\n");
             }
             json.Append("  ],\n");
@@ -291,59 +312,73 @@ namespace HZExporter
                 json.Append("\n  ],\n");
             }
 
-            // Materials — find texture indices by role
-            int albedoTexIdx = -1, normalTexIdx = -1, ormTexIdx = -1, emissiveTexIdx = -1;
+            // Per-material texture index map: [matIdx] → [albedo, normal, orm, emissive]
+            var matTexMap = new Dictionary<int, int[]>();
             for (int ii = 0; ii < imageEntries.Count; ii++)
             {
-                switch (imageEntries[ii].role)
-                {
-                    case 0: albedoTexIdx = ii; break;
-                    case 1: normalTexIdx = ii; break;
-                    case 2: ormTexIdx = ii; break;
-                    case 3: emissiveTexIdx = ii; break;
-                }
+                int mi = imageEntries[ii].matIdx;
+                if (!matTexMap.ContainsKey(mi)) matTexMap[mi] = new int[] { -1, -1, -1, -1 };
+                int role = imageEntries[ii].role;
+                if (role >= 0 && role < 4) matTexMap[mi][role] = ii;
             }
 
-            Color baseColor = Color.white;
-            float smoothness = 0.5f, metallic = 0f;
-            Color emissionColor = Color.black;
-            if (material != null)
+            // Materials
+            json.Append("  \"materials\": [\n");
+            for (int mi = 0; mi < materials.Length; mi++)
             {
-                if (material.HasProperty("_BaseColor")) baseColor = material.GetColor("_BaseColor");
-                else if (material.HasProperty("_Color")) baseColor = material.GetColor("_Color");
-                if (material.HasProperty("_Smoothness")) smoothness = material.GetFloat("_Smoothness");
-                if (material.HasProperty("_Metallic")) metallic = material.GetFloat("_Metallic");
-                if (material.HasProperty("_EmissionColor")) emissionColor = material.GetColor("_EmissionColor");
+                if (mi > 0) json.Append(",\n");
+                var mat = materials[mi];
+                Color baseColor = Color.white;
+                float smoothness = 0.5f, metallic = 0f;
+                Color emissionColor = Color.black;
+                if (mat != null)
+                {
+                    if (mat.HasProperty("_BaseColor")) baseColor = mat.GetColor("_BaseColor");
+                    else if (mat.HasProperty("_Color")) baseColor = mat.GetColor("_Color");
+                    if (mat.HasProperty("_Smoothness")) smoothness = mat.GetFloat("_Smoothness");
+                    if (mat.HasProperty("_Metallic")) metallic = mat.GetFloat("_Metallic");
+                    if (mat.HasProperty("_EmissionColor")) emissionColor = mat.GetColor("_EmissionColor");
+                }
+                int[] ti = matTexMap.ContainsKey(mi) ? matTexMap[mi] : new int[] { -1, -1, -1, -1 };
+                string matName = SanitizeName(mat?.name ?? $"material_{mi}");
+                json.Append($"    {{\n      \"name\": \"{EscapeJson(matName)}\",\n      \"pbrMetallicRoughness\": {{\n");
+                json.Append($"        \"baseColorFactor\": [{F(baseColor.r)}, {F(baseColor.g)}, {F(baseColor.b)}, {F(baseColor.a)}]");
+                if (ti[0] >= 0) json.Append($",\n        \"baseColorTexture\": {{ \"index\": {ti[0]} }}");
+                if (ti[2] >= 0) json.Append($",\n        \"metallicRoughnessTexture\": {{ \"index\": {ti[2]} }}");
+                json.Append($",\n        \"metallicFactor\": {F(metallic)}");
+                json.Append($",\n        \"roughnessFactor\": {F(1f - smoothness)}");
+                json.Append("\n      }");
+                if (ti[1] >= 0) json.Append($",\n      \"normalTexture\": {{ \"index\": {ti[1]} }}");
+                if (ti[2] >= 0) json.Append($",\n      \"occlusionTexture\": {{ \"index\": {ti[2]} }}");
+                if (emissionColor.r > 0 || emissionColor.g > 0 || emissionColor.b > 0)
+                    json.Append($",\n      \"emissiveFactor\": [{F(emissionColor.r)}, {F(emissionColor.g)}, {F(emissionColor.b)}]");
+                if (ti[3] >= 0) json.Append($",\n      \"emissiveTexture\": {{ \"index\": {ti[3]} }}");
+                json.Append("\n    }");
             }
+            json.Append("\n  ],\n");
 
-            string matName = SanitizeName(material?.name ?? "material_0");
-            json.Append("  \"materials\": [{\n");
-            json.Append($"    \"name\": \"{EscapeJson(matName)}\",\n");
-            json.Append("    \"pbrMetallicRoughness\": {\n");
-            json.Append($"      \"baseColorFactor\": [{F(baseColor.r)}, {F(baseColor.g)}, {F(baseColor.b)}, {F(baseColor.a)}]");
-            if (albedoTexIdx >= 0) json.Append($",\n      \"baseColorTexture\": {{ \"index\": {albedoTexIdx} }}");
-            if (ormTexIdx >= 0) json.Append($",\n      \"metallicRoughnessTexture\": {{ \"index\": {ormTexIdx} }}");
-            json.Append($",\n      \"metallicFactor\": {F(metallic)}");
-            json.Append($",\n      \"roughnessFactor\": {F(1f - smoothness)}");
-            json.Append("\n    }");
-            if (normalTexIdx >= 0) json.Append($",\n    \"normalTexture\": {{ \"index\": {normalTexIdx} }}");
-            if (ormTexIdx >= 0) json.Append($",\n    \"occlusionTexture\": {{ \"index\": {ormTexIdx} }}");
-            if (emissionColor.r > 0 || emissionColor.g > 0 || emissionColor.b > 0)
-                json.Append($",\n    \"emissiveFactor\": [{F(emissionColor.r)}, {F(emissionColor.g)}, {F(emissionColor.b)}]");
-            if (emissiveTexIdx >= 0) json.Append($",\n    \"emissiveTexture\": {{ \"index\": {emissiveTexIdx} }}");
-            json.Append("\n  }],\n");
-
-            // Meshes
+            // Meshes — one primitive per submesh, sharing the vertex attributes.
+            // Submeshes past the materials[] list clamp to the last material (Unity behavior).
             json.Append("  \"meshes\": [{\n");
             json.Append($"    \"name\": \"{EscapeJson(mesh.name ?? "mesh")}\",\n");
-            json.Append("    \"primitives\": [{\n");
-            json.Append($"      \"indices\": {indicesAcc},\n");
-            json.Append($"      \"attributes\": {{ \"POSITION\": {posAcc}, \"NORMAL\": {normAcc}");
-            if (tanAcc >= 0) json.Append($", \"TANGENT\": {tanAcc}");
-            if (uvAcc >= 0) json.Append($", \"TEXCOORD_0\": {uvAcc}");
-            json.Append(" },\n");
-            json.Append("      \"material\": 0\n");
-            json.Append("    }]\n  }],\n");
+            json.Append("    \"primitives\": [\n");
+            bool firstPrim = true;
+            for (int s = 0; s < submeshCount; s++)
+            {
+                if (submeshIndicesAcc[s] < 0) continue;
+                if (!firstPrim) json.Append(",\n");
+                firstPrim = false;
+                int matRef = Math.Min(s, materials.Length - 1);
+                json.Append("      {\n");
+                json.Append($"        \"indices\": {submeshIndicesAcc[s]},\n");
+                json.Append($"        \"attributes\": {{ \"POSITION\": {posAcc}, \"NORMAL\": {normAcc}");
+                if (tanAcc >= 0) json.Append($", \"TANGENT\": {tanAcc}");
+                if (uvAcc >= 0) json.Append($", \"TEXCOORD_0\": {uvAcc}");
+                json.Append(" },\n");
+                json.Append($"        \"material\": {matRef}\n");
+                json.Append("      }");
+            }
+            json.Append("\n    ]\n  }],\n");
 
             // Nodes
             json.Append("  \"nodes\": [{ \"mesh\": 0 }],\n");
@@ -386,7 +421,7 @@ namespace HZExporter
                 w.Write(binChunk);
             }
 
-            Debug.Log($"[HZGlbWriter] Exported → {outputPath} ({totalLength} bytes, {vertexCount} verts, {indexCount} indices)");
+            Debug.Log($"[HZGlbWriter] Exported → {outputPath} ({totalLength} bytes, {vertexCount} verts, {totalIndexCount} indices, {submeshCount} submesh(es), {materials.Length} mat(s))");
         }
 
         /// <summary>Animation clip info for GLB export</summary>

@@ -467,7 +467,7 @@ public static class HZExportCommands
                         string glbPath = $"{OutputDir}/glb/{glbName}.glb";
                         glbAssetPath = $"{AssetPrefix}/{glbName}.glb";
 
-                        HZGlbWriter.ExportStaticMesh(mesh, mr.sharedMaterial, glbPath);
+                        HZGlbWriter.ExportStaticMesh(mesh, mr.sharedMaterials, glbPath);
                         exportedGlbs[meshKey] = glbAssetPath;
                         Debug.Log($"[HZ] Exported GLB: {glbName}.glb (static, from {meshKey})");
                     }
@@ -590,15 +590,21 @@ public static class HZExportCommands
         string assetPath = AssetDatabase.GetAssetPath(mesh);
         if (string.IsNullOrEmpty(assetPath) || assetPath.StartsWith("Library/"))
             return $"builtin:{mesh.name}";
-        return assetPath;
+        // Multiple sub-Meshes can live in one FBX (e.g. Chest + ChestLid). Include mesh.name
+        // so each sub-Mesh gets a unique dedup key and filename.
+        return $"{assetPath}::{mesh.name}";
     }
 
     static string GetMeshSourceName(Mesh mesh)
     {
         string assetPath = AssetDatabase.GetAssetPath(mesh);
+        string meshName = SanitizeName(mesh.name);
         if (!string.IsNullOrEmpty(assetPath) && !assetPath.StartsWith("Library/"))
-            return SanitizeName(System.IO.Path.GetFileNameWithoutExtension(assetPath));
-        return SanitizeName(mesh.name);
+        {
+            string fbx = SanitizeName(System.IO.Path.GetFileNameWithoutExtension(assetPath));
+            return fbx == meshName ? fbx : $"{fbx}_{meshName}";
+        }
+        return meshName;
     }
 
     public static void DebugMetallicMap()
@@ -815,6 +821,32 @@ public static class HZExportCommands
     /// Flags null entries, identifies probable MagicaCloth2 proxy SMRs, and shows which one
     /// the current primarySmr picker would choose.
     /// </summary>
+    /// <summary>
+    /// Scan the active scene for static meshes with subMeshCount > 1 to confirm multi-primitive
+    /// Case B is exercised. Logs each to Editor.log.
+    /// </summary>
+    public static void FindMultiSubmeshStaticMeshes()
+    {
+        var scene = SceneManager.GetActiveScene();
+        var roots = scene.GetRootGameObjects();
+        int count = 0;
+        foreach (var root in roots)
+        {
+            foreach (var mr in root.GetComponentsInChildren<MeshRenderer>(true))
+            {
+                var mf = mr.GetComponent<MeshFilter>();
+                if (mf == null || mf.sharedMesh == null) continue;
+                var mesh = mf.sharedMesh;
+                if (mesh.subMeshCount > 1 || mr.sharedMaterials.Length > 1)
+                {
+                    count++;
+                    Debug.Log($"[MultiSub] {mr.gameObject.name}: submeshCount={mesh.subMeshCount} materialCount={mr.sharedMaterials.Length} meshAsset={AssetDatabase.GetAssetPath(mesh)}");
+                }
+            }
+        }
+        Debug.Log($"[MultiSub] total={count}");
+    }
+
     public static void DumpSkinnedBones()
     {
         string outPath = System.IO.Path.Combine(OutputDir, "dump_bones.txt");
