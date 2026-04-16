@@ -47,3 +47,4 @@ crashlytics-build.properties
 # Exported HZ assets (binary output, don't track)
 ExportOutput/
 tools/__pycache__
+ExportedAssets/
