@@ -177,7 +177,11 @@ namespace HZExporter
             // color property
             sb.AppendLine($"  name color");
             sb.AppendLine($"  type MAT_PROP_COLOR4");
-            sb.AppendLine($"  v4 {F(baseColor.r)} {F(baseColor.g)} {F(baseColor.b)} {F(baseColor.a)}");
+            sb.AppendLine($"  c4");
+            sb.AppendLine($"    r {F(baseColor.r)}");
+            sb.AppendLine($"    g {F(baseColor.g)}");
+            sb.AppendLine($"    b {F(baseColor.b)}");
+            sb.AppendLine($"    a {F(baseColor.a)}");
 
             if (hasAlbedo)
             {

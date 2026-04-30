@@ -152,6 +152,8 @@ namespace HZExporter
             sb.AppendLine("width 0");
             sb.AppendLine("height 0");
             sb.AppendLine($"is_srgb {(isSrgb ? "true" : "false")}");
+            sb.AppendLine($"has_alpha {(hasAlpha ? "true" : "false")}");
+            sb.AppendLine("has_alpha_cutoff false");
 
             Directory.CreateDirectory(Path.GetDirectoryName(outputHztPath));
             File.WriteAllText(outputHztPath, sb.ToString());
