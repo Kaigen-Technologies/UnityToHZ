@@ -30,6 +30,24 @@
         { "unity": "_AO",              "slot": "ormTex",      "kind": "texture_orm_occlusion" },
         { "unity": "_Matallic_Smooth", "slot": "ormTex",      "kind": "texture_orm_metalsmooth" }
       ]
+    },
+    {
+      "unityShader": "IL3DN/Branch",
+      "engineShader": "shaders/standard_static_material.hza",
+      "engineSkinnedShader": "shaders/standard_skinned_material.hza",
+      "properties": [
+        { "unity": "_Color",   "slot": "baseColor", "kind": "color4" },
+        { "unity": "_MainTex", "slot": "albedoTex", "kind": "texture" }
+      ]
+    },
+    {
+      "unityShader": "IL3DN/Pine",
+      "engineShader": "shaders/standard_static_material.hza",
+      "engineSkinnedShader": "shaders/standard_skinned_material.hza",
+      "properties": [
+        { "unity": "_Color",   "slot": "baseColor", "kind": "color4" },
+        { "unity": "_MainTex", "slot": "albedoTex", "kind": "texture" }
+      ]
     }
   ]
 }

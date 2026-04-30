@@ -34,6 +34,7 @@ namespace HZExporter
         static readonly ulong HASH_EcsParent = HZBlobWriter.FNV1a("EcsParent");
         static readonly ulong HASH_EcsDirectionalLight = HZBlobWriter.FNV1a("EcsDirectionalLight");
         static readonly ulong HASH_EcsPointLight = HZBlobWriter.FNV1a("EcsPointLight");
+        static readonly ulong HASH_EcsTerrainRef = HZBlobWriter.FNV1a("EcsTerrainRef");
 
         // Component data sizes (must match engine struct sizeof)
         const int SIZE_SceneEntityTag = 1;
@@ -46,17 +47,19 @@ namespace HZExporter
         const int SIZE_EcsAABB = 24;        // 2x vec3
         // Camera: 4x mat4(256) + Frustum(96) + quat(16) + vec3(12) + 4x f32(16) = 396
         const int SIZE_Camera = 396;
-        const int SIZE_EcsSceneSettings = 32;    // v3(12) + f32(4) + ColorF32(16)
+        const int SIZE_EcsSceneSettings = 36;    // ColorF32(16) + f32(4) + ColorF32(16)
         const int SIZE_EcsDirectionalLight = 36; // v3 direction(12) + v3 color(12) + f32 intensity(4) + b32 cast_shadow(4) + f32 shadow_distance(4)
         const int SIZE_EcsPointLight = 20;       // v3 color(12) + f32 radius(4) + f32 intensity(4)
         const int SIZE_EcsAnimationRef = 24;     // BlobAssetRef(AnimationBlobAsset)
         const int SIZE_EcsParent = 8;            // EcsEntity (u64)
         const int SIZEOF_ANIMATION_BLOB_ASSET = 72;
+        const int SIZE_EcsTerrainRef = 32;   // BlobAssetRef(24) + u32 grid_dim + u32 lod_levels
 
         // sizeof(ModelBlobAsset) for BlobAssetRef typehash
         const int SIZEOF_MODEL_BLOB_ASSET = 160;
         const int SIZEOF_MATERIAL_BLOB_ASSET = 112;
         const int SIZEOF_ENTITY_BLOB_ASSET_REF = 72; // sizeof(EntityBlobAsset)
+        const int SIZEOF_TERRAIN_BLOB_ASSET = 128;
 
         /// <summary>
         /// Info about one entity to export.
@@ -103,6 +106,10 @@ namespace HZExporter
             public Vector3 ambientColor;
             public float ambientIntensity;
             public Color shadowColor;
+            // Terrain
+            public string terrainAssetPath; // asset-relative path to terrain .hzt/.hza (TerrainBlobAsset)
+            public uint terrainGridDim;
+            public uint terrainLodLevels;
         }
 
         /// <summary>
@@ -271,6 +278,17 @@ namespace HZExporter
                 sb.AppendLine($"  animation {info.animationAssetPath} AnimationBlobAsset");
             }
 
+            // EcsTerrainRef
+            bool hasTerrain = !string.IsNullOrEmpty(info.terrainAssetPath);
+            if (hasTerrain)
+            {
+                sb.AppendLine();
+                sb.AppendLine("component EcsTerrainRef");
+                sb.AppendLine($"  terrain {info.terrainAssetPath} TerrainBlobAsset");
+                sb.AppendLine($"  grid_dim {info.terrainGridDim}");
+                sb.AppendLine($"  lod_levels {info.terrainLodLevels}");
+            }
+
             // EcsAABB
             if (hasModel)
             {
@@ -346,9 +364,10 @@ namespace HZExporter
                 sb.AppendLine();
                 sb.AppendLine("component EcsSceneSettings");
                 sb.AppendLine("  ambient_color");
-                sb.AppendLine($"    x {F(info.ambientColor.x)}");
-                sb.AppendLine($"    y {F(info.ambientColor.y)}");
-                sb.AppendLine($"    z {F(info.ambientColor.z)}");
+                sb.AppendLine($"    r {F(info.ambientColor.x)}");
+                sb.AppendLine($"    g {F(info.ambientColor.y)}");
+                sb.AppendLine($"    b {F(info.ambientColor.z)}");
+                sb.AppendLine($"    a 1.000000");
                 sb.AppendLine($"  ambient_intensity {F(info.ambientIntensity)}");
                 sb.AppendLine("  shadow_color");
                 sb.AppendLine($"    r {F(info.shadowColor.r)}");
@@ -382,12 +401,15 @@ namespace HZExporter
             if (info.isDirectionalLight) compCount++; // EcsDirectionalLight
             if (info.isPointLight) compCount++; // EcsPointLight
             if (info.isSceneSettings) compCount++; // EcsSceneSettings
+            bool hasTerrain = !string.IsNullOrEmpty(info.terrainAssetPath);
+            if (hasTerrain) compCount++; // EcsTerrainRef
 
             // Collect entity-level deps (model + material paths)
             var entityDeps = new List<string>();
             if (hasModel) entityDeps.Add(info.modelAssetPath);
             if (hasMaterial) entityDeps.Add(info.materialAssetPath);
             if (hasAnimation) entityDeps.Add(info.animationAssetPath);
+            if (hasTerrain) entityDeps.Add(info.terrainAssetPath);
 
             var w = new HZBlobWriter(4096);
             int blobBase = w.Position;
@@ -479,6 +501,12 @@ namespace HZExporter
                 ReserveComponent(HASH_EcsAnimationRef, SIZE_EcsAnimationRef, null); // BlobAssetRef patching
             }
 
+            // --- EcsTerrainRef ---
+            if (hasTerrain)
+            {
+                ReserveComponent(HASH_EcsTerrainRef, SIZE_EcsTerrainRef, null); // BlobAssetRef + 2 u32s
+            }
+
             // --- EcsParent ---
             if (hasParent)
             {
@@ -554,7 +582,7 @@ namespace HZExporter
             if (info.isSceneSettings)
             {
                 ReserveComponent(HASH_EcsSceneSettings, SIZE_EcsSceneSettings, wr => {
-                    wr.WriteVec3(info.ambientColor.x, info.ambientColor.y, info.ambientColor.z);
+                    wr.WriteVec4(info.ambientColor.x, info.ambientColor.y, info.ambientColor.z, 1f);
                     wr.WriteF32(info.ambientIntensity);
                     wr.WriteVec4(info.shadowColor.r, info.shadowColor.g, info.shadowColor.b, info.shadowColor.a);
                 });
@@ -593,6 +621,16 @@ namespace HZExporter
                     w.WriteZeros(SIZEOF_BLOB_ASSET_REF);
                     w.WriteAndPatchBlobAssetRef(refPos, info.animationAssetPath,
                         SIZEOF_ANIMATION_BLOB_ASSET, "AnimationBlobAsset");
+                }
+                else if (slot.hash == HASH_EcsTerrainRef)
+                {
+                    // EcsTerrainRef layout: BlobAssetRef(24) + u32 grid_dim + u32 lod_levels = 32
+                    int refPos = w.Position;
+                    w.WriteZeros(SIZEOF_BLOB_ASSET_REF);
+                    w.WriteU32(info.terrainGridDim);
+                    w.WriteU32(info.terrainLodLevels);
+                    w.WriteAndPatchBlobAssetRef(refPos, info.terrainAssetPath,
+                        SIZEOF_TERRAIN_BLOB_ASSET, "TerrainBlobAsset");
                 }
                 else
                 {

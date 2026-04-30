@@ -1139,14 +1139,16 @@ namespace HZExporter
             RenderTexture.active = prev;
             RenderTexture.ReleaseTemporary(tmp);
 
-            // Unpack: X = alpha * 2 - 1, Y = green * 2 - 1, Z = sqrt(1 - X² - Y²)
+            // Unity's sampler on NormalMap-typed textures already decodes into RGB form
+            // (r=nx_packed, g=ny_packed, b=nz_packed with nz reconstructed). Alpha is
+            // typically unused after decode and reads as 1. We just normalize/rebuild Z
+            // for stability and re-emit as a standard tangent-space normal PNG.
             Color[] pixels = packed.GetPixels();
             for (int i = 0; i < pixels.Length; i++)
             {
-                float nx = pixels[i].a * 2f - 1f;
+                float nx = pixels[i].r * 2f - 1f;
                 float ny = pixels[i].g * 2f - 1f;
                 float nz = Mathf.Sqrt(Mathf.Max(0f, 1f - nx * nx - ny * ny));
-                // Encode back to [0,1] range for PNG
                 pixels[i] = new Color(nx * 0.5f + 0.5f, ny * 0.5f + 0.5f, nz * 0.5f + 0.5f, 1f);
             }
 

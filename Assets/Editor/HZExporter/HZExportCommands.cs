@@ -352,6 +352,10 @@ public static class HZExportCommands
         var exportedGlbs = new Dictionary<string, string>();
         var usedGlbNames = new HashSet<string>();
 
+        // Terrain dedup: shared TerrainData asset → exported once.
+        // key = TerrainData asset path (or instance id when not a project asset) → asset-ref path.
+        var exportedTerrains = new Dictionary<string, string>();
+
         // Deferred skinned mesh exports: collect animations per character before exporting
         // Key = character name (FBX filename with @... stripped)
         var deferredSkinned = new Dictionary<string, DeferredSkinnedExport>();
@@ -470,6 +474,32 @@ public static class HZExportCommands
                     }
 
                     Debug.Log($"[HZ] Entity: {go.name} (skinned, model={glbAssetPath})");
+                }
+                // Terrain — export TerrainBlobAsset + heightmap/splatmaps/layer textures.
+                // Engine-side ECS (EcsTerrainRef in scene entity) isn't wired yet, so the entity
+                // itself is emitted as an empty-transform anchor; the user wires the asset
+                // manually until scene serialization catches up.
+                else if (go.TryGetComponent<Terrain>(out var terrain) && terrain.terrainData != null)
+                {
+                    string key = AssetDatabase.GetAssetPath(terrain.terrainData);
+                    if (string.IsNullOrEmpty(key)) key = $"iid:{terrain.terrainData.GetInstanceID()}";
+
+                    if (!exportedTerrains.TryGetValue(key, out string terrainAssetPath))
+                    {
+                        string safe = SanitizeName(terrain.terrainData.name);
+                        string outSubDir = $"{OutputDir}/terrain/{safe}";
+                        string prefix = $"{AssetPrefix}/terrain/{safe}";
+                        terrainAssetPath = HZTerrainExporter.Export(terrain, outSubDir, prefix);
+                        if (terrainAssetPath != null)
+                            exportedTerrains[key] = terrainAssetPath;
+                    }
+                    if (terrainAssetPath != null)
+                    {
+                        info.terrainAssetPath = terrainAssetPath;
+                        info.terrainGridDim = 32;
+                        info.terrainLodLevels = 6;
+                    }
+                    Debug.Log($"[HZ] Entity: {go.name} (terrain, asset={terrainAssetPath ?? "<failed>"})");
                 }
                 // Static mesh — export as .glb, dedup by (mesh, material combo).
                 else if (go.TryGetComponent<MeshFilter>(out var mf) && mf.sharedMesh != null
