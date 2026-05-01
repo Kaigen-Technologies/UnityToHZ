@@ -116,7 +116,7 @@ public static class HZExportCommands
         for (int i = 0; i < validSmrs.Count; i++)
             mats[i] = validSmrs[i].sharedMaterial;
 
-        HZGlbWriter.ExportSkinnedMesh(smrArray, mats, primarySmr, OutputDir + "/glb/XBot.glb");
+        HZGlbWriter.ExportSkinnedMesh(smrArray, mats, primarySmr, instance.transform, OutputDir + "/glb/XBot.glb");
 
         Object.DestroyImmediate(instance);
         Debug.Log("[HZ] X Bot GLB export done!");
@@ -343,18 +343,17 @@ public static class HZExportCommands
             foreach (var t in root.GetComponentsInChildren<Transform>(true))
                 goToStableId[t.gameObject.GetInstanceID()] = NextStableId();
 
-        // Collect GameObjects to skip: skeleton bones + SMR children of ANY Animator in the hierarchy
+        // Collect GameObjects to skip: skeleton bones owned by each Animator. A nested Animator
+        // (e.g. an attached separate skinned model) is its OWN character — its GO stays exportable
+        // and its bones are skipped only by its own pass, not by an outer Animator's pass. So we
+        // walk each Animator's descendants and stop at any deeper Animator boundary.
         var skipGOs = new HashSet<int>();
         foreach (var root in roots)
         {
             foreach (var animator in root.GetComponentsInChildren<Animator>(true))
             {
                 var animGO = animator.gameObject;
-                foreach (var childT in animGO.GetComponentsInChildren<Transform>(true))
-                {
-                    if (childT.gameObject == animGO) continue;
-                    skipGOs.Add(childT.gameObject.GetInstanceID());
-                }
+                AddBoneSkips(animGO.transform, animGO, skipGOs);
             }
         }
 
@@ -371,7 +370,29 @@ public static class HZExportCommands
         // Key = character name (FBX filename with @... stripped)
         var deferredSkinned = new Dictionary<string, DeferredSkinnedExport>();
 
-        // Second pass: export each GameObject as an entity
+        // Pose every rig at "idle frame 0" before sampling entity transforms. The FBX bind
+        // pose is sometimes degenerate (e.g. tail rig collapsed at the floor) — what the user
+        // sees in Unity when the Animator runs is the idle animation, which puts everything
+        // at its expected visual rest position. Sample the first AnimationClip at t=0 of each
+        // Animator to reproduce that pose deterministically.
+        foreach (var rootGO in roots)
+        {
+            foreach (var animator in rootGO.GetComponentsInChildren<Animator>(true))
+            {
+                if (animator.runtimeAnimatorController == null) continue;
+                var clips = animator.runtimeAnimatorController.animationClips;
+                if (clips == null || clips.Length == 0) continue;
+                AnimationClip first = null;
+                foreach (var c in clips)
+                {
+                    if (c == null || c.name.StartsWith("__preview__")) continue;
+                    first = c; break;
+                }
+                if (first != null) first.SampleAnimation(animator.gameObject, 0f);
+            }
+        }
+
+        // Second pass: export each GameObject as an entity.
         foreach (var root in roots)
         {
             foreach (var t in root.GetComponentsInChildren<Transform>(true))
@@ -385,6 +406,7 @@ public static class HZExportCommands
 
                 // Find nearest exported ancestor (skip skeleton bones)
                 ulong parentStableId = 0;
+                Transform parentAnchor = null;  // the Transform whose stableId we're parenting to
                 Transform ancestor = t.parent;
                 while (ancestor != null)
                 {
@@ -392,17 +414,37 @@ public static class HZExportCommands
                     if (!skipGOs.Contains(ancestorId) && goToStableId.TryGetValue(ancestorId, out ulong pid))
                     {
                         parentStableId = pid;
+                        parentAnchor = ancestor;
                         break;
                     }
                     ancestor = ancestor.parent;
                 }
 
+                // Local TRS: when bones (or other skipped GOs) sit between t and the actual
+                // exported parent, t.localPosition/Rotation/Scale would be relative to the
+                // wrong frame (the immediate Unity parent). Recompute relative to parentAnchor.
+                Vector3 localPos; Quaternion localRot; Vector3 localScl;
+                if (parentAnchor != null && parentAnchor != t.parent)
+                {
+                    Matrix4x4 m = parentAnchor.worldToLocalMatrix * t.localToWorldMatrix;
+                    Vector4 c3 = m.GetColumn(3);
+                    localPos = new Vector3(c3.x, c3.y, c3.z);
+                    localRot = m.rotation;
+                    localScl = m.lossyScale;
+                }
+                else
+                {
+                    localPos = t.localPosition;
+                    localRot = t.localRotation;
+                    localScl = t.localScale;
+                }
+
                 // Base entity info — every entity gets this
                 var info = new HZSceneExporter.EntityExportInfo {
                     name = go.name,
-                    position = t.localPosition,
-                    rotation = t.localRotation,
-                    scale = t.localScale,
+                    position = localPos,
+                    rotation = localRot,
+                    scale = localScl,
                     worldPosition = t.position,
                     worldRotation = t.rotation,
                     worldScale = t.lossyScale,
@@ -412,14 +454,18 @@ public static class HZExportCommands
                     parentStableId = parentStableId,
                 };
 
-                // Check for skinned mesh (root of skinned hierarchy)
+                // Check for skinned mesh (root of skinned hierarchy). SMRs that belong to a
+                // *deeper* Animator (a nested attached character) are filtered out — they get
+                // exported when we visit that nested Animator's GO as its own entity.
+                var thisAnimator = go.GetComponent<Animator>();
                 var allSmrs = go.GetComponentsInChildren<SkinnedMeshRenderer>();
                 var validSmrs = new List<SkinnedMeshRenderer>();
                 foreach (var s in allSmrs)
-                    if (s.sharedMesh != null && s.bones != null && s.bones.Length > 0)
+                    if (s.sharedMesh != null && s.bones != null && s.bones.Length > 0
+                        && NearestAnimator(s.transform) == thisAnimator)
                         validSmrs.Add(s);
 
-                if (validSmrs.Count > 0 && go.GetComponent<Animator>() != null)
+                if (validSmrs.Count > 0 && thisAnimator != null)
                 {
                     SkinnedMeshRenderer primarySmr = validSmrs[0];
                     foreach (var s in validSmrs)
@@ -442,6 +488,7 @@ public static class HZExportCommands
                             smrs = smrArray,
                             materials = mats,
                             primarySmr = primarySmr,
+                            entityRoot = go.transform,
                             glbPath = $"{OutputDir}/glb/{charName}.glb",
                             glbAssetPath = glbAssetPath,
                             animClips = new List<HZGlbWriter.AnimClipInfo>(),
@@ -598,7 +645,7 @@ public static class HZExportCommands
         {
             var d = kvp.Value;
             var animArray = d.animClips.Count > 0 ? d.animClips.ToArray() : null;
-            HZGlbWriter.ExportSkinnedMesh(d.smrs, d.materials, d.primarySmr, d.glbPath, animArray);
+            HZGlbWriter.ExportSkinnedMesh(d.smrs, d.materials, d.primarySmr, d.entityRoot, d.glbPath, animArray);
             int animCount = animArray?.Length ?? 0;
             Debug.Log($"[HZ] Exported GLB: {kvp.Key}.glb (skinned, {animCount} animations)");
         }
@@ -659,6 +706,7 @@ public static class HZExportCommands
         public SkinnedMeshRenderer[] smrs;
         public Material[] materials;
         public SkinnedMeshRenderer primarySmr;
+        public Transform entityRoot;   // GO with the Animator — anchor for bone chain bake
         public string glbPath;
         public string glbAssetPath;
         public List<HZGlbWriter.AnimClipInfo> animClips;
@@ -940,6 +988,38 @@ public static class HZExportCommands
     static string SanitizeName(string name)
     {
         return name.Replace(" ", "_").Replace("/", "_").Replace("\\", "_");
+    }
+
+    /// <summary>
+    /// Walks up from `t` and returns the first Animator found (including on `t` itself).
+    /// Used to determine which character a SMR / bone belongs to when an Animator is nested
+    /// inside another Animator's hierarchy.
+    /// </summary>
+    static Animator NearestAnimator(Transform t)
+    {
+        while (t != null)
+        {
+            var a = t.GetComponent<Animator>();
+            if (a != null) return a;
+            t = t.parent;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Walks descendants of `cur` and adds them to `skipGOs` as bones of `ownerAnim`.
+    /// Stops at any deeper Animator boundary — that subtree belongs to a nested character
+    /// and is processed by its own pass. The owner's GO itself is NOT added (caller responsibility).
+    /// </summary>
+    static void AddBoneSkips(Transform cur, GameObject ownerAnim, HashSet<int> skipGOs)
+    {
+        for (int i = 0; i < cur.childCount; i++)
+        {
+            var child = cur.GetChild(i);
+            if (child.GetComponent<Animator>() != null) continue; // nested character — its own pass
+            skipGOs.Add(child.gameObject.GetInstanceID());
+            AddBoneSkips(child, ownerAnim, skipGOs);
+        }
     }
 
     /// <summary>

@@ -384,9 +384,15 @@ namespace HZExporter
             public GameObject skeletonRoot;
         }
 
-        /// <summary>Export multi-mesh skinned model as .glb with skeleton and optional animations</summary>
+        /// <summary>Export multi-mesh skinned model as .glb with skeleton and optional animations.
+        /// `entityRoot` is the GameObject that becomes the entity in the engine (typically the
+        /// Animator-owning GO). It anchors the bone hierarchy: any root bone whose Unity parent
+        /// is outside `bones[]` (e.g. an attached sub-character whose root bone hangs off the
+        /// outer character's skeleton) has the chain above it baked into its rest TRS so the
+        /// engine places it at the correct bind-pose location relative to the entity.</summary>
         public static void ExportSkinnedMesh(SkinnedMeshRenderer[] smrs, Material[] materials,
-            SkinnedMeshRenderer primarySmr, string outputPath, AnimClipInfo[] animClips = null)
+            SkinnedMeshRenderer primarySmr, Transform entityRoot, string outputPath,
+            AnimClipInfo[] animClips = null)
         {
             var bones = primarySmr.bones;
             int jointCount = bones.Length;
@@ -638,6 +644,10 @@ namespace HZExporter
             var restPositions = new Vector3[jointCount];
             var restRotations = new Quaternion[jointCount];
             var restScales = new Vector3[jointCount];
+            // Build set of joint Transforms once, for "is this bone's parent another joint?" lookups.
+            var bonesSetStatic = new HashSet<Transform>();
+            for (int i = 0; i < jointCount; i++)
+                if (bones[i] != null) bonesSetStatic.Add(bones[i]);
             for (int i = 0; i < jointCount; i++)
             {
                 if (bones[i] == null)
@@ -647,9 +657,24 @@ namespace HZExporter
                     restScales[i] = Vector3.one;
                     continue;
                 }
-                restPositions[i] = bones[i].localPosition;
-                restRotations[i] = bones[i].localRotation;
-                restScales[i] = bones[i].localScale;
+                var bp = bones[i].parent;
+                if (bp != null && bonesSetStatic.Contains(bp))
+                {
+                    restPositions[i] = bones[i].localPosition;
+                    restRotations[i] = bones[i].localRotation;
+                    restScales[i] = bones[i].localScale;
+                }
+                else
+                {
+                    // Root joint: bake the chain above (outer-character bones, prefab wrappers,
+                    // etc.) so the rest TRS is relative to entityRoot, matching the GLB joint
+                    // hierarchy convention.
+                    Matrix4x4 m = entityRoot.worldToLocalMatrix * bones[i].localToWorldMatrix;
+                    Vector4 c3 = m.GetColumn(3);
+                    restPositions[i] = new Vector3(c3.x, c3.y, c3.z);
+                    restRotations[i] = m.rotation;
+                    restScales[i] = m.lossyScale;
+                }
             }
             // Re-enable animators (needed for SampleAnimation during baking)
             foreach (var a in animators) a.enabled = true;
