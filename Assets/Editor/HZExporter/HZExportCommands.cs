@@ -428,7 +428,7 @@ public static class HZExportCommands
 
                     // Character name = FBX filename with @... stripped
                     string charName = GetCharacterName(primarySmr.sharedMesh);
-                    string glbAssetPath = $"{AssetPrefix}/{charName}.glb";
+                    string glbAssetPath = $"{AssetPrefix}/glb/{charName}.glb";
 
                     // Defer export — collect mesh info on first encounter
                     if (!deferredSkinned.ContainsKey(charName))
@@ -480,7 +480,7 @@ public static class HZExportCommands
                             // Point to the cooked animation .hza that the engine extracts from the GLB
                             // Engine cooks unity/SeaGull.glb → cooked/unity/SeaGull/{clipName}.hza
                             string firstClipName = SanitizeName(animator.runtimeAnimatorController.animationClips[0].name);
-                            info.animationAssetPath = $"{AssetPrefix}/{charName}/{firstClipName}.hza";
+                            info.animationAssetPath = $"{AssetPrefix}/glb/{charName}/{firstClipName}.hza";
                         }
                     }
 
@@ -530,7 +530,7 @@ public static class HZExportCommands
                     {
                         string glbName = GetMeshSourceName(mesh);
                         string glbPath = $"{OutputDir}/glb/{glbName}.glb";
-                        glbAssetPath = $"{AssetPrefix}/{glbName}.glb";
+                        glbAssetPath = $"{AssetPrefix}/glb/{glbName}.glb";
 
                         HZGlbWriter.ExportStaticMesh(mesh, mats, glbPath);
                         exportedGlbs[meshKey] = glbAssetPath;

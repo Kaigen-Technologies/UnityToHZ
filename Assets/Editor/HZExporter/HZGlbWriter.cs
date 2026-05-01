@@ -688,6 +688,16 @@ namespace HZExporter
                         continue;
                     }
 
+                    // Build set of Transforms that are joints in bones[]. For any bone whose
+                    // parent IS in this set, the sampled local TRS is correct as-is. For a
+                    // root bone (parent NOT in set — typically Armature with a non-identity
+                    // rotation above the skeleton), we bake the chain above it into the bone's
+                    // sample by composing animRoot.worldToLocal × bone.localToWorldMatrix.
+                    // Bind pose IBMs are derived from bone.localToWorldMatrix already, so the
+                    // animated TRS lines up with the rest pose — no extra correction needed.
+                    var boneSet = new HashSet<Transform>();
+                    foreach (var ab in animBones) boneSet.Add(ab.t);
+
                     // Write timestamps
                     PadTo4(bin);
                     int tsOff = (int)bin.Position;
@@ -718,9 +728,21 @@ namespace HZExporter
                         for (int bi = 0; bi < animBones.Count; bi++)
                         {
                             var bt = animBones[bi].t;
-                            sampledT[ki][bi] = bt.localPosition;
-                            sampledR[ki][bi] = bt.localRotation;
-                            sampledS[ki][bi] = bt.localScale;
+                            if (bt.parent != null && boneSet.Contains(bt.parent))
+                            {
+                                sampledT[ki][bi] = bt.localPosition;
+                                sampledR[ki][bi] = bt.localRotation;
+                                sampledS[ki][bi] = bt.localScale;
+                            }
+                            else
+                            {
+                                // Root joint: bake parent chain (Armature, etc.) into the sample.
+                                Matrix4x4 m = animRoot.transform.worldToLocalMatrix * bt.localToWorldMatrix;
+                                Vector4 c3 = m.GetColumn(3);
+                                sampledT[ki][bi] = new Vector3(c3.x, c3.y, c3.z);
+                                sampledR[ki][bi] = m.rotation;
+                                sampledS[ki][bi] = m.lossyScale;
+                            }
                         }
                     }
 
