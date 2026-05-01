@@ -106,6 +106,11 @@ namespace HZExporter
             public Vector3 ambientColor;
             public float ambientIntensity;
             public Color shadowColor;
+            // Skybox / IBL env (only meaningful when isSceneSettings == true)
+            public bool hasEnv;
+            public string envAssetPath;   // e.g. "unity/environments/SceneA_skybox.hza"
+            public float envIntensity;
+            public bool skybox;           // true if Unity has a skybox material assigned
             // Terrain
             public string terrainAssetPath; // asset-relative path to terrain .hzt/.hza (TerrainBlobAsset)
             public uint terrainGridDim;
@@ -374,6 +379,12 @@ namespace HZExporter
                 sb.AppendLine($"    g {F(info.shadowColor.g)}");
                 sb.AppendLine($"    b {F(info.shadowColor.b)}");
                 sb.AppendLine($"    a {F(info.shadowColor.a)}");
+                if (info.hasEnv)
+                {
+                    sb.AppendLine($"  env {info.envAssetPath} HdrEnvironmentBlobAsset");
+                    sb.AppendLine($"  env_intensity {F(info.envIntensity)}");
+                }
+                sb.AppendLine($"  skybox {(info.skybox ? "true" : "false")}");
             }
 
             Directory.CreateDirectory(Path.GetDirectoryName(outputPath));

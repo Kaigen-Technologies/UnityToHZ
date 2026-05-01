@@ -30,6 +30,17 @@ public static class HZExportCommands
         Object.DestroyImmediate(go);
     }
 
+    /// <summary>Export the active scene's skybox to an equirect Radiance .hdr.
+    /// Engine cooks .hdr → cubemap KTX + HdrEnvironmentBlobAsset on its side.</summary>
+    [MenuItem("HZ Engine/Export Skybox")]
+    public static void ExportSkybox()
+    {
+        string sceneName = SceneManager.GetActiveScene().name;
+        if (string.IsNullOrEmpty(sceneName)) sceneName = "Skybox";
+        string outPath = OutputDir + "/environments/" + sceneName + "_skybox.hdr";
+        HZSkyboxExporter.Export(outPath);
+    }
+
     [MenuItem("HZ Engine/Export Test Cube")]
     public static void ExportTestCube()
     {
@@ -507,18 +518,23 @@ public static class HZExportCommands
                 {
                     Mesh mesh = mf.sharedMesh;
                     Material[] mats = mr.sharedMaterials;
-                    string meshMatKey = $"{GetMeshKey(mesh)}::{GetMaterialsSignature(mats)}";
+                    // Dedup by mesh only. Multiple entities sharing the same mesh with different
+                    // materials reuse one GLB — the engine extracts material/textures from the
+                    // GLB once into assets/unity/{materials,textures}/, and entity material
+                    // overrides (when needed) come from external EcsMaterialRef. Splitting GLBs
+                    // by material assignment causes the engine's GLB cooker to write the same
+                    // texture filename from multiple sources → asset collision.
+                    string meshKey = GetMeshKey(mesh);
 
-                    if (!exportedGlbs.TryGetValue(meshMatKey, out string glbAssetPath))
+                    if (!exportedGlbs.TryGetValue(meshKey, out string glbAssetPath))
                     {
-                        string glbName = UniqueGlbName(GetMeshSourceName(mesh), mats, usedGlbNames);
-                        usedGlbNames.Add(glbName);
+                        string glbName = GetMeshSourceName(mesh);
                         string glbPath = $"{OutputDir}/glb/{glbName}.glb";
                         glbAssetPath = $"{AssetPrefix}/{glbName}.glb";
 
                         HZGlbWriter.ExportStaticMesh(mesh, mats, glbPath);
-                        exportedGlbs[meshMatKey] = glbAssetPath;
-                        Debug.Log($"[HZ] Exported GLB: {glbName}.glb (static, from {meshMatKey})");
+                        exportedGlbs[meshKey] = glbAssetPath;
+                        Debug.Log($"[HZ] Exported GLB: {glbName}.glb (static, from {meshKey})");
                     }
 
                     info.modelAssetPath = glbAssetPath;
@@ -540,7 +556,9 @@ public static class HZExportCommands
                 // Lights
                 else if (go.TryGetComponent<Light>(out var light))
                 {
-                    Color c = LinearToSrgb(light.color.linear);
+                    // Engine applies srgb_to_linear to light color; encode the picker value
+                    // (light.color, raw) so the engine recovers what Unity uses internally.
+                    Color c = LinearToSrgb(light.color);
                     if (light.type == LightType.Directional)
                     {
                         Vector3 fwd = t.forward;
@@ -585,10 +603,32 @@ public static class HZExportCommands
             Debug.Log($"[HZ] Exported GLB: {kvp.Key}.glb (skinned, {animCount} animations)");
         }
 
+        string sceneName = SanitizeName(scene.name);
+
+        // Skybox / IBL env: bake the active Unity skybox to an equirect .hdr if the
+        // scene has a skybox material or uses skybox-based ambient. Engine cooks the
+        // .hdr → cubemap KTX + HdrEnvironmentBlobAsset on its side.
+        bool wantsSkybox = RenderSettings.skybox != null;
+        bool wantsEnv = wantsSkybox || RenderSettings.ambientMode == UnityEngine.Rendering.AmbientMode.Skybox;
+        string envAssetPath = null;
+        float envIntensity = 1.0f;
+        if (wantsEnv)
+        {
+            string hdrPath = $"{OutputDir}/environments/{sceneName}_skybox.hdr";
+            if (HZSkyboxExporter.Export(hdrPath))
+            {
+                envAssetPath = $"{AssetPrefix}/environments/{sceneName}_skybox.hza";
+                envIntensity = RenderSettings.ambientMode == UnityEngine.Rendering.AmbientMode.Skybox
+                    ? RenderSettings.ambientIntensity : 1.0f;
+            }
+        }
+
         // Scene settings (synthetic entity, no GameObject)
         {
-            Color ambient = LinearToSrgb(RenderSettings.ambientLight.linear);
-            Color shadowCol = LinearToSrgb(RenderSettings.subtractiveShadowColor.linear);
+            // Engine applies srgb_to_linear to ambient/shadow color; encode the picker value
+            // (raw RenderSettings color, no .linear) so engine recovers what Unity uses.
+            Color ambient = LinearToSrgb(RenderSettings.ambientLight);
+            Color shadowCol = LinearToSrgb(RenderSettings.subtractiveShadowColor);
             entities.Add(new HZSceneExporter.EntityExportInfo {
                 name = "SceneSettings",
                 position = Vector3.zero,
@@ -600,10 +640,12 @@ public static class HZExportCommands
                 ambientColor = new Vector3(ambient.r, ambient.g, ambient.b),
                 ambientIntensity = RenderSettings.ambientIntensity,
                 shadowColor = shadowCol,
+                hasEnv = envAssetPath != null,
+                envAssetPath = envAssetPath,
+                envIntensity = envIntensity,
+                skybox = wantsSkybox,
             });
         }
-
-        string sceneName = SanitizeName(scene.name);
         string scenePath = $"{OutputDir}/scenes/{sceneName}.hzt";
         string sceneDir = $"{OutputDir}/scenes/{sceneName}";
         string sceneDirAssetPath = $"{AssetPrefix}/{sceneName}";
