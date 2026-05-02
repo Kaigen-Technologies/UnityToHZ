@@ -470,6 +470,9 @@
         },
         {
             "m_Id": "2cd62b97f0534b1d9586bc98aff13646"
+        },
+        {
+            "m_Id": "e7f3707a73d34f608f7f54b7b4538475"
         }
     ],
     "m_GroupDatas": [
@@ -1145,20 +1148,6 @@
                     "m_Id": "137890863aa64607b754807fb844882f"
                 },
                 "m_SlotId": 2
-            }
-        },
-        {
-            "m_OutputSlot": {
-                "m_Node": {
-                    "m_Id": "415a90dd7d034f7196450098846d909e"
-                },
-                "m_SlotId": 1
-            },
-            "m_InputSlot": {
-                "m_Node": {
-                    "m_Id": "0d2927f70dd441ce8b0405cb6e2a2c91"
-                },
-                "m_SlotId": 0
             }
         },
         {
@@ -2382,6 +2371,20 @@
         {
             "m_OutputSlot": {
                 "m_Node": {
+                    "m_Id": "e7f3707a73d34f608f7f54b7b4538475"
+                },
+                "m_SlotId": 0
+            },
+            "m_InputSlot": {
+                "m_Node": {
+                    "m_Id": "0d2927f70dd441ce8b0405cb6e2a2c91"
+                },
+                "m_SlotId": 0
+            }
+        },
+        {
+            "m_OutputSlot": {
+                "m_Node": {
                     "m_Id": "ead412db81e14cd880d594cfccdbba97"
                 },
                 "m_SlotId": 3
@@ -2838,7 +2841,7 @@
     "m_Title": "Eyelashes and Mouth",
     "m_Position": {
         "x": -2218.5,
-        "y": 268.0000915527344
+        "y": 268.0
     }
 }
 
@@ -4788,28 +4791,16 @@
     "m_Value": 0.0,
     "m_SerializableColorKeys": [
         {
-            "x": 0.6738576292991638,
-            "y": 0.545098066329956,
-            "z": 0.7686274647712708,
-            "w": 0.3764705955982208
-        },
-        {
-            "x": 0.9301111698150635,
-            "y": 0.5457246899604797,
-            "z": 0.5647116899490356,
-            "w": 0.4470588266849518
-        },
-        {
             "x": 1.0,
-            "y": 0.8879231810569763,
-            "z": 0.7379106879234314,
-            "w": 0.5470664501190186
+            "y": 1.0,
+            "z": 1.0,
+            "w": 0.0
         },
         {
             "x": 1.0,
             "y": 1.0,
             "z": 1.0,
-            "w": 0.6470588445663452
+            "w": 1.0
         }
     ],
     "m_SerializableAlphaKeys": [
@@ -5090,7 +5081,7 @@
     "m_ObjectId": "29e3b24251b749ed936a30b3e20e0229",
     "m_Title": "Eye Spark",
     "m_Position": {
-        "x": -1657.9998779296875,
+        "x": -1658.0,
         "y": 3029.0
     }
 }
@@ -5543,7 +5534,7 @@
     "m_ObjectId": "2eb300c54f9644dd81ce4e1122237797",
     "m_Title": "Lighting",
     "m_Position": {
-        "x": -1408.9998779296875,
+        "x": -1409.0,
         "y": -565.0
     }
 }
@@ -7548,6 +7539,31 @@
         "e32": 0.0,
         "e33": 1.0
     }
+}
+
+{
+    "m_SGVersion": 0,
+    "m_Type": "UnityEditor.ShaderGraph.Vector4MaterialSlot",
+    "m_ObjectId": "4de02b008a2e4e1eb24402577dc4250b",
+    "m_Id": 0,
+    "m_DisplayName": "Out",
+    "m_SlotType": 1,
+    "m_Hidden": false,
+    "m_ShaderOutputName": "Out",
+    "m_StageCapability": 3,
+    "m_Value": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0,
+        "w": 0.0
+    },
+    "m_DefaultValue": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0,
+        "w": 0.0
+    },
+    "m_Labels": []
 }
 
 {
@@ -11090,7 +11106,7 @@
     "m_Title": "Face Base Color",
     "m_Position": {
         "x": -5235.0,
-        "y": 351.0000915527344
+        "y": 351.0
     }
 }
 
@@ -11413,7 +11429,7 @@
     "m_Title": "Face Lines | Painted Shadows",
     "m_Position": {
         "x": -4222.0,
-        "y": 228.00010681152345
+        "y": 228.0
     }
 }
 
@@ -14472,7 +14488,7 @@
     "m_Title": "Eye color",
     "m_Position": {
         "x": -3212.0,
-        "y": 2013.9998779296875
+        "y": 2014.0
     }
 }
 
@@ -16569,7 +16585,7 @@
     "m_Title": "Eyeballs",
     "m_Position": {
         "x": -2204.0,
-        "y": 1035.9996337890625
+        "y": 1036.0
     }
 }
 
@@ -16750,6 +16766,44 @@
     "m_CustomColors": {
         "m_SerializableColors": []
     }
+}
+
+{
+    "m_SGVersion": 0,
+    "m_Type": "UnityEditor.ShaderGraph.UVNode",
+    "m_ObjectId": "e7f3707a73d34f608f7f54b7b4538475",
+    "m_Group": {
+        "m_Id": ""
+    },
+    "m_Name": "UV",
+    "m_DrawState": {
+        "m_Expanded": true,
+        "m_Position": {
+            "serializedVersion": "2",
+            "x": 345.4999694824219,
+            "y": -253.99998474121095,
+            "width": 207.99996948242188,
+            "height": 311.4999694824219
+        }
+    },
+    "m_Slots": [
+        {
+            "m_Id": "4de02b008a2e4e1eb24402577dc4250b"
+        }
+    ],
+    "synonyms": [
+        "texcoords",
+        "coords",
+        "coordinates"
+    ],
+    "m_Precision": 0,
+    "m_PreviewExpanded": true,
+    "m_DismissedVersion": 0,
+    "m_PreviewMode": 0,
+    "m_CustomColors": {
+        "m_SerializableColors": []
+    },
+    "m_OutputChannel": 0
 }
 
 {

@@ -49,6 +49,7 @@ namespace HZExporter
             var normals = mesh.normals;
             var tangents = mesh.tangents;
             var uvs = mesh.uv;
+            var uvs1 = mesh.uv2;   // Unity's mesh.uv2 == UV1 / glTF TEXCOORD_1 / engine uvs1
             int vertexCount = mesh.vertexCount;
             bool useU16 = vertexCount <= 65535;
             int submeshCount = Math.Max(1, mesh.subMeshCount);
@@ -144,6 +145,20 @@ namespace HZExporter
             }
             int uvSize = (int)bin.Position - uvOffset;
 
+            // UV1 (Unity mesh.uv2) — defensive: only emit when length matches vertexCount.
+            int uv1Offset = (int)bin.Position;
+            bool hasUV1 = uvs1 != null && uvs1.Length == vertexCount;
+            if (hasUV1)
+            {
+                for (int i = 0; i < vertexCount; i++)
+                {
+                    float u = uvs1[i].x;
+                    float v = 1.0f - uvs1[i].y;
+                    WriteF32(bin, u); WriteF32(bin, v);
+                }
+            }
+            int uv1Size = (int)bin.Position - uv1Offset;
+
             // --- Embedded textures (per material) ---
             // Materials route either via PBR (shader_mapping.json default) or, when the entry is
             // marked customShader:true, via HZShaderMap.EmbedCustomMaterial — the latter yields a
@@ -207,6 +222,13 @@ namespace HZExporter
                 uvBV = bvIdx++;
             }
 
+            int uv1BV = -1;
+            if (hasUV1)
+            {
+                bufferViews.Add(new { buffer = 0, byteOffset = uv1Offset, byteLength = uv1Size, byteStride = 8 });
+                uv1BV = bvIdx++;
+            }
+
             int[] imageBVs = new int[imageEntries.Count];
             for (int ii = 0; ii < imageEntries.Count; ii++)
             {
@@ -253,21 +275,29 @@ namespace HZExporter
             json.Append($"\"min\": [{F(posMin[0])}, {F(posMin[1])}, {F(posMin[2])}], \"max\": [{F(posMax[0])}, {F(posMax[1])}, {F(posMax[2])}] }},\n");
             int normAcc = accIdx++;
             json.Append($"    {{ \"bufferView\": {normBV}, \"componentType\": {FLOAT}, \"count\": {vertexCount}, \"type\": \"VEC3\" }}");
-            if (hasTangents || hasUVs) json.Append(",");
+            if (hasTangents || hasUVs || hasUV1) json.Append(",");
             json.Append("\n");
             int tanAcc = -1;
             if (hasTangents)
             {
                 tanAcc = accIdx++;
                 json.Append($"    {{ \"bufferView\": {tanBV}, \"componentType\": {FLOAT}, \"count\": {vertexCount}, \"type\": \"VEC4\" }}");
-                if (hasUVs) json.Append(",");
+                if (hasUVs || hasUV1) json.Append(",");
                 json.Append("\n");
             }
             int uvAcc = -1;
             if (hasUVs)
             {
                 uvAcc = accIdx++;
-                json.Append($"    {{ \"bufferView\": {uvBV}, \"componentType\": {FLOAT}, \"count\": {vertexCount}, \"type\": \"VEC2\" }}\n");
+                json.Append($"    {{ \"bufferView\": {uvBV}, \"componentType\": {FLOAT}, \"count\": {vertexCount}, \"type\": \"VEC2\" }}");
+                if (hasUV1) json.Append(",");
+                json.Append("\n");
+            }
+            int uv1Acc = -1;
+            if (hasUV1)
+            {
+                uv1Acc = accIdx++;
+                json.Append($"    {{ \"bufferView\": {uv1BV}, \"componentType\": {FLOAT}, \"count\": {vertexCount}, \"type\": \"VEC2\" }}\n");
             }
             json.Append("  ],\n");
 
@@ -348,6 +378,7 @@ namespace HZExporter
                 json.Append($"        \"attributes\": {{ \"POSITION\": {posAcc}, \"NORMAL\": {normAcc}");
                 if (tanAcc >= 0) json.Append($", \"TANGENT\": {tanAcc}");
                 if (uvAcc >= 0) json.Append($", \"TEXCOORD_0\": {uvAcc}");
+                if (uv1Acc >= 0) json.Append($", \"TEXCOORD_1\": {uv1Acc}");
                 json.Append(" },\n");
                 json.Append($"        \"material\": {matRef}\n");
                 json.Append("      }");
@@ -468,7 +499,7 @@ namespace HZExporter
 
             // --- Write per-mesh primitive data ---
             int meshCount = smrs.Length;
-            int[][] meshAccIndices = new int[meshCount][]; // [indicesAcc, posAcc, normAcc, tanAcc, uvAcc, jointsAcc, weightsAcc]
+            int[][] meshAccIndices = new int[meshCount][]; // [indicesAcc, posAcc, normAcc, tanAcc, uvAcc, jointsAcc, weightsAcc, uv1Acc]
 
             for (int mi = 0; mi < meshCount; mi++)
             {
@@ -479,6 +510,7 @@ namespace HZExporter
                 var normals = mesh.normals;
                 var tangents = mesh.tangents;
                 var uvs = mesh.uv;
+                var uvs1 = mesh.uv2;   // UV1 / glTF TEXCOORD_1 / engine uvs1
                 var triangles = mesh.triangles;
                 int indexCount = triangles.Length;
                 bool useU16 = vertexCount <= 65535;
@@ -573,6 +605,17 @@ namespace HZExporter
                     }
                 int uvSize = (int)bin.Position - uvOff;
 
+                // UV1 (Unity mesh.uv2) — defensive: only emit when length matches vertexCount.
+                int uv1Off = (int)bin.Position;
+                bool hasUV1 = uvs1 != null && uvs1.Length == vertexCount;
+                if (hasUV1)
+                    for (int i = 0; i < vertexCount; i++)
+                    {
+                        WriteF32(bin, uvs1[i].x);
+                        WriteF32(bin, 1.0f - uvs1[i].y);
+                    }
+                int uv1Size = (int)bin.Position - uv1Off;
+
                 // Joint indices: u8 when skeleton has ≤256 joints, else u16 (glTF spec allows both).
                 // Unity meshes with many bones (e.g. characters with dynamic bone chains) blow past 255
                 // and a (byte) cast silently wraps, mis-skinning every vertex weighted to a high-index bone.
@@ -615,6 +658,7 @@ namespace HZExporter
                 int normBV = AddBV(normOff, normSize, 12);
                 int tanBV = hasTan ? AddBV(tanOff, tanSize, 16) : -1;
                 int uvBV = hasUV ? AddBV(uvOff, uvSize, 8) : -1;
+                int uv1BV = hasUV1 ? AddBV(uv1Off, uv1Size, 8) : -1;
                 int jiBV = AddBV(jiOff, jiSize, jointsU16 ? 8 : 4);
                 int jwBV = AddBV(jwOff, jwSize, 16);
 
@@ -623,10 +667,11 @@ namespace HZExporter
                 int normAcc = AddAcc(normBV, FLOAT, vertexCount, "VEC3");
                 int tanAcc = hasTan ? AddAcc(tanBV, FLOAT, vertexCount, "VEC4") : -1;
                 int uvAcc = hasUV ? AddAcc(uvBV, FLOAT, vertexCount, "VEC2") : -1;
+                int uv1Acc = hasUV1 ? AddAcc(uv1BV, FLOAT, vertexCount, "VEC2") : -1;
                 int jiAcc = AddAcc(jiBV, jointsU16 ? UNSIGNED_SHORT : UNSIGNED_BYTE, vertexCount, "VEC4");
                 int jwAcc = AddAcc(jwBV, FLOAT, vertexCount, "VEC4");
 
-                meshAccIndices[mi] = new int[] { idxAcc, posAcc, normAcc, tanAcc, uvAcc, jiAcc, jwAcc };
+                meshAccIndices[mi] = new int[] { idxAcc, posAcc, normAcc, tanAcc, uvAcc, jiAcc, jwAcc, uv1Acc };
             }
 
             // --- Inverse bind matrices ---
@@ -958,6 +1003,7 @@ namespace HZExporter
                 json.Append($"\"indices\": {acc[0]}, \"attributes\": {{ \"POSITION\": {acc[1]}, \"NORMAL\": {acc[2]}");
                 if (acc[3] >= 0) json.Append($", \"TANGENT\": {acc[3]}");
                 if (acc[4] >= 0) json.Append($", \"TEXCOORD_0\": {acc[4]}");
+                if (acc[7] >= 0) json.Append($", \"TEXCOORD_1\": {acc[7]}");
                 json.Append($", \"JOINTS_0\": {acc[5]}, \"WEIGHTS_0\": {acc[6]}");
                 int matIdx = Math.Min(mi, materials.Length - 1);
                 json.Append($" }}, \"material\": {matIdx} }}] }}");
