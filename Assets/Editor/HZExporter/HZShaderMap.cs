@@ -29,6 +29,10 @@ namespace HZExporter
             public string unityShader;
             public string engineShader;
             public string engineSkinnedShader;
+            // When true, the shader uses non-PBR custom uniforms (slot names are engine
+            // uniform names, not glTF PBR roles). The exporter routes these to a separate
+            // material .hzt instead of the GLB-embedded PBR path.
+            public bool customShader;
             public List<PropertyMap> properties;
         }
 
@@ -96,13 +100,32 @@ namespace HZExporter
             public Color emissive;      // color3 (slot "emissive")
         }
 
-        /// <summary>Record describing an embedded texture. role: 0=albedo, 1=normal, 2=orm, 3=emissive.</summary>
+        /// <summary>Record describing an embedded texture. role: 0=albedo, 1=normal, 2=orm, 3=emissive, -1=non-PBR (custom).</summary>
         public struct ImageRecord
         {
             public int off;
             public int size;
             public string name;
             public int role;
+        }
+
+        /// <summary>One property in a custom-shader material — destined for the GLB's
+        /// `materials[i].extras.hz_material.properties` block.</summary>
+        public struct CustomProperty
+        {
+            public string slot;        // engine uniform name (snake_case)
+            public string kind;        // "float" | "color4" | "texture"
+            public float f;
+            public Color c4;
+            public int textureIndex;   // index into glTF textures[] (= imageEntries index)
+        }
+
+        /// <summary>The full custom-shader material payload that gets serialized into the GLB
+        /// material's `extras.hz_material` block. Field shape mirrors `MaterialBlobAsset`.</summary>
+        public class CustomMaterial
+        {
+            public string shaderPath;                  // engine shader path (e.g. shaders/lofi_basic_material.hza)
+            public List<CustomProperty> properties = new List<CustomProperty>();
         }
 
         // Slot → PBR role. Expanded later when custom engine shaders need non-PBR routing.
@@ -230,6 +253,65 @@ namespace HZExporter
             }
 
             return f;
+        }
+
+        /// <summary>Walk a custom-shader material's mapping properties, embed each referenced
+        /// texture in the GLB binary chunk via `onImage` (which returns the assigned glTF
+        /// texture index), and return a `CustomMaterial` describing all properties for the
+        /// `extras.hz_material` block. Returns null if the material's shader entry is not
+        /// flagged `customShader: true` in shader_mapping.json.</summary>
+        public static CustomMaterial EmbedCustomMaterial(
+            Material mat,
+            bool skinned,
+            MemoryStream bin,
+            System.Func<ImageRecord, int> onImage)
+        {
+            EnsureLoaded();
+            if (mat == null) return null;
+            var entry = Lookup(mat);
+            if (entry == null || !entry.customShader) return null;
+
+            var cm = new CustomMaterial
+            {
+                shaderPath = (skinned && !string.IsNullOrEmpty(entry.engineSkinnedShader))
+                             ? entry.engineSkinnedShader : entry.engineShader,
+                properties = new List<CustomProperty>(),
+            };
+
+            foreach (var p in entry.properties ?? new List<PropertyMap>())
+            {
+                if (string.IsNullOrEmpty(p.unity) || string.IsNullOrEmpty(p.slot) || string.IsNullOrEmpty(p.kind)) continue;
+                if (!mat.HasProperty(p.unity)) continue;
+                switch (p.kind)
+                {
+                    case "float":
+                        cm.properties.Add(new CustomProperty { slot = p.slot, kind = "float", f = mat.GetFloat(p.unity) });
+                        break;
+                    case "color4":
+                        cm.properties.Add(new CustomProperty { slot = p.slot, kind = "color4", c4 = mat.GetColor(p.unity) });
+                        break;
+                    case "texture":
+                    {
+                        var tex = mat.GetTexture(p.unity) as Texture2D;
+                        if (tex == null) break;
+                        var readable = HZGlbWriter.MakeReadable(tex, false);
+                        HZGlbWriter.PadTo4(bin);
+                        int off = (int)bin.Position;
+                        byte[] png = readable.EncodeToPNG();
+                        bin.Write(png, 0, png.Length);
+                        HZGlbWriter.PadTo4(bin);
+                        if (readable != tex) Object.DestroyImmediate(readable);
+                        int idx = onImage(new ImageRecord {
+                            off = off, size = png.Length,
+                            name = HZGlbWriter.SanitizeName(tex.name ?? p.slot),
+                            role = -1,
+                        });
+                        cm.properties.Add(new CustomProperty { slot = p.slot, kind = "texture", textureIndex = idx });
+                        break;
+                    }
+                }
+            }
+            return cm;
         }
     }
 }

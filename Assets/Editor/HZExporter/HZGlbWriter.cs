@@ -144,18 +144,33 @@ namespace HZExporter
             }
             int uvSize = (int)bin.Position - uvOffset;
 
-            // --- Embedded textures (per material × per role) ---
-            // Mapping from Unity property names → roles comes from shader_mapping.json via HZShaderMap.
-            // role: 0=albedo, 1=normal, 2=orm, 3=emissive
+            // --- Embedded textures (per material) ---
+            // Materials route either via PBR (shader_mapping.json default) or, when the entry is
+            // marked customShader:true, via HZShaderMap.EmbedCustomMaterial — the latter yields a
+            // CustomMaterial payload that gets serialized into materials[i].extras.hz_material.
+            // role: 0=albedo, 1=normal, 2=orm, 3=emissive, -1=non-PBR (custom-shader uniform).
             var imageEntries = new List<(int off, int size, string name, int matIdx, int role)>();
             var matFactors = new HZShaderMap.Factors[materials.Length];
+            var customMats = new HZShaderMap.CustomMaterial[materials.Length];
             for (int mi = 0; mi < materials.Length; mi++)
             {
                 int capturedMi = mi;
-                matFactors[mi] = HZShaderMap.EmbedMaterial(materials[mi], bin, img =>
+                var entry = HZShaderMap.Lookup(materials[mi]);
+                if (entry != null && entry.customShader)
                 {
-                    imageEntries.Add((img.off, img.size, img.name, capturedMi, img.role));
-                });
+                    customMats[mi] = HZShaderMap.EmbedCustomMaterial(materials[mi], false, bin, img =>
+                    {
+                        imageEntries.Add((img.off, img.size, img.name, capturedMi, img.role));
+                        return imageEntries.Count - 1;
+                    });
+                }
+                else
+                {
+                    matFactors[mi] = HZShaderMap.EmbedMaterial(materials[mi], bin, img =>
+                    {
+                        imageEntries.Add((img.off, img.size, img.name, capturedMi, img.role));
+                    });
+                }
             }
 
             byte[] binData = bin.ToArray();
@@ -290,22 +305,29 @@ namespace HZExporter
             for (int mi = 0; mi < materials.Length; mi++)
             {
                 if (mi > 0) json.Append(",\n");
-                var f = matFactors[mi];
-                int[] ti = matTexMap.ContainsKey(mi) ? matTexMap[mi] : new int[] { -1, -1, -1, -1 };
                 string matName = SanitizeName(materials[mi]?.name ?? $"material_{mi}");
-                json.Append($"    {{\n      \"name\": \"{EscapeJson(matName)}\",\n      \"pbrMetallicRoughness\": {{\n");
-                json.Append($"        \"baseColorFactor\": [{F(f.baseColor.r)}, {F(f.baseColor.g)}, {F(f.baseColor.b)}, {F(f.baseColor.a)}]");
-                if (ti[0] >= 0) json.Append($",\n        \"baseColorTexture\": {{ \"index\": {ti[0]} }}");
-                if (ti[2] >= 0) json.Append($",\n        \"metallicRoughnessTexture\": {{ \"index\": {ti[2]} }}");
-                json.Append($",\n        \"metallicFactor\": {F(f.metallic)}");
-                json.Append($",\n        \"roughnessFactor\": {F(f.roughness)}");
-                json.Append("\n      }");
-                if (ti[1] >= 0) json.Append($",\n      \"normalTexture\": {{ \"index\": {ti[1]} }}");
-                if (ti[2] >= 0) json.Append($",\n      \"occlusionTexture\": {{ \"index\": {ti[2]} }}");
-                if (f.emissive.r > 0 || f.emissive.g > 0 || f.emissive.b > 0)
-                    json.Append($",\n      \"emissiveFactor\": [{F(f.emissive.r)}, {F(f.emissive.g)}, {F(f.emissive.b)}]");
-                if (ti[3] >= 0) json.Append($",\n      \"emissiveTexture\": {{ \"index\": {ti[3]} }}");
-                json.Append("\n    }");
+                if (customMats[mi] != null)
+                {
+                    WriteCustomMaterialJson(json, matName, customMats[mi]);
+                }
+                else
+                {
+                    var f = matFactors[mi];
+                    int[] ti = matTexMap.ContainsKey(mi) ? matTexMap[mi] : new int[] { -1, -1, -1, -1 };
+                    json.Append($"    {{\n      \"name\": \"{EscapeJson(matName)}\",\n      \"pbrMetallicRoughness\": {{\n");
+                    json.Append($"        \"baseColorFactor\": [{F(f.baseColor.r)}, {F(f.baseColor.g)}, {F(f.baseColor.b)}, {F(f.baseColor.a)}]");
+                    if (ti[0] >= 0) json.Append($",\n        \"baseColorTexture\": {{ \"index\": {ti[0]} }}");
+                    if (ti[2] >= 0) json.Append($",\n        \"metallicRoughnessTexture\": {{ \"index\": {ti[2]} }}");
+                    json.Append($",\n        \"metallicFactor\": {F(f.metallic)}");
+                    json.Append($",\n        \"roughnessFactor\": {F(f.roughness)}");
+                    json.Append("\n      }");
+                    if (ti[1] >= 0) json.Append($",\n      \"normalTexture\": {{ \"index\": {ti[1]} }}");
+                    if (ti[2] >= 0) json.Append($",\n      \"occlusionTexture\": {{ \"index\": {ti[2]} }}");
+                    if (f.emissive.r > 0 || f.emissive.g > 0 || f.emissive.b > 0)
+                        json.Append($",\n      \"emissiveFactor\": [{F(f.emissive.r)}, {F(f.emissive.g)}, {F(f.emissive.b)}]");
+                    if (ti[3] >= 0) json.Append($",\n      \"emissiveTexture\": {{ \"index\": {ti[3]} }}");
+                    json.Append("\n    }");
+                }
             }
             json.Append("\n  ],\n");
 
@@ -818,17 +840,31 @@ namespace HZExporter
                 }
             }
 
-            // --- Embedded images (per material × per role) via HZShaderMap ---
-            // role: 0=albedo, 1=normal, 2=orm, 3=emissive
+            // --- Embedded images (per material) via HZShaderMap ---
+            // PBR materials route through EmbedMaterial; customShader:true entries route through
+            // EmbedCustomMaterial which yields a payload for materials[i].extras.hz_material.
             var skinnedImageEntries = new List<(int bv, int matIdx, string name, int role)>();
             var skinnedFactors = new HZShaderMap.Factors[materials.Length];
+            var skinnedCustomMats = new HZShaderMap.CustomMaterial[materials.Length];
             for (int mi = 0; mi < materials.Length; mi++)
             {
                 int capturedMi = mi;
-                skinnedFactors[mi] = HZShaderMap.EmbedMaterial(materials[mi], bin, img =>
+                var entry = HZShaderMap.Lookup(materials[mi]);
+                if (entry != null && entry.customShader)
                 {
-                    skinnedImageEntries.Add((AddBV(img.off, img.size), capturedMi, img.name, img.role));
-                });
+                    skinnedCustomMats[mi] = HZShaderMap.EmbedCustomMaterial(materials[mi], true, bin, img =>
+                    {
+                        skinnedImageEntries.Add((AddBV(img.off, img.size), capturedMi, img.name, img.role));
+                        return skinnedImageEntries.Count - 1;
+                    });
+                }
+                else
+                {
+                    skinnedFactors[mi] = HZShaderMap.EmbedMaterial(materials[mi], bin, img =>
+                    {
+                        skinnedImageEntries.Add((AddBV(img.off, img.size), capturedMi, img.name, img.role));
+                    });
+                }
             }
 
             byte[] binData = bin.ToArray();
@@ -884,23 +920,30 @@ namespace HZExporter
             for (int mi2 = 0; mi2 < materials.Length; mi2++)
             {
                 if (mi2 > 0) json.Append(",\n");
-                var f = skinnedFactors[mi2];
-                int[] ti = matTexMap.ContainsKey(mi2) ? matTexMap[mi2] : new int[] { -1, -1, -1, -1 };
-
                 string smatName = SanitizeName(materials[mi2]?.name ?? $"material_{mi2}");
-                json.Append($"    {{\n      \"name\": \"{EscapeJson(smatName)}\",\n      \"pbrMetallicRoughness\": {{\n");
-                json.Append($"        \"baseColorFactor\": [{F(f.baseColor.r)}, {F(f.baseColor.g)}, {F(f.baseColor.b)}, {F(f.baseColor.a)}]");
-                if (ti[0] >= 0) json.Append($",\n        \"baseColorTexture\": {{ \"index\": {ti[0]} }}");
-                if (ti[2] >= 0) json.Append($",\n        \"metallicRoughnessTexture\": {{ \"index\": {ti[2]} }}");
-                json.Append($",\n        \"metallicFactor\": {F(f.metallic)}");
-                json.Append($",\n        \"roughnessFactor\": {F(f.roughness)}");
-                json.Append("\n      }");
-                if (ti[1] >= 0) json.Append($",\n      \"normalTexture\": {{ \"index\": {ti[1]} }}");
-                if (ti[2] >= 0) json.Append($",\n      \"occlusionTexture\": {{ \"index\": {ti[2]} }}");
-                if (f.emissive.r > 0 || f.emissive.g > 0 || f.emissive.b > 0)
-                    json.Append($",\n      \"emissiveFactor\": [{F(f.emissive.r)}, {F(f.emissive.g)}, {F(f.emissive.b)}]");
-                if (ti[3] >= 0) json.Append($",\n      \"emissiveTexture\": {{ \"index\": {ti[3]} }}");
-                json.Append("\n    }");
+                if (skinnedCustomMats[mi2] != null)
+                {
+                    WriteCustomMaterialJson(json, smatName, skinnedCustomMats[mi2]);
+                }
+                else
+                {
+                    var f = skinnedFactors[mi2];
+                    int[] ti = matTexMap.ContainsKey(mi2) ? matTexMap[mi2] : new int[] { -1, -1, -1, -1 };
+
+                    json.Append($"    {{\n      \"name\": \"{EscapeJson(smatName)}\",\n      \"pbrMetallicRoughness\": {{\n");
+                    json.Append($"        \"baseColorFactor\": [{F(f.baseColor.r)}, {F(f.baseColor.g)}, {F(f.baseColor.b)}, {F(f.baseColor.a)}]");
+                    if (ti[0] >= 0) json.Append($",\n        \"baseColorTexture\": {{ \"index\": {ti[0]} }}");
+                    if (ti[2] >= 0) json.Append($",\n        \"metallicRoughnessTexture\": {{ \"index\": {ti[2]} }}");
+                    json.Append($",\n        \"metallicFactor\": {F(f.metallic)}");
+                    json.Append($",\n        \"roughnessFactor\": {F(f.roughness)}");
+                    json.Append("\n      }");
+                    if (ti[1] >= 0) json.Append($",\n      \"normalTexture\": {{ \"index\": {ti[1]} }}");
+                    if (ti[2] >= 0) json.Append($",\n      \"occlusionTexture\": {{ \"index\": {ti[2]} }}");
+                    if (f.emissive.r > 0 || f.emissive.g > 0 || f.emissive.b > 0)
+                        json.Append($",\n      \"emissiveFactor\": [{F(f.emissive.r)}, {F(f.emissive.g)}, {F(f.emissive.b)}]");
+                    if (ti[3] >= 0) json.Append($",\n      \"emissiveTexture\": {{ \"index\": {ti[3]} }}");
+                    json.Append("\n    }");
+                }
             }
             json.Append("\n  ],\n");
 
@@ -1059,6 +1102,49 @@ namespace HZExporter
                 w.Write(CHUNK_BIN);
                 w.Write(binChunk);
             }
+        }
+
+        // Emit a glTF materials[] entry that carries a stub pbrMetallicRoughness (so dumb glTF
+        // viewers still render *something*) plus an `extras.hz_material` block whose JSON shape
+        // mirrors the engine's MaterialBlobAsset .hzt. The engine's GLB cooker reads this block
+        // when present and emits a custom-shader MaterialBlobAsset; otherwise it falls back to
+        // the standard PBR-extraction path.
+        static void WriteCustomMaterialJson(StringBuilder json, string matName, HZShaderMap.CustomMaterial cm)
+        {
+            json.Append($"    {{\n      \"name\": \"{EscapeJson(matName)}\",\n");
+            json.Append("      \"pbrMetallicRoughness\": { \"baseColorFactor\": [1, 1, 1, 1], \"metallicFactor\": 0, \"roughnessFactor\": 1 },\n");
+            json.Append("      \"extras\": {\n        \"hz_material\": {\n");
+            json.Append($"          \"material_shader\": \"{EscapeJson(cm.shaderPath ?? "")}\",\n");
+            json.Append("          \"depth_test\": true,\n");
+            json.Append("          \"depth_write\": true,\n");
+            json.Append("          \"depth_compare\": \"GPU_COMPARE_GREATER_EQUAL\",\n");
+            json.Append("          \"cull_mode\": \"GPU_CULL_BACK\",\n");
+            json.Append("          \"is_transparent\": false,\n");
+            json.Append("          \"alpha_cutoff\": false,\n");
+            json.Append("          \"properties\": [\n");
+            for (int i = 0; i < cm.properties.Count; i++)
+            {
+                var p = cm.properties[i];
+                if (i > 0) json.Append(",\n");
+                json.Append("            { \"name\": \"" + EscapeJson(p.slot ?? "") + "\", ");
+                switch (p.kind)
+                {
+                    case "float":
+                        json.Append("\"type\": \"MAT_PROP_FLOAT\", \"f\": " + F(p.f) + " }");
+                        break;
+                    case "color4":
+                        json.Append("\"type\": \"MAT_PROP_COLOR4\", \"c4\": [" + F(p.c4.r) + ", " + F(p.c4.g) + ", " + F(p.c4.b) + ", " + F(p.c4.a) + "] }");
+                        break;
+                    case "texture":
+                        json.Append("\"type\": \"MAT_PROP_TEXTURE\", \"texture_index\": " + p.textureIndex + " }");
+                        break;
+                    default:
+                        json.Append("\"type\": \"MAT_PROP_UNKNOWN\" }");
+                        break;
+                }
+            }
+            json.Append("\n          ]\n");
+            json.Append("        }\n      }\n    }");
         }
 
         static string F(float v) => v.ToString("G9", System.Globalization.CultureInfo.InvariantCulture);

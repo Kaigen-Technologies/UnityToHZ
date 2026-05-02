@@ -48,6 +48,55 @@
         { "unity": "_Color",   "slot": "baseColor", "kind": "color4" },
         { "unity": "_MainTex", "slot": "albedoTex", "kind": "texture" }
       ]
+    },
+    {
+      "unityShader": "Shader Graphs/BasicShader",
+      "engineShader": "shaders/lofi_basic_material.hza",
+      "engineSkinnedShader": "shaders/lofi_basic_material.hza",
+      "customShader": true,
+      "properties": [
+        { "unity": "_Highlight_Intensity", "slot": "highlight_intensity", "kind": "float" },
+        { "unity": "_Choose_Line_Color",   "slot": "choose_line_color",   "kind": "float" },
+        { "unity": "_Line_Color_Darkness", "slot": "line_color_darkness", "kind": "float" },
+        { "unity": "_Highlight_Color",     "slot": "highlight_color",     "kind": "color4" },
+        { "unity": "_Color_1",             "slot": "color_1",             "kind": "color4" },
+        { "unity": "_Color_2",             "slot": "color_2",             "kind": "color4" },
+        { "unity": "_Color_3",             "slot": "color_3",             "kind": "color4" },
+        { "unity": "_Color_4",             "slot": "color_4",             "kind": "color4" },
+        { "unity": "_Line_Color",          "slot": "line_color",          "kind": "color4" },
+        { "unity": "_Base_Color_Texture",  "slot": "base_color",          "kind": "texture" },
+        { "unity": "_ILM_Texture",         "slot": "ilm",                 "kind": "texture" },
+        { "unity": "_OLS_Texture",         "slot": "ols",                 "kind": "texture" }
+      ]
+    },
+    {
+      "unityShader": "Shader Graphs/CharacterBaseShader",
+      "engineShader": "shaders/lofi_character_material.hza",
+      "engineSkinnedShader": "shaders/lofi_character_material.hza",
+      "customShader": true,
+      "properties": [
+        { "unity": "_Shadow_Sharpness",     "slot": "shadow_sharpness",     "kind": "float" },
+        { "unity": "_Choose_Line_Color",    "slot": "choose_line_color",    "kind": "float" },
+        { "unity": "_Line_Color_Darkness",  "slot": "line_color_darkness",  "kind": "float" },
+        { "unity": "_Skin_Color",           "slot": "skin_color",           "kind": "color4" },
+        { "unity": "_Nails_Color",          "slot": "nails_color",          "kind": "color4" },
+        { "unity": "_Blush_Color",          "slot": "blush_color",          "kind": "color4" },
+        { "unity": "_Makeup_Color",         "slot": "makeup_color",         "kind": "color4" },
+        { "unity": "_Eye_Color_Right_1",    "slot": "eye_color_right_1",    "kind": "color4" },
+        { "unity": "_Eye_Color_Right_2",    "slot": "eye_color_right_2",    "kind": "color4" },
+        { "unity": "_Eyeball_Color_Right",  "slot": "eyeball_color_right",  "kind": "color4" },
+        { "unity": "_Eye_Color_Left_1",     "slot": "eye_color_left_1",     "kind": "color4" },
+        { "unity": "_Eye_Color_Left_2",     "slot": "eye_color_left_2",     "kind": "color4" },
+        { "unity": "_Eyeball_Color_Left",   "slot": "eyeball_color_left",   "kind": "color4" },
+        { "unity": "_Eyelash_Color",        "slot": "eyelash_color",        "kind": "color4" },
+        { "unity": "_Tattoo_Color",         "slot": "tattoo_color",         "kind": "color4" },
+        { "unity": "_Line_Color",           "slot": "line_color",           "kind": "color4" },
+        { "unity": "_Body_Color_Texture",   "slot": "body_color",           "kind": "texture" },
+        { "unity": "_Body_OLS_Texture",     "slot": "body_ols",             "kind": "texture" },
+        { "unity": "_Face_Color_Texture",   "slot": "face_color",           "kind": "texture" },
+        { "unity": "_Face_OLS_Texture",     "slot": "face_ols",             "kind": "texture" },
+        { "unity": "_Eye_Texture",          "slot": "eye",                  "kind": "texture" }
+      ]
     }
   ]
 }

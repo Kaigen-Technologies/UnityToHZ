@@ -195,5 +195,98 @@ namespace HZExporter
             File.WriteAllText(outputPath, sb.ToString());
             Debug.Log($"[HZMaterialExporter] Exported → {outputPath} ({propCount} props, shader={shaderPath})");
         }
+
+        /// <summary>
+        /// Emit a MaterialBlobAsset .hzt for a Unity material whose shader is configured with
+        /// `customShader: true` in shader_mapping.json. Each mapping property's `slot` becomes
+        /// the engine uniform name; floats / colors / textures are written verbatim. Texture
+        /// references must be pre-resolved by the caller (slot → texture asset path).
+        /// </summary>
+        public static void ExportCustomShaderHzt(
+            Material mat,
+            HZShaderMap.ShaderEntry entry,
+            bool skinned,
+            System.Collections.Generic.Dictionary<string, string> textureAssetPaths,
+            string outputPath)
+        {
+            string shaderPath = skinned && !string.IsNullOrEmpty(entry.engineSkinnedShader)
+                ? entry.engineSkinnedShader : entry.engineShader;
+
+            // Materialize each mapping entry by reading the live property off the Unity material.
+            // Skip slots that aren't present on the material (defensive — graphs sometimes drop
+            // properties between revisions and we don't want to crash the export).
+            var floats = new System.Collections.Generic.List<(string slot, float v)>();
+            var colors = new System.Collections.Generic.List<(string slot, Color v)>();
+            var textures = new System.Collections.Generic.List<(string slot, string path)>();
+
+            foreach (var p in entry.properties)
+            {
+                if (string.IsNullOrEmpty(p.unity) || string.IsNullOrEmpty(p.slot)) continue;
+                if (mat == null || !mat.HasProperty(p.unity)) continue;
+                switch (p.kind)
+                {
+                    case "float":
+                        floats.Add((p.slot, mat.GetFloat(p.unity)));
+                        break;
+                    case "color4":
+                        colors.Add((p.slot, mat.GetColor(p.unity)));
+                        break;
+                    case "texture":
+                        if (textureAssetPaths != null
+                            && textureAssetPaths.TryGetValue(p.slot, out var tp)
+                            && !string.IsNullOrEmpty(tp))
+                            textures.Add((p.slot, tp));
+                        break;
+                }
+            }
+
+            int propCount = floats.Count + colors.Count + textures.Count;
+
+            var sb = new StringBuilder();
+            sb.AppendLine("type MaterialBlobAsset");
+            sb.AppendLine("version 3");
+            sb.AppendLine("---");
+            sb.AppendLine($"material_shader {shaderPath} MaterialShaderBlobAsset");
+            sb.AppendLine("depth_test true");
+            sb.AppendLine("depth_write true");
+            sb.AppendLine("depth_compare GPU_COMPARE_GREATER_EQUAL");
+            sb.AppendLine("cull_mode GPU_CULL_BACK");
+            sb.AppendLine("is_transparent false");
+            sb.AppendLine("alpha_cutoff false");
+            sb.AppendLine($"properties {propCount}");
+
+            bool first = true;
+            void Sep() { if (!first) sb.AppendLine(); first = false; }
+
+            foreach (var (slot, v) in floats)
+            {
+                Sep();
+                sb.AppendLine($"  name {slot}");
+                sb.AppendLine($"  type MAT_PROP_FLOAT");
+                sb.AppendLine($"  f {F(v)}");
+            }
+            foreach (var (slot, v) in colors)
+            {
+                Sep();
+                sb.AppendLine($"  name {slot}");
+                sb.AppendLine($"  type MAT_PROP_COLOR4");
+                sb.AppendLine($"  c4");
+                sb.AppendLine($"    r {F(v.r)}");
+                sb.AppendLine($"    g {F(v.g)}");
+                sb.AppendLine($"    b {F(v.b)}");
+                sb.AppendLine($"    a {F(v.a)}");
+            }
+            foreach (var (slot, path) in textures)
+            {
+                Sep();
+                sb.AppendLine($"  name {slot}");
+                sb.AppendLine($"  type MAT_PROP_TEXTURE");
+                sb.AppendLine($"  texture {path} TextureBlobAsset");
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
+            File.WriteAllText(outputPath, sb.ToString());
+            Debug.Log($"[HZMaterialExporter] Exported custom → {outputPath} ({propCount} props, shader={shaderPath})");
+        }
     }
 }
