@@ -443,10 +443,30 @@ namespace HZExporter
         /// is outside `bones[]` (e.g. an attached sub-character whose root bone hangs off the
         /// outer character's skeleton) has the chain above it baked into its rest TRS so the
         /// engine places it at the correct bind-pose location relative to the entity.</summary>
-        public static void ExportSkinnedMesh(SkinnedMeshRenderer[] smrs, Material[] materials,
+        public static void ExportSkinnedMesh(SkinnedMeshRenderer[] smrs, Material[][] materialsPerSmr,
             SkinnedMeshRenderer primarySmr, Transform entityRoot, string outputPath,
             AnimClipInfo[] animClips = null)
         {
+            // Flatten per-SMR material arrays into a single materials[] (one entry per
+            // (smr, submesh) pair). matIndexPerSmr[smrIdx][submeshIdx] = index into flat materials[].
+            // Per-submesh because a single SMR with multiple sub-meshes has one material per sub-mesh.
+            var flatMatList = new List<Material>();
+            int[][] matIndexPerSmr = new int[smrs.Length][];
+            for (int si = 0; si < smrs.Length; si++)
+            {
+                var row = (materialsPerSmr != null && si < materialsPerSmr.Length && materialsPerSmr[si] != null)
+                    ? materialsPerSmr[si] : new Material[] { null };
+                int subCount = Math.Max(1, smrs[si].sharedMesh != null ? smrs[si].sharedMesh.subMeshCount : 1);
+                matIndexPerSmr[si] = new int[subCount];
+                for (int s = 0; s < subCount; s++)
+                {
+                    Material m = (row.Length > 0) ? row[Math.Min(s, row.Length - 1)] : null;
+                    matIndexPerSmr[si][s] = flatMatList.Count;
+                    flatMatList.Add(m);
+                }
+            }
+            var materials = flatMatList.ToArray();
+
             var bones = primarySmr.bones;
             int jointCount = bones.Length;
             var bindPoses = primarySmr.sharedMesh.bindposes;
@@ -499,7 +519,12 @@ namespace HZExporter
 
             // --- Write per-mesh primitive data ---
             int meshCount = smrs.Length;
-            int[][] meshAccIndices = new int[meshCount][]; // [indicesAcc, posAcc, normAcc, tanAcc, uvAcc, jointsAcc, weightsAcc, uv1Acc]
+            // Per SMR: shared vertex accessors (pos/normal/tan/uv/uv1/joints/weights) +
+            // one indices accessor per sub-mesh (multi-material SMRs have N sub-meshes).
+            // sharedAccs[mi] = [posAcc, normAcc, tanAcc, uvAcc, jointsAcc, weightsAcc, uv1Acc]
+            // submeshIndicesAccs[mi][s] = index accessor for sub-mesh s of SMR mi.
+            int[][] sharedAccs = new int[meshCount][];
+            int[][] submeshIndicesAccs = new int[meshCount][];
 
             for (int mi = 0; mi < meshCount; mi++)
             {
@@ -511,8 +536,7 @@ namespace HZExporter
                 var tangents = mesh.tangents;
                 var uvs = mesh.uv;
                 var uvs1 = mesh.uv2;   // UV1 / glTF TEXCOORD_1 / engine uvs1
-                var triangles = mesh.triangles;
-                int indexCount = triangles.Length;
+                int submeshCount = Math.Max(1, mesh.subMeshCount);
                 bool useU16 = vertexCount <= 65535;
 
                 // Build bone remap for this SMR
@@ -543,14 +567,21 @@ namespace HZExporter
                 }
                 Matrix4x4 preXformNormal = preXform.inverse.transpose; // for normals/tangents (no translation)
 
-                // Indices
-                int idxOff = (int)bin.Position;
-                for (int i = 0; i < indexCount; i += 3)
+                // Indices — one buffer view + accessor per sub-mesh (winding flip swap [1]/[2]).
+                // Submeshes share the SMR's vertex attributes; only the index range differs.
+                var smrSubmeshInfo = new (int off, int size, int count)[submeshCount];
+                for (int s = 0; s < submeshCount; s++)
                 {
-                    if (useU16) { WriteU16(bin, (ushort)triangles[i]); WriteU16(bin, (ushort)triangles[i+2]); WriteU16(bin, (ushort)triangles[i+1]); }
-                    else { WriteU32(bin, (uint)triangles[i]); WriteU32(bin, (uint)triangles[i+2]); WriteU32(bin, (uint)triangles[i+1]); }
+                    int[] tri = mesh.GetTriangles(s);
+                    int triLen = tri.Length;
+                    int subOff = (int)bin.Position;
+                    for (int i = 0; i < triLen; i += 3)
+                    {
+                        if (useU16) { WriteU16(bin, (ushort)tri[i]); WriteU16(bin, (ushort)tri[i+2]); WriteU16(bin, (ushort)tri[i+1]); }
+                        else        { WriteU32(bin, (uint)tri[i]);   WriteU32(bin, (uint)tri[i+2]);   WriteU32(bin, (uint)tri[i+1]);   }
+                    }
+                    smrSubmeshInfo[s] = (subOff, (int)bin.Position - subOff, triLen);
                 }
-                int idxSize = (int)bin.Position - idxOff;
                 PadTo4(bin);
 
                 // Positions
@@ -652,8 +683,7 @@ namespace HZExporter
                 }
                 int jwSize = (int)bin.Position - jwOff;
 
-                // Register buffer views and accessors
-                int idxBV = AddBV(idxOff, idxSize);
+                // Register buffer views and accessors — per-submesh indices, shared vertex attrs.
                 int posBV = AddBV(posOff, posSize, 12);
                 int normBV = AddBV(normOff, normSize, 12);
                 int tanBV = hasTan ? AddBV(tanOff, tanSize, 16) : -1;
@@ -662,7 +692,6 @@ namespace HZExporter
                 int jiBV = AddBV(jiOff, jiSize, jointsU16 ? 8 : 4);
                 int jwBV = AddBV(jwOff, jwSize, 16);
 
-                int idxAcc = AddAcc(idxBV, useU16 ? UNSIGNED_SHORT : UNSIGNED_INT, indexCount, "SCALAR");
                 int posAcc = AddAcc(posBV, FLOAT, vertexCount, "VEC3", posMin, posMax);
                 int normAcc = AddAcc(normBV, FLOAT, vertexCount, "VEC3");
                 int tanAcc = hasTan ? AddAcc(tanBV, FLOAT, vertexCount, "VEC4") : -1;
@@ -671,7 +700,15 @@ namespace HZExporter
                 int jiAcc = AddAcc(jiBV, jointsU16 ? UNSIGNED_SHORT : UNSIGNED_BYTE, vertexCount, "VEC4");
                 int jwAcc = AddAcc(jwBV, FLOAT, vertexCount, "VEC4");
 
-                meshAccIndices[mi] = new int[] { idxAcc, posAcc, normAcc, tanAcc, uvAcc, jiAcc, jwAcc, uv1Acc };
+                int[] subAccs = new int[submeshCount];
+                for (int s = 0; s < submeshCount; s++)
+                {
+                    int subBV = AddBV(smrSubmeshInfo[s].off, smrSubmeshInfo[s].size);
+                    subAccs[s] = AddAcc(subBV, useU16 ? UNSIGNED_SHORT : UNSIGNED_INT, smrSubmeshInfo[s].count, "SCALAR");
+                }
+
+                sharedAccs[mi] = new int[] { posAcc, normAcc, tanAcc, uvAcc, jiAcc, jwAcc, uv1Acc };
+                submeshIndicesAccs[mi] = subAccs;
             }
 
             // --- Inverse bind matrices ---
@@ -997,16 +1034,23 @@ namespace HZExporter
             for (int mi = 0; mi < meshCount; mi++)
             {
                 if (mi > 0) json.Append(",\n");
-                var acc = meshAccIndices[mi];
+                var acc = sharedAccs[mi];           // [posAcc, normAcc, tanAcc, uvAcc, jointsAcc, weightsAcc, uv1Acc]
+                int[] subAccs = submeshIndicesAccs[mi];
+                int[] matRow = matIndexPerSmr[mi];
                 string meshName = smrs[mi].sharedMesh.name ?? $"mesh_{mi}";
-                json.Append($"    {{ \"name\": \"{EscapeJson(meshName)}\", \"primitives\": [{{ ");
-                json.Append($"\"indices\": {acc[0]}, \"attributes\": {{ \"POSITION\": {acc[1]}, \"NORMAL\": {acc[2]}");
-                if (acc[3] >= 0) json.Append($", \"TANGENT\": {acc[3]}");
-                if (acc[4] >= 0) json.Append($", \"TEXCOORD_0\": {acc[4]}");
-                if (acc[7] >= 0) json.Append($", \"TEXCOORD_1\": {acc[7]}");
-                json.Append($", \"JOINTS_0\": {acc[5]}, \"WEIGHTS_0\": {acc[6]}");
-                int matIdx = Math.Min(mi, materials.Length - 1);
-                json.Append($" }}, \"material\": {matIdx} }}] }}");
+                json.Append($"    {{ \"name\": \"{EscapeJson(meshName)}\", \"primitives\": [");
+                for (int s = 0; s < subAccs.Length; s++)
+                {
+                    if (s > 0) json.Append(", ");
+                    json.Append($"{{ \"indices\": {subAccs[s]}, \"attributes\": {{ \"POSITION\": {acc[0]}, \"NORMAL\": {acc[1]}");
+                    if (acc[2] >= 0) json.Append($", \"TANGENT\": {acc[2]}");
+                    if (acc[3] >= 0) json.Append($", \"TEXCOORD_0\": {acc[3]}");
+                    if (acc[6] >= 0) json.Append($", \"TEXCOORD_1\": {acc[6]}");
+                    json.Append($", \"JOINTS_0\": {acc[4]}, \"WEIGHTS_0\": {acc[5]}");
+                    int matIdx = matRow[Math.Min(s, matRow.Length - 1)];
+                    json.Append($" }}, \"material\": {matIdx} }}");
+                }
+                json.Append("] }");
             }
             json.Append("\n  ],\n");
 

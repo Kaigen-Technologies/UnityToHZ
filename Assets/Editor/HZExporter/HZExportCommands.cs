@@ -112,9 +112,9 @@ public static class HZExportCommands
                 primarySmr = s;
 
         var smrArray = validSmrs.ToArray();
-        var mats = new Material[validSmrs.Count];
+        var mats = new Material[validSmrs.Count][];
         for (int i = 0; i < validSmrs.Count; i++)
-            mats[i] = validSmrs[i].sharedMaterial;
+            mats[i] = validSmrs[i].sharedMaterials;
 
         HZGlbWriter.ExportSkinnedMesh(smrArray, mats, primarySmr, instance.transform, OutputDir + "/glb/XBot.glb");
 
@@ -480,9 +480,10 @@ public static class HZExportCommands
                     if (!deferredSkinned.ContainsKey(charName))
                     {
                         var smrArray = validSmrs.ToArray();
-                        var mats = new Material[validSmrs.Count];
+                        // sharedMaterials[] preserves multi-material SMRs (one per submesh).
+                        var mats = new Material[validSmrs.Count][];
                         for (int si = 0; si < validSmrs.Count; si++)
-                            mats[si] = validSmrs[si].sharedMaterial;
+                            mats[si] = validSmrs[si].sharedMaterials;
 
                         deferredSkinned[charName] = new DeferredSkinnedExport {
                             smrs = smrArray,
@@ -704,7 +705,7 @@ public static class HZExportCommands
     struct DeferredSkinnedExport
     {
         public SkinnedMeshRenderer[] smrs;
-        public Material[] materials;
+        public Material[][] materials;   // [smrIdx][submeshIdx] — preserves multi-material SMRs
         public SkinnedMeshRenderer primarySmr;
         public Transform entityRoot;   // GO with the Animator — anchor for bone chain bake
         public string glbPath;
