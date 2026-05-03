@@ -60,6 +60,14 @@ Material:
         m_Texture: {fileID: 2800000, guid: 607b60a6cc8c54b4e8f669413fc8fed1, type: 3}
         m_Scale: {x: 1, y: 1}
         m_Offset: {x: 0, y: 0}
+    - _EyeballColorMask:
+        m_Texture: {fileID: 2800000, guid: b682eaef17b34324cbc5f941a59632b5, type: 3}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _EyeballShadow:
+        m_Texture: {fileID: 2800000, guid: 67fc3b8b05d82234f9430b693cfe8f6f, type: 3}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
     - _Face_Color_Texture:
         m_Texture: {fileID: 2800000, guid: ed99e5bcb829e8d409e5d662231a9c8c, type: 3}
         m_Scale: {x: 1, y: 1}
@@ -74,6 +82,14 @@ Material:
         m_Offset: {x: 0, y: 0}
     - _MetallicGlossMap:
         m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _MouthLashMask:
+        m_Texture: {fileID: 2800000, guid: d850d81af9045d347aa95da21e23189f, type: 3}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _MouthLashTexture:
+        m_Texture: {fileID: 2800000, guid: a825c4f1dfc7d73458e5ffeebc015e93, type: 3}
         m_Scale: {x: 1, y: 1}
         m_Offset: {x: 0, y: 0}
     - _OcclusionMap:
@@ -98,6 +114,14 @@ Material:
         m_Offset: {x: 0, y: 0}
     - _SampleTexture2D_b055b32ad663444aac71b1bfa7a3b35a_Texture_1_Texture2D:
         m_Texture: {fileID: 2800000, guid: b682eaef17b34324cbc5f941a59632b5, type: 3}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _SampleTexture2D_b36dc5984b074593b94b4548d485d051_Texture_1_Texture2D:
+        m_Texture: {fileID: 2800000, guid: d850d81af9045d347aa95da21e23189f, type: 3}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _SampleTexture2D_c35ec26bd4b145e0814addae63248823_Texture_1_Texture2D:
+        m_Texture: {fileID: 2800000, guid: a825c4f1dfc7d73458e5ffeebc015e93, type: 3}
         m_Scale: {x: 1, y: 1}
         m_Offset: {x: 0, y: 0}
     - _SpecGlossMap:

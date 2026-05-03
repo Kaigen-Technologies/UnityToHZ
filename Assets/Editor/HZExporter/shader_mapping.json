@@ -95,7 +95,11 @@
         { "unity": "_Body_OLS_Texture",     "slot": "body_ols",             "kind": "texture" },
         { "unity": "_Face_Color_Texture",   "slot": "face_color",           "kind": "texture" },
         { "unity": "_Face_OLS_Texture",     "slot": "face_ols",             "kind": "texture" },
-        { "unity": "_Eye_Texture",          "slot": "eye",                  "kind": "texture" }
+        { "unity": "_Eye_Texture",          "slot": "eye",                  "kind": "texture" },
+        { "unity": "_MouthLashTexture",     "slot": "mouth_lashes",         "kind": "texture" },
+        { "unity": "_MouthLashMask",        "slot": "mouth_lashes_mask",    "kind": "texture" },
+        { "unity": "_EyeballColorMask",     "slot": "eyeball_color_mask",   "kind": "texture" },
+        { "unity": "_EyeballShadow",        "slot": "eyeball_shadow",       "kind": "texture" }
       ]
     }
   ]
