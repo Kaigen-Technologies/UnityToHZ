@@ -96,6 +96,12 @@ namespace HZExporter
             // Hierarchy
             public ulong parentStableId; // 0 = root (no parent)
             public ulong stableId;       // assigned by caller
+            // Bone attachment: when true, position/rotation/scale above are interpreted
+            // bone-local (relative to the bone Transform) instead of root-local. The engine
+            // resolves boneAttachmentName -> bone_index against the parent's joint_names and
+            // composes parent.world × bone_global × LocalTransform at render time.
+            public bool isBoneAttached;
+            public string boneAttachmentName;
             // Animation
             public string animationAssetPath; // asset-relative path to animation .hza
             // Point light
@@ -255,6 +261,16 @@ namespace HZExporter
                 sb.AppendLine();
                 sb.AppendLine("component EcsParent");
                 sb.AppendLine($"  parent {info.parentStableId}");
+            }
+
+            // EcsBoneAttachmentSpec (resolved at runtime to EcsBoneAttachment{bone_index} via
+            // the parent's ModelBlobAsset.joint_names). When this is present, LocalTransform
+            // above is interpreted bone-local rather than parent-relative.
+            if (info.isBoneAttached && !string.IsNullOrEmpty(info.boneAttachmentName))
+            {
+                sb.AppendLine();
+                sb.AppendLine("component EcsBoneAttachmentSpec");
+                sb.AppendLine($"  bone_name {info.boneAttachmentName}");
             }
 
             // EcsModelRef

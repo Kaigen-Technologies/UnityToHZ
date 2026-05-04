@@ -370,6 +370,28 @@ public static class HZExportCommands
         // Key = character name (FBX filename with @... stripped)
         var deferredSkinned = new Dictionary<string, DeferredSkinnedExport>();
 
+        // For bone attachment: per-Animator set of Transforms that are actually skinned bones
+        // (members of some SMR's bones[] under that Animator). Lets a nested entity look up
+        // "is my Unity ancestor a bone of the outer character that owns me?" in O(1) per ancestor.
+        // Only includes bones whose nearest Animator IS this Animator (so a deeper Animator's
+        // bones don't pollute its parent's set).
+        var bonesByAnimator = new Dictionary<int, HashSet<Transform>>(); // animator GO instanceID → bones
+        foreach (var rGo in roots)
+        {
+            foreach (var anim in rGo.GetComponentsInChildren<Animator>(true))
+            {
+                var set = new HashSet<Transform>();
+                foreach (var smr in anim.gameObject.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+                {
+                    if (NearestAnimator(smr.transform) != anim) continue;
+                    if (smr.bones == null) continue;
+                    foreach (var b in smr.bones)
+                        if (b != null) set.Add(b);
+                }
+                bonesByAnimator[anim.gameObject.GetInstanceID()] = set;
+            }
+        }
+
         // Pose every rig at "idle frame 0" before sampling entity transforms. The FBX bind
         // pose is sometimes degenerate (e.g. tail rig collapsed at the floor) — what the user
         // sees in Unity when the Animator runs is the idle animation, which puts everything
@@ -420,11 +442,39 @@ public static class HZExportCommands
                     ancestor = ancestor.parent;
                 }
 
-                // Local TRS: when bones (or other skipped GOs) sit between t and the actual
-                // exported parent, t.localPosition/Rotation/Scale would be relative to the
-                // wrong frame (the immediate Unity parent). Recompute relative to parentAnchor.
+                // Bone attachment: if this entity's Unity parent chain crosses a bone of the
+                // outer character we're being parented to, we want to attach to that bone at
+                // runtime (so the entity follows animated skeleton motion). Walk from t.parent
+                // upward toward parentAnchor; if any ancestor is in the outer animator's
+                // bones[] set, that's our bone anchor.
+                Transform boneAnchor = null;
+                if (parentAnchor != null && t.parent != null
+                    && bonesByAnimator.TryGetValue(parentAnchor.gameObject.GetInstanceID(), out var ownerBones)
+                    && ownerBones != null && ownerBones.Count > 0)
+                {
+                    for (Transform a = t.parent; a != null && a != parentAnchor; a = a.parent)
+                    {
+                        if (ownerBones.Contains(a)) { boneAnchor = a; break; }
+                    }
+                }
+
+                // Local TRS:
+                //  - Bone-attached: relative to the bone Transform (engine composes parent.world ×
+                //    bone_global × child.local once the spec resolves to a bone_index).
+                //  - Otherwise, when bones (or other skipped GOs) sit between t and the actual
+                //    exported parent, t.localPosition/Rotation/Scale would be relative to the
+                //    wrong frame (the immediate Unity parent). Recompute relative to parentAnchor.
+                //  - Else use t.localPosition (parent matches).
                 Vector3 localPos; Quaternion localRot; Vector3 localScl;
-                if (parentAnchor != null && parentAnchor != t.parent)
+                if (boneAnchor != null)
+                {
+                    Matrix4x4 m = boneAnchor.worldToLocalMatrix * t.localToWorldMatrix;
+                    Vector4 c3 = m.GetColumn(3);
+                    localPos = new Vector3(c3.x, c3.y, c3.z);
+                    localRot = m.rotation;
+                    localScl = m.lossyScale;
+                }
+                else if (parentAnchor != null && parentAnchor != t.parent)
                 {
                     Matrix4x4 m = parentAnchor.worldToLocalMatrix * t.localToWorldMatrix;
                     Vector4 c3 = m.GetColumn(3);
@@ -452,6 +502,8 @@ public static class HZExportCommands
                     castsShadow = false,
                     stableId = stableId,
                     parentStableId = parentStableId,
+                    isBoneAttached = boneAnchor != null,
+                    boneAttachmentName = boneAnchor != null ? boneAnchor.name : null,
                 };
 
                 // Check for skinned mesh (root of skinned hierarchy). SMRs that belong to a
