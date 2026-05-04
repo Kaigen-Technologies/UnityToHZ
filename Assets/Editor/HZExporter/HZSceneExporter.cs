@@ -139,7 +139,8 @@ namespace HZExporter
             for (int i = 0; i < entities.Length; i++)
             {
                 ulong stableId = entities[i].stableId;
-                string entityFileName = $"{stableId}.hzt";
+                string safeName = SanitizeFsName(entities[i].name);
+                string entityFileName = $"{safeName}_{stableId}.hzt";
                 string entityFilePath = Path.Combine(sceneDir, entityFileName);
                 entityFilePaths[i] = $"{sceneDirAssetPath}/{entityFileName}";
 
@@ -154,6 +155,18 @@ namespace HZExporter
         // ============= .hzt text format writers =============
 
         static string F(float v) => v.ToString("F6", System.Globalization.CultureInfo.InvariantCulture);
+
+        // Filesystem-safe entity-file name component. Replaces space and path separators with
+        // underscores; trims to a reasonable length so filenames stay manageable.
+        static string SanitizeFsName(string n)
+        {
+            if (string.IsNullOrEmpty(n)) return "Entity";
+            var safe = n.Replace(' ', '_').Replace('/', '_').Replace('\\', '_')
+                        .Replace(':', '_').Replace('?', '_').Replace('*', '_')
+                        .Replace('"', '_').Replace('<', '_').Replace('>', '_').Replace('|', '_');
+            if (safe.Length > 48) safe = safe.Substring(0, 48);
+            return safe;
+        }
 
         static void WriteManifestHzt(string[] entityPaths, string sceneDirAssetPath, string outputPath)
         {
@@ -199,7 +212,15 @@ namespace HZExporter
             sb.AppendLine("component EcsStableId");
             sb.AppendLine($"  id {info.stableId}");
 
-            // EntityName — skipped in .hzt (String64Bytes not supported by hzt parser)
+            // EntityName — uses inline String64Bytes (FIELD_TYPE_FIXED_STRING in the engine).
+            // Truncate at 63 chars to leave room for the null terminator the engine writes.
+            {
+                string n = info.name ?? "";
+                if (n.Length > 63) n = n.Substring(0, 63);
+                sb.AppendLine();
+                sb.AppendLine("component EntityName");
+                sb.AppendLine($"  name {n}");
+            }
 
             // LocalTransform
             {
