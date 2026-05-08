@@ -28,6 +28,7 @@ namespace HZExporter.ShaderGraph
     {
         public readonly SgGraph Graph;
         public readonly List<SgStatement> Statements = new List<SgStatement>();
+        public readonly List<SgFunctionDef> Functions = new List<SgFunctionDef>();
 
         readonly Dictionary<string, SgValue> _cache = new Dictionary<string, SgValue>();
         int _tempCounter;
@@ -74,6 +75,25 @@ namespace HZExporter.ShaderGraph
             Statements.Add(new SgStatement { Name = name, Type = t, Rhs = rhs });
             return SgValue.Temp(name, t);
         }
+
+        // Emits a temp whose GLSL type is a custom name (e.g. struct type) —
+        // bypasses the SgType→GLSL mapping. Returns an SgValue carrying a Ref
+        // to the temp; downstream consumers swizzle into it via SgRhsSwizzle
+        // (which formats `<base>.<field>`).
+        public SgValue EmitStructTemp(string structTypeName, SgRhs rhs)
+        {
+            string name = "_n" + (_tempCounter++);
+            Statements.Add(new SgStatement { Name = name, Type = SgType.Unknown, TypeName = structTypeName, Rhs = rhs });
+            return SgValue.Temp(name, SgType.Unknown);
+        }
+
+        // Per-instance cache for SubGraphNode call sites — first output query
+        // emits the call statement for the whole subgraph; subsequent queries
+        // reuse the same call temp, just under a different field-access. The
+        // cached SgFunctionDef tells us whether to swizzle into the temp
+        // (struct-return) or use the temp directly (single-output).
+        public readonly Dictionary<string, (SgValue temp, SgFunctionDef fn)> SubGraphCallTemps =
+            new Dictionary<string, (SgValue, SgFunctionDef)>();
     }
 
     // ===== slot-default literals ==============================================
@@ -256,6 +276,182 @@ namespace HZExporter.ShaderGraph
         }
     }
 
+    // SubGraphNode: load the referenced .shadersubgraph, lower every declared
+    // output into a single GLSL function on the same file, and emit one call
+    // statement at the call site. Subsequent reads of any output of the same
+    // SubGraphNode hit the cache and become field-access swizzles into the
+    // call temp.
+    //
+    // Two output forms:
+    //   • 1 output  → simple value-return function, call temp typed as the
+    //                 output type. Consumers reference the temp directly.
+    //   • 2+ outputs → struct-return function. Call temp has the struct type;
+    //                  consumers reference fields via swizzle.
+    class SubGraphNodeHandler : NodeHandler
+    {
+        public override SgValue Lower(SgNode node, int outSlotNum, LowerCtx ctx)
+        {
+            if (!node.SlotByNum.TryGetValue(outSlotNum, out var slotId))
+                throw new System.Exception($"SubGraphNode: invalid output slot {outSlotNum}");
+            var requestedSlot = ctx.Graph.Slots[slotId];
+            var requestedType = requestedSlot.StaticType();
+            if (requestedType == SgType.Unknown)
+                throw new System.NotImplementedException($"SubGraphNode output '{requestedSlot.OutputName}' has unmapped slot type '{requestedSlot.Type}'");
+
+            // First touch of this SubGraphNode → emit the call site once.
+            if (!ctx.SubGraphCallTemps.TryGetValue(node.Id, out var entry))
+            {
+                entry = EmitCallSite(node, ctx);
+                ctx.SubGraphCallTemps[node.Id] = entry;
+            }
+
+            // For single-output functions, the call temp IS the value.
+            // For multi-output struct-return, swizzle into the field.
+            if (entry.fn.StructName == null)
+                return new SgValue { Rhs = entry.temp.Rhs, Type = requestedType, IsTemp = false };
+            return new SgValue
+            {
+                Rhs = Sg.Swizzle(entry.temp.Rhs, requestedSlot.OutputName),
+                Type = requestedType,
+                IsTemp = false,
+            };
+        }
+
+        (SgValue temp, SgFunctionDef fn) EmitCallSite(SgNode node, LowerCtx ctx)
+        {
+            string guid = ExtractGuid(node.Raw);
+            if (string.IsNullOrEmpty(guid))
+                throw new System.Exception("SubGraphNode missing m_SerializedSubGraph guid");
+
+            var sg = SgSubGraphLoader.Load(guid);
+            string fnName = SgSubGraphLoader.FunctionName(guid);
+
+            // Reuse an already-emitted function for this subgraph (if some
+            // other SubGraphNode instance already created it).
+            SgFunctionDef fn = null;
+            foreach (var f in ctx.Functions) if (f.Name == fnName) { fn = f; break; }
+            if (fn == null)
+                fn = BuildFunction(node, ctx, sg, guid, fnName);
+
+            // Emit `<retType> _nN = fnName();` — struct-typed for multi-output,
+            // primitive-typed for single-output.
+            var callRhs = Sg.Call(fnName);
+            var temp = fn.StructName != null
+                ? ctx.EmitStructTemp(fn.StructName, callRhs)
+                : ctx.EmitTemp(fn.Outputs[0].Type, callRhs);
+            return (temp, fn);
+        }
+
+        // Lowers every declared output of `node` (in the order the
+        // SubGraphNode declares them) into an SgFunctionOutput. The function
+        // body comes from one shared LowerCtx so outputs share intermediate
+        // statements when the optimizer runs over them.
+        SgFunctionDef BuildFunction(SgNode node, LowerCtx ctx, SgGraph sg, string guid, string fnName)
+        {
+            SgNode sgOut = null;
+            foreach (var n in sg.Nodes.Values) if (n.Type == "SubGraphOutputNode") { sgOut = n; break; }
+            if (sgOut == null) throw new System.Exception($"subgraph {guid} has no SubGraphOutputNode");
+
+            var fnCtx = new LowerCtx(sg);
+            var outputs = new List<SgFunctionOutput>();
+
+            // Iterate the SubGraphNode's slots in their numeric m_Id order so
+            // the function's outputs/struct fields match the user's
+            // declaration order.
+            var slotNums = new List<int>(node.SlotByNum.Keys);
+            slotNums.Sort();
+            foreach (var num in slotNums)
+            {
+                var slot = ctx.Graph.Slots[node.SlotByNum[num]];
+                if (!slot.IsOutput) continue;   // SubGraphNode property inputs (not yet supported)
+
+                int sgInSlot = -1;
+                foreach (var skv in sgOut.SlotByNum)
+                    if (sg.Slots[skv.Value].OutputName == slot.OutputName) { sgInSlot = skv.Key; break; }
+                if (sgInSlot == -1)
+                    throw new System.Exception($"subgraph {guid} has no output named '{slot.OutputName}'");
+
+                var v = fnCtx.Input(sgOut.Id, sgInSlot);
+                var coerced = SgCodegen.CoerceRhsForReturn(v.Rhs, v.Type, slot.StaticType());
+                outputs.Add(new SgFunctionOutput
+                {
+                    Name = slot.OutputName,
+                    Type = slot.StaticType(),
+                    Rhs = coerced,
+                });
+            }
+
+            // Promote nested SubGraphs' functions into the parent shader.
+            ctx.Functions.AddRange(fnCtx.Functions);
+
+            var fn = new SgFunctionDef
+            {
+                Name = fnName,
+                StructName = outputs.Count > 1 ? fnName + "_Outputs" : null,
+                Outputs = outputs,
+                Body = fnCtx.Statements,
+            };
+            ctx.Functions.Add(fn);
+            return fn;
+        }
+
+        // m_SerializedSubGraph is a JSON string nested inside the outer JSON:
+        //   { subGraph: { fileID, guid, type } }
+        static string ExtractGuid(Dictionary<string, object> raw)
+        {
+            if (!raw.TryGetValue("m_SerializedSubGraph", out var v) || !(v is string s)) return null;
+            int i = 0;
+            try
+            {
+                var inner = TinyJson.ParseObject(s, ref i);
+                if (inner.TryGetValue("subGraph", out var sub) && sub is Dictionary<string, object> sd
+                    && sd.TryGetValue("guid", out var g) && g is string gs)
+                    return gs;
+            }
+            catch { }
+            return null;
+        }
+    }
+
+    // Resolves Unity asset GUIDs to .shadersubgraph paths and parses them. Also
+    // mints stable function names from the subgraph file name.
+    static class SgSubGraphLoader
+    {
+        static readonly Dictionary<string, SgGraph> _graphs = new Dictionary<string, SgGraph>();
+        static readonly Dictionary<string, string> _fnNames = new Dictionary<string, string>();
+
+        public static SgGraph Load(string guid)
+        {
+            if (_graphs.TryGetValue(guid, out var g)) return g;
+            string path = UnityEditor.AssetDatabase.GUIDToAssetPath(guid);
+            if (string.IsNullOrEmpty(path))
+                throw new System.Exception($"subgraph guid '{guid}' not resolvable to a path");
+            string text = System.IO.File.ReadAllText(path);
+            var parsed = SgParser.Parse(text);
+            _graphs[guid] = parsed;
+            return parsed;
+        }
+
+        public static string FunctionName(string guid)
+        {
+            if (_fnNames.TryGetValue(guid, out var n)) return n;
+            string path = UnityEditor.AssetDatabase.GUIDToAssetPath(guid);
+            n = string.IsNullOrEmpty(path)
+                ? "subgraph_" + guid.Substring(0, 8)
+                : "subgraph_" + Sanitize(System.IO.Path.GetFileNameWithoutExtension(path));
+            _fnNames[guid] = n;
+            return n;
+        }
+
+        static string Sanitize(string s)
+        {
+            var sb = new System.Text.StringBuilder(s.Length);
+            foreach (var c in s)
+                sb.Append(char.IsLetterOrDigit(c) || c == '_' ? c : '_');
+            return sb.ToString();
+        }
+    }
+
     class SplitNodeHandler : NodeHandler
     {
         public override SgValue Lower(SgNode node, int outSlotNum, LowerCtx ctx)
@@ -303,9 +499,10 @@ namespace HZExporter.ShaderGraph
             Pattern("SaturateNode",    a => Sg.Call("clamp", a[0], Sg.Lit(0.0), Sg.Lit(1.0)), SameAsIn, "In");
 
             // ----- custom -----------------------------------------------------
-            _handlers["UVNode"]      = new UVNodeHandler();
-            _handlers["SplitNode"]   = new SplitNodeHandler();
-            _handlers["Vector1Node"] = new Vector1NodeHandler();
+            _handlers["UVNode"]       = new UVNodeHandler();
+            _handlers["SplitNode"]    = new SplitNodeHandler();
+            _handlers["Vector1Node"]  = new Vector1NodeHandler();
+            _handlers["SubGraphNode"] = new SubGraphNodeHandler();
         }
 
         public static NodeHandler Lookup(string nodeType)

@@ -48,16 +48,71 @@ namespace HZExporter.ShaderGraph
                 assigns.Add(LowerSurface(g, ctx, "Smoothness", "smoothness", SgType.Float, Sg.Lit(0.5)));
             }
 
-            // Optimization passes (constant fold + peephole + DCE) run on the
-            // statement list and assigns together. Disable by commenting out.
+            // Optimizer runs on each function body (with every output's Rhs
+            // as a live root) and on main's body (with surface assigns as
+            // roots).
+            foreach (var fn in ctx.Functions)
+            {
+                var roots = new List<SgOptimize.IAssignView>(fn.Outputs.Count);
+                foreach (var o in fn.Outputs) roots.Add(new FunctionOutputView(o));
+                SgOptimize.Run(fn.Body, roots);
+            }
             SgOptimize.Run(ctx.Statements, assigns);
+
+            // FormatFunction returns "...}\n"; the extra "\n" makes a blank
+            // line between functions and between the last function and main().
+            // Empty when no functions, leaving the template's existing
+            // newline before void main() intact.
+            var functions = new StringBuilder();
+            foreach (var fn in ctx.Functions) functions.Append(FormatFunction(fn)).Append('\n');
 
             var body = new StringBuilder();
             foreach (var s in ctx.Statements) body.Append("    ").Append(s.Format()).Append('\n');
             foreach (var a in assigns)        body.Append("    ").Append(a.Format()).Append('\n');
-            // strip trailing newline so the template's surrounding whitespace stays clean
             string bodyStr = body.ToString().TrimEnd('\n');
-            return template.Replace("${MAIN_BODY}", bodyStr);
+
+            return template
+                .Replace("${FUNCTIONS}", functions.ToString())
+                .Replace("${MAIN_BODY}", bodyStr);
+        }
+
+        // Wraps a function output so SgOptimize can treat its Rhs as a live
+        // root (DCE keeps anything reachable from it).
+        class FunctionOutputView : SgOptimize.IAssignView
+        {
+            readonly SgFunctionOutput _o;
+            public FunctionOutputView(SgFunctionOutput o) { _o = o; }
+            public SgRhs Rhs { get => _o.Rhs; set => _o.Rhs = value; }
+        }
+
+        static string FormatFunction(SgFunctionDef fn)
+        {
+            var sb = new StringBuilder();
+            if (fn.StructName != null)
+            {
+                // struct definition + struct-returning function
+                sb.Append("struct ").Append(fn.StructName).Append(" {\n");
+                foreach (var o in fn.Outputs)
+                    sb.Append("    ").Append(SgTypes.Glsl(o.Type)).Append(' ').Append(o.Name).Append(";\n");
+                sb.Append("};\n\n");
+
+                sb.Append(fn.StructName).Append(' ').Append(fn.Name).Append("() {\n");
+                foreach (var s in fn.Body) sb.Append("    ").Append(s.Format()).Append('\n');
+                var args = new string[fn.Outputs.Count];
+                for (int i = 0; i < fn.Outputs.Count; i++) args[i] = fn.Outputs[i].Rhs.ToGlsl();
+                sb.Append("    return ").Append(fn.StructName).Append('(').Append(string.Join(", ", args)).Append(");\n");
+                sb.Append("}\n");
+            }
+            else
+            {
+                // single value-returning function
+                var o = fn.Outputs[0];
+                sb.Append(SgTypes.Glsl(o.Type)).Append(' ').Append(fn.Name).Append("() {\n");
+                foreach (var s in fn.Body) sb.Append("    ").Append(s.Format()).Append('\n');
+                sb.Append("    return ").Append(o.Rhs.ToGlsl()).Append(";\n");
+                sb.Append("}\n");
+            }
+            return sb.ToString();
         }
 
         // Lower a SurfaceDescription block into an Assign. Falls back to the
@@ -77,6 +132,10 @@ namespace HZExporter.ShaderGraph
             var rhs = CoerceRhs(v.Rhs, v.Type, targetT);
             return new Assign { Symbol = symbol, Type = targetT, Rhs = rhs };
         }
+
+        // Public entry point used by SubGraphNodeHandler when coercing a
+        // subgraph output to its declared SubGraphOutputNode slot type.
+        public static SgRhs CoerceRhsForReturn(SgRhs r, SgType from, SgType to) => CoerceRhs(r, from, to);
 
         // Type-coercion at the structured level. Mirrors SgTypes.Coerce but
         // produces an SgRhs — so the optimizer can keep folding through.
@@ -143,7 +202,7 @@ struct MaterialFS {
     vec4 _placeholder;
 };
 
-void main() {
+${FUNCTIONS}void main() {
     MaterialFS mat = MaterialFS_unpack(v_material_offset);
 ${MAIN_BODY}
     frag_color = vec4(base_color, 1.0);
@@ -197,7 +256,7 @@ struct MaterialFS {
     vec4 _placeholder;
 };
 
-void main() {
+${FUNCTIONS}void main() {
     MaterialFS mat = MaterialFS_unpack(v_material_offset);
 ${MAIN_BODY}
     vec3 N = normalize(v_normal);

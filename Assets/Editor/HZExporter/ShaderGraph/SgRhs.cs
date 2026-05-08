@@ -166,8 +166,39 @@ namespace HZExporter.ShaderGraph
     {
         public string Name;
         public SgType Type;
+        // Optional GLSL type name override — used for struct-typed temps (e.g.
+        // `Subgraph_X_Outputs _sg0 = subgraph_x();`) where Type doesn't have
+        // a built-in mapping. When non-null, this string is rendered verbatim
+        // in place of `SgTypes.Glsl(Type)`.
+        public string TypeName;
         public SgRhs Rhs;
-        public string Format() => $"{SgTypes.Glsl(Type)} {Name} = {Rhs.ToGlsl()};";
+        public string Format() =>
+            $"{TypeName ?? SgTypes.Glsl(Type)} {Name} = {Rhs.ToGlsl()};";
+    }
+
+    // A free-standing function emitted ahead of main(). Used for inlining
+    // SubGraphs as named functions on the same file.
+    //
+    // Two output forms:
+    //   • Single output  → simple `<type> name() { body; return rhs; }`.
+    //   • Multiple outputs → struct return:
+    //         struct Name_Outputs { ... };
+    //         Name_Outputs name() { body; return Name_Outputs(rhs1, rhs2); }
+    //
+    // The optimizer treats every SgFunctionOutput.Rhs as a live root.
+    class SgFunctionDef
+    {
+        public string Name;
+        public string StructName;                                  // null ⇒ single-return form
+        public List<SgFunctionOutput> Outputs = new List<SgFunctionOutput>();
+        public List<SgStatement> Body = new List<SgStatement>();
+    }
+
+    class SgFunctionOutput
+    {
+        public string Name;       // GLSL field name (e.g. "Out_Vector1")
+        public SgType Type;
+        public SgRhs Rhs;
     }
 
     // ===== ergonomic builders =================================================
