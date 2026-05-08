@@ -25,50 +25,85 @@ namespace HZExporter.ShaderGraph
             return sb.ToString();
         }
 
-        // Walk the surface block we care about for this variant, lower their
-        // graphs into one shared LowerCtx (so subgraphs are deduped across
-        // blocks), then substitute the resulting statements + final assigns
-        // into the template.
+        // A surface assignment we'll emit at the end of main() — base_color =
+        // …; metallic = …; etc. Carries an SgRhs so the optimizer's DCE can
+        // count temp uses across both the statement list and these assigns.
+        class Assign : SgOptimize.IAssignView
+        {
+            public string Symbol;
+            public SgType Type;
+            public SgRhs Rhs { get; set; }
+            public string Format() => $"{SgTypes.Glsl(Type)} {Symbol} = {Rhs.ToGlsl()};";
+        }
+
         static string EmitFromTemplate(SgGraph g, string template, bool isLit)
         {
             var ctx = new LowerCtx(g);
-            var assigns = new List<string>();
+            var assigns = new List<Assign>();
 
-            assigns.Add(LowerSurface(g, ctx, "BaseColor", "base_color", SgType.Vec3, "vec3(0.5, 0.5, 0.5)"));
+            assigns.Add(LowerSurface(g, ctx, "BaseColor", "base_color", SgType.Vec3, Sg.LitConst(SgConst.Vec(SgType.Vec3, 0.5, 0.5, 0.5))));
             if (isLit)
             {
-                assigns.Add(LowerSurface(g, ctx, "Metallic",   "metallic",   SgType.Float, "0.0"));
-                assigns.Add(LowerSurface(g, ctx, "Smoothness", "smoothness", SgType.Float, "0.5"));
+                assigns.Add(LowerSurface(g, ctx, "Metallic",   "metallic",   SgType.Float, Sg.Lit(0.0)));
+                assigns.Add(LowerSurface(g, ctx, "Smoothness", "smoothness", SgType.Float, Sg.Lit(0.5)));
             }
 
-            string body = string.Join("\n", FormatLines(ctx.Statements, assigns, indent: "    "));
-            return template.Replace("${MAIN_BODY}", body);
+            // Optimization passes (constant fold + peephole + DCE) run on the
+            // statement list and assigns together. Disable by commenting out.
+            SgOptimize.Run(ctx.Statements, assigns);
+
+            var body = new StringBuilder();
+            foreach (var s in ctx.Statements) body.Append("    ").Append(s.Format()).Append('\n');
+            foreach (var a in assigns)        body.Append("    ").Append(a.Format()).Append('\n');
+            // strip trailing newline so the template's surrounding whitespace stays clean
+            string bodyStr = body.ToString().TrimEnd('\n');
+            return template.Replace("${MAIN_BODY}", bodyStr);
         }
 
-        // Lower one SurfaceDescription block into an assignment: `<glslType>
-        // <symbol> = <expr>;`. Falls back to the literal default if the block
-        // isn't present (some subtargets don't emit every block).
-        static string LowerSurface(SgGraph g, LowerCtx ctx, string blockName,
-                                   string symbol, SgType targetT, string fallback)
+        // Lower a SurfaceDescription block into an Assign. Falls back to the
+        // provided literal RHS when the block has no input.
+        static Assign LowerSurface(SgGraph g, LowerCtx ctx, string blockName,
+                                   string symbol, SgType targetT, SgRhs fallbackRhs)
         {
-            string glslT = SgTypes.Glsl(targetT);
             var block = g.FindFragmentBlock("SurfaceDescription." + blockName);
             if (block == null || block.SlotByNum.Count == 0)
-                return $"{glslT} {symbol} = {fallback};";
+                return new Assign { Symbol = symbol, Type = targetT, Rhs = fallbackRhs };
 
-            // The block has exactly one input slot — its first.
             int numId = 0;
             foreach (var k in block.SlotByNum.Keys) { numId = k; break; }
-
             var v = ctx.Input(block.Id, numId);
-            string rhs = SgTypes.Coerce(v.Glsl, v.Type, targetT);
-            return $"{glslT} {symbol} = {rhs};";
+
+            // Coerce at the SgRhs level when we can; fall back to a Raw wrap.
+            var rhs = CoerceRhs(v.Rhs, v.Type, targetT);
+            return new Assign { Symbol = symbol, Type = targetT, Rhs = rhs };
         }
 
-        static IEnumerable<string> FormatLines(List<string> statements, List<string> assigns, string indent)
+        // Type-coercion at the structured level. Mirrors SgTypes.Coerce but
+        // produces an SgRhs — so the optimizer can keep folding through.
+        static SgRhs CoerceRhs(SgRhs r, SgType from, SgType to)
         {
-            foreach (var s in statements) yield return indent + s;
-            foreach (var a in assigns) yield return indent + a;
+            if (from == to) return r;
+            // float → vec_n: broadcast via constructor.
+            if (from == SgType.Float)
+            {
+                if (to == SgType.Vec2 || to == SgType.Vec3 || to == SgType.Vec4)
+                    return Sg.Call(SgTypes.Glsl(to), r);
+            }
+            // vec_n → smaller via swizzle, → larger via constructor with 0 padding.
+            int rf = SgTypes.Rank(from), rt = SgTypes.Rank(to);
+            if (rf > 0 && rt > 0)
+            {
+                if (rt < rf) return Sg.Swizzle(r, "xyzw".Substring(0, rt));
+                if (rt > rf)
+                {
+                    var args = new SgRhs[1 + (rt - rf)];
+                    args[0] = r;
+                    for (int i = 1; i < args.Length; i++) args[i] = Sg.Lit(0.0);
+                    return Sg.Call(SgTypes.Glsl(to), args);
+                }
+            }
+            // Fallback — let the GLSL coercer produce a string and wrap.
+            return Sg.Raw(SgTypes.Coerce(r.ToGlsl(), from, to));
         }
 
         // ===== templates =======================================================
