@@ -30,6 +30,11 @@ namespace HZExporter.ShaderGraph
         public readonly List<SgStatement> Statements = new List<SgStatement>();
         public readonly List<SgFunctionDef> Functions = new List<SgFunctionDef>();
 
+        // Stage marker — vertex-stage-only nodes (PositionNode in object/world
+        // space) check this and reject in fragment context. Subgraphs inherit
+        // this from their parent context via SubGraphNodeHandler.
+        public bool IsVertexStage;
+
         readonly Dictionary<string, SgValue> _cache = new Dictionary<string, SgValue>();
         int _tempCounter;
 
@@ -355,7 +360,7 @@ namespace HZExporter.ShaderGraph
             foreach (var n in sg.Nodes.Values) if (n.Type == "SubGraphOutputNode") { sgOut = n; break; }
             if (sgOut == null) throw new System.Exception($"subgraph {guid} has no SubGraphOutputNode");
 
-            var fnCtx = new LowerCtx(sg);
+            var fnCtx = new LowerCtx(sg) { IsVertexStage = ctx.IsVertexStage };
             var outputs = new List<SgFunctionOutput>();
 
             // Iterate the SubGraphNode's slots in their numeric m_Id order so
@@ -445,6 +450,51 @@ namespace HZExporter.ShaderGraph
             _fnNames[guid] = n;
             return n;
         }
+    }
+
+    // PositionNode: per-vertex position in the requested coordinate space.
+    // Vertex-stage only. Object space → `v.pos`; World space → the model
+    // matrix applied to v.pos. Other spaces (View, Tangent, AbsoluteWorld,
+    // Screen) would need engine-side support and are unsupported for now.
+    class PositionNodeHandler : NodeHandler
+    {
+        public override SgValue Lower(SgNode node, int outSlotNum, LowerCtx ctx)
+        {
+            if (!ctx.IsVertexStage)
+                throw new System.NotImplementedException("PositionNode currently only supported in the vertex stage");
+
+            int space = 0;
+            if (node.Raw.TryGetValue("m_Space", out var s) && s is double d) space = (int)d;
+            switch (space)
+            {
+                case 0: // Object
+                    return new SgValue { Rhs = Sg.Raw("v.pos"), Type = SgType.Vec3, IsTemp = false };
+                case 2: // World
+                    return new SgValue { Rhs = Sg.Raw("(v.model * vec4(v.pos, 1.0)).xyz"), Type = SgType.Vec3, IsTemp = false };
+                default:
+                    throw new System.NotImplementedException($"PositionNode space {space} not supported");
+            }
+        }
+    }
+
+    // TimeNode: scene-wide time uniform. Engine exposes a single `hz_scene.time`
+    // float; we synthesise sin/cos from it. Delta-time variants are unsupported
+    // (engine doesn't track them today).
+    class TimeNodeHandler : NodeHandler
+    {
+        public override SgValue Lower(SgNode node, int outSlotNum, LowerCtx ctx)
+        {
+            switch (outSlotNum)
+            {
+                case 0: return Inline("hz_scene.time");
+                case 1: return Inline("sin(hz_scene.time)");
+                case 2: return Inline("cos(hz_scene.time)");
+                default:
+                    throw new System.NotImplementedException($"TimeNode slot {outSlotNum} not supported (engine has no delta time)");
+            }
+        }
+        static SgValue Inline(string expr) =>
+            new SgValue { Rhs = Sg.Raw(expr), Type = SgType.Float, IsTemp = false };
     }
 
     // PropertyNode: resolves to `mat.<fieldName>` for value-typed properties,
@@ -583,6 +633,8 @@ namespace HZExporter.ShaderGraph
             _handlers["SubGraphNode"]        = new SubGraphNodeHandler();
             _handlers["PropertyNode"]        = new PropertyNodeHandler();
             _handlers["SampleTexture2DNode"] = new SampleTexture2DNodeHandler();
+            _handlers["PositionNode"]        = new PositionNodeHandler();
+            _handlers["TimeNode"]            = new TimeNodeHandler();
         }
 
         public static NodeHandler Lookup(string nodeType)

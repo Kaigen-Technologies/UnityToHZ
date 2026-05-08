@@ -274,6 +274,14 @@ namespace HZExporter.ShaderGraph
             return null;
         }
 
+        public SgNode FindVertexBlock(string serializedDescriptor)
+        {
+            foreach (var id in VertexBlockIds)
+                if (Nodes.TryGetValue(id, out var b) && b.SerializedDescriptor == serializedDescriptor)
+                    return b;
+            return null;
+        }
+
         public SgEdge FindEdgeIntoSlot(string nodeId, int numSlotId)
         {
             foreach (var e in Edges)

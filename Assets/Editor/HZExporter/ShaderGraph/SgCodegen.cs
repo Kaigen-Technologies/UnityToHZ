@@ -38,6 +38,15 @@ namespace HZExporter.ShaderGraph
 
         static string EmitFromTemplate(SgGraph g, string template, bool isLit)
         {
+            // ----- vertex stage --------------------------------------------
+            var vsCtx = new LowerCtx(g) { IsVertexStage = true };
+            var vsAssigns = new List<Assign>();
+            string vsPos     = LowerVertexBlock(g, vsCtx, vsAssigns, "Position", "vertex_position", "v.pos");
+            string vsNormal  = LowerVertexBlock(g, vsCtx, vsAssigns, "Normal",   "vertex_normal",   "v.normal");
+            string vsTangent = LowerVertexBlock(g, vsCtx, vsAssigns, "Tangent",  "vertex_tangent",  "v.tangent");
+            SgOptimize.Run(vsCtx.Statements, vsAssigns);
+
+            // ----- fragment stage ------------------------------------------
             var ctx = new LowerCtx(g);
             var assigns = new List<Assign>();
 
@@ -47,24 +56,29 @@ namespace HZExporter.ShaderGraph
                 assigns.Add(LowerSurface(g, ctx, "Metallic",   "metallic",   SgType.Float, Sg.Lit(0.0)));
                 assigns.Add(LowerSurface(g, ctx, "Smoothness", "smoothness", SgType.Float, Sg.Lit(0.5)));
             }
+            SgOptimize.Run(ctx.Statements, assigns);
 
-            // Optimizer runs on each function body (with every output's Rhs
-            // as a live root) and on main's body (with surface assigns as
-            // roots).
-            foreach (var fn in ctx.Functions)
+            // ----- functions (subgraphs from either stage, deduped) --------
+            var allFunctions = new List<SgFunctionDef>();
+            var seenFnNames = new HashSet<string>();
+            foreach (var fn in vsCtx.Functions) if (seenFnNames.Add(fn.Name)) allFunctions.Add(fn);
+            foreach (var fn in ctx.Functions)   if (seenFnNames.Add(fn.Name)) allFunctions.Add(fn);
+            foreach (var fn in allFunctions)
             {
                 var roots = new List<SgOptimize.IAssignView>(fn.Outputs.Count);
                 foreach (var o in fn.Outputs) roots.Add(new FunctionOutputView(o));
                 SgOptimize.Run(fn.Body, roots);
             }
-            SgOptimize.Run(ctx.Statements, assigns);
 
             // FormatFunction returns "...}\n"; the extra "\n" makes a blank
             // line between functions and between the last function and main().
-            // Empty when no functions, leaving the template's existing
-            // newline before void main() intact.
             var functions = new StringBuilder();
-            foreach (var fn in ctx.Functions) functions.Append(FormatFunction(fn)).Append('\n');
+            foreach (var fn in allFunctions) functions.Append(FormatFunction(fn)).Append('\n');
+
+            // ----- format bodies -------------------------------------------
+            var vsBody = new StringBuilder();
+            foreach (var s in vsCtx.Statements) vsBody.Append("    ").Append(s.Format()).Append('\n');
+            foreach (var a in vsAssigns)        vsBody.Append("    ").Append(a.Format()).Append('\n');
 
             var body = new StringBuilder();
             foreach (var s in ctx.Statements) body.Append("    ").Append(s.Format()).Append('\n');
@@ -74,7 +88,31 @@ namespace HZExporter.ShaderGraph
             return template
                 .Replace("${MATERIAL_STRUCT}", FormatMaterialStruct(g))
                 .Replace("${FUNCTIONS}", functions.ToString())
-                .Replace("${MAIN_BODY}", bodyStr);
+                .Replace("${VERTEX_BODY}", vsBody.ToString())
+                .Replace("${VS_POS}",      vsPos)
+                .Replace("${VS_NORMAL}",   vsNormal)
+                .Replace("${VS_TANGENT}",  vsTangent)
+                .Replace("${MAIN_BODY}",   bodyStr);
+        }
+
+        // Lower a VertexDescription block. If the block has no incoming edge,
+        // the block is a no-op — return the raw default (`v.pos` etc.) and
+        // emit no statement. If wired, lower the chain into an Assign and
+        // return the symbol name to substitute.
+        static string LowerVertexBlock(SgGraph g, LowerCtx ctx, List<Assign> assigns,
+                                       string blockName, string symbol, string fallback)
+        {
+            var block = g.FindVertexBlock("VertexDescription." + blockName);
+            if (block == null || block.SlotByNum.Count == 0) return fallback;
+
+            int numId = 0;
+            foreach (var k in block.SlotByNum.Keys) { numId = k; break; }
+            if (g.FindEdgeIntoSlot(block.Id, numId) == null) return fallback;
+
+            var v = ctx.Input(block.Id, numId);
+            var rhs = CoerceRhs(v.Rhs, v.Type, SgType.Vec3);
+            assigns.Add(new Assign { Symbol = symbol, Type = SgType.Vec3, Rhs = rhs });
+            return symbol;
         }
 
         // Wraps a function output so SgOptimize can treat its Rhs as a live
@@ -219,12 +257,12 @@ out vec3 v_normal;
 
 void main() {
     VertexInstanceData v = unpack_instance_data();
-    vec4 world_pos = v.model * vec4(v.pos, 1.0);
+${VERTEX_BODY}    vec4 world_pos = v.model * vec4(${VS_POS}, 1.0);
     gl_Position = hz_scene.view_proj * world_pos;
     v_uv = v.uv;
     v_uv1 = v.uv1;
     v_material_offset = v.material_offset;
-    v_normal = normalize((v.model * vec4(v.normal, 0.0)).xyz);
+    v_normal = normalize((v.model * vec4(${VS_NORMAL}, 0.0)).xyz);
 }
 @end
 
@@ -258,11 +296,11 @@ out float v_view_depth;
 
 void main() {
     VertexInstanceData v = unpack_instance_data();
-    vec4 world_pos = v.model * vec4(v.pos, 1.0);
+${VERTEX_BODY}    vec4 world_pos = v.model * vec4(${VS_POS}, 1.0);
     gl_Position = hz_scene.view_proj * world_pos;
     v_world_pos = world_pos.xyz;
-    v_normal = normalize((v.model * vec4(v.normal, 0.0)).xyz);
-    v_tangent = normalize((v.model * vec4(v.tangent, 0.0)).xyz);
+    v_normal = normalize((v.model * vec4(${VS_NORMAL}, 0.0)).xyz);
+    v_tangent = normalize((v.model * vec4(${VS_TANGENT}, 0.0)).xyz);
     v_bitangent_sign = v.bitangent_sign;
     v_uv = v.uv;
     v_uv1 = v.uv1;
