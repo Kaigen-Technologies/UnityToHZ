@@ -233,11 +233,23 @@ namespace HZExporter.ShaderGraph
             switch (channel)
             {
                 case 0: varying = "v_uv"; break;
-                // Higher channels would need new vertex outputs — wire them as
-                // they come up.
+                case 1: varying = "v_uv1"; break;
+                // Engine VertexInstanceData only exposes uv0 and uv1 today —
+                // uv2/uv3 would require a new vertex layout.
                 default: throw new NotImplementedException($"UV channel {channel} not wired");
             }
             return ctx.EmitTemp(SgType.Vec4, $"vec4({varying}, 0.0, 0.0)");
+        }
+    }
+
+    // Vector1Node is a constant-holder: its only behaviour is to expose the
+    // value typed into its X input port at its Out slot. We forward the input
+    // verbatim — no statement of our own — so consumers see the literal directly.
+    class Vector1NodeHandler : NodeHandler
+    {
+        public override SgValue Lower(SgNode node, int outSlotNum, LowerCtx ctx)
+        {
+            return ctx.InputByName(node, "X");
         }
     }
 
@@ -282,9 +294,22 @@ namespace HZExporter.ShaderGraph
             Pattern("SubtractNode", "({A} - {B})", PromoteAB, "A", "B");
             Pattern("DivideNode",   "({A} / {B})", PromoteAB, "A", "B");
 
+            // Unary math nodes — output type matches input.
+            Pattern("AbsoluteNode", "abs({In})",                  SameAsIn, "In");
+            Pattern("FloorNode",    "floor({In})",                SameAsIn, "In");
+            Pattern("CeilingNode",  "ceil({In})",                 SameAsIn, "In");
+            Pattern("RoundNode",    "round({In})",                SameAsIn, "In");
+            Pattern("FractionNode", "fract({In})",                SameAsIn, "In");
+            Pattern("SignNode",     "sign({In})",                 SameAsIn, "In");
+            Pattern("OneMinusNode", "(1.0 - {In})",               SameAsIn, "In");
+            Pattern("NegateNode",   "(-{In})",                    SameAsIn, "In");
+            Pattern("SaturateNode", "clamp({In}, 0.0, 1.0)",      SameAsIn, "In");
+            Pattern("SquareRootNode", "sqrt({In})",               SameAsIn, "In");
+
             // ----- custom -----------------------------------------------------
-            _handlers["UVNode"]    = new UVNodeHandler();
-            _handlers["SplitNode"] = new SplitNodeHandler();
+            _handlers["UVNode"]      = new UVNodeHandler();
+            _handlers["SplitNode"]   = new SplitNodeHandler();
+            _handlers["Vector1Node"] = new Vector1NodeHandler();
         }
 
         public static NodeHandler Lookup(string nodeType)
@@ -305,5 +330,6 @@ namespace HZExporter.ShaderGraph
 
         // Output-type rules used by patterns.
         static SgType PromoteAB(SgType[] inT) => SgTypes.Promote(inT[0], inT[1]);
+        static SgType SameAsIn(SgType[] inT) => inT[0];
     }
 }

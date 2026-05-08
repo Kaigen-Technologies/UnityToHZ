@@ -81,6 +81,7 @@ namespace HZExporter.ShaderGraph
         const string UNLIT_TEMPLATE =
 @"@vs
 out vec2 v_uv;
+out vec2 v_uv1;
 flat out uint v_material_offset;
 out vec3 v_normal;
 
@@ -89,6 +90,7 @@ void main() {
     vec4 world_pos = v.model * vec4(v.pos, 1.0);
     gl_Position = hz_scene.view_proj * world_pos;
     v_uv = v.uv;
+    v_uv1 = v.uv1;
     v_material_offset = v.material_offset;
     v_normal = normalize((v.model * vec4(v.normal, 0.0)).xyz);
 }
@@ -96,6 +98,7 @@ void main() {
 
 @fs
 in vec2 v_uv;
+in vec2 v_uv1;
 flat in uint v_material_offset;
 in vec3 v_normal;
 out vec4 frag_color;
@@ -119,6 +122,7 @@ ${MAIN_BODY}
 out vec3 v_world_pos;
 out vec3 v_normal;
 out vec2 v_uv;
+out vec2 v_uv1;
 flat out uint v_material_offset;
 out vec3 v_tangent;
 out float v_bitangent_sign;
@@ -133,6 +137,7 @@ void main() {
     v_tangent = normalize((v.model * vec4(v.tangent, 0.0)).xyz);
     v_bitangent_sign = v.bitangent_sign;
     v_uv = v.uv;
+    v_uv1 = v.uv1;
     v_material_offset = v.material_offset;
     v_view_depth = -(hz_scene.view * world_pos).z;
 }
@@ -145,6 +150,7 @@ void main() {
 in vec3 v_world_pos;
 in vec3 v_normal;
 in vec2 v_uv;
+in vec2 v_uv1;
 flat in uint v_material_offset;
 in vec3 v_tangent;
 in float v_bitangent_sign;
