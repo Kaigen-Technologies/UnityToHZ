@@ -15,6 +15,30 @@ public static class HZExportCommands
     // Asset-relative prefix (how the engine sees the paths, relative to assets/)
     const string AssetPrefix = "unity";
 
+    /// <summary>Translate every .shadergraph under Assets/ShaderGraphExport/ into a
+    /// .hz.glsl file under ExportedAssets/shaders/. Built up in steps — see
+    /// HZShaderGraphExporter for current scope.</summary>
+    [MenuItem("HZ Engine/Export Shader Graphs")]
+    public static void ExportShaderGraphs()
+    {
+        const string srcDir = "Assets/ShaderGraphExport";
+        string outDir = OutputDir + "/shaders";
+        if (!System.IO.Directory.Exists(srcDir))
+        {
+            Debug.LogError($"[HZ-SG] source folder not found: {srcDir}");
+            return;
+        }
+        var files = System.IO.Directory.GetFiles(srcDir, "*.shadergraph", System.IO.SearchOption.TopDirectoryOnly);
+        System.Array.Sort(files);
+        int ok = 0, fail = 0;
+        foreach (var f in files)
+        {
+            try { HZShaderGraphExporter.ExportFile(f, outDir); ok++; }
+            catch (System.Exception e) { Debug.LogError($"[HZ-SG] {System.IO.Path.GetFileName(f)}: {e.Message}\n{e.StackTrace}"); fail++; }
+        }
+        Debug.Log($"[HZ-SG] done — {ok} ok, {fail} failed");
+    }
+
     /// <summary>Test-export a cube using the FloorTriplanar shader-graph material so we can
     /// verify HZShaderMap picks up the new JSON entry and routes _MainTexture/_Normal/etc.</summary>
     public static void ExportFloorTriplanarTest()
@@ -357,6 +381,36 @@ public static class HZExportCommands
             }
         }
 
+        // LODGroup: skip every renderer that belongs only to a non-last LOD. The last LOD's
+        // renderers stay exportable; the others get added to skipGOs so they're excluded
+        // from entity emission like bones. Overlap-safe: if a renderer is referenced by both
+        // the last LOD and an earlier LOD, it stays exportable.
+        foreach (var root in roots)
+        {
+            foreach (var lodGroup in root.GetComponentsInChildren<LODGroup>(true))
+            {
+                var lods = lodGroup.GetLODs();
+                if (lods == null || lods.Length == 0) continue;
+                int lastIdx = lods.Length - 1;
+                var keepIds = new HashSet<int>();
+                if (lods[lastIdx].renderers != null)
+                {
+                    foreach (var r in lods[lastIdx].renderers)
+                        if (r != null) keepIds.Add(r.gameObject.GetInstanceID());
+                }
+                for (int li = 0; li < lastIdx; li++)
+                {
+                    if (lods[li].renderers == null) continue;
+                    foreach (var r in lods[li].renderers)
+                    {
+                        if (r == null) continue;
+                        int id = r.gameObject.GetInstanceID();
+                        if (!keepIds.Contains(id)) skipGOs.Add(id);
+                    }
+                }
+            }
+        }
+
         // GLB dedup: key by (mesh, materials[]) — same mesh with different material assignments
         // must produce distinct GLBs since materials (including textures) are embedded.
         var exportedGlbs = new Dictionary<string, string>();
@@ -586,31 +640,13 @@ public static class HZExportCommands
 
                     Debug.Log($"[HZ] Entity: {go.name} (skinned, model={glbAssetPath})");
                 }
-                // Terrain — export TerrainBlobAsset + heightmap/splatmaps/layer textures.
-                // Engine-side ECS (EcsTerrainRef in scene entity) isn't wired yet, so the entity
-                // itself is emitted as an empty-transform anchor; the user wires the asset
-                // manually until scene serialization catches up.
+                // Terrain — skipped for now. Engine-side EcsTerrainRef + scene serialization
+                // aren't wired up, and even when they are the heightmap/splatmap/layer-texture
+                // export is heavyweight enough that we don't want it firing on every scene
+                // export. The Terrain GameObject still emits as an empty-transform anchor.
                 else if (go.TryGetComponent<Terrain>(out var terrain) && terrain.terrainData != null)
                 {
-                    string key = AssetDatabase.GetAssetPath(terrain.terrainData);
-                    if (string.IsNullOrEmpty(key)) key = $"iid:{terrain.terrainData.GetInstanceID()}";
-
-                    if (!exportedTerrains.TryGetValue(key, out string terrainAssetPath))
-                    {
-                        string safe = SanitizeName(terrain.terrainData.name);
-                        string outSubDir = $"{OutputDir}/terrain/{safe}";
-                        string prefix = $"{AssetPrefix}/terrain/{safe}";
-                        terrainAssetPath = HZTerrainExporter.Export(terrain, outSubDir, prefix);
-                        if (terrainAssetPath != null)
-                            exportedTerrains[key] = terrainAssetPath;
-                    }
-                    if (terrainAssetPath != null)
-                    {
-                        info.terrainAssetPath = terrainAssetPath;
-                        info.terrainGridDim = 32;
-                        info.terrainLodLevels = 6;
-                    }
-                    Debug.Log($"[HZ] Entity: {go.name} (terrain, asset={terrainAssetPath ?? "<failed>"})");
+                    Debug.Log($"[HZ] Entity: {go.name} (terrain — skipped, no asset emitted)");
                 }
                 // Static mesh — export as .glb, dedup by (mesh, material combo).
                 else if (go.TryGetComponent<MeshFilter>(out var mf) && mf.sharedMesh != null
@@ -1040,7 +1076,14 @@ public static class HZExportCommands
 
     static string SanitizeName(string name)
     {
-        return name.Replace(" ", "_").Replace("/", "_").Replace("\\", "_");
+        // Replace whitespace, path separators, and Windows-reserved filename characters.
+        // Unity's FBX importer emits clip names like "Armature|Fly_03" — the | crashes
+        // file creation on Windows.
+        if (string.IsNullOrEmpty(name)) return name;
+        return name
+            .Replace(' ', '_').Replace('/', '_').Replace('\\', '_')
+            .Replace('|', '_').Replace(':', '_').Replace('?', '_').Replace('*', '_')
+            .Replace('"', '_').Replace('<', '_').Replace('>', '_');
     }
 
     /// <summary>
