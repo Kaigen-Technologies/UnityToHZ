@@ -160,6 +160,17 @@ namespace HZExporter.ShaderGraph
         public override IEnumerable<string> Refs() => RefList;
     }
 
+    // A reference to a texture-typed material property. Behaves opaquely for
+    // the optimizer (no folding) and is recognised structurally by node
+    // handlers like SampleTexture2D (which need the FieldName to expand into
+    // `texture_sample(<name>, mat.<name>, uv)`).
+    class SgRhsTextureRef : SgRhs
+    {
+        public string FieldName;
+        public override string ToGlsl() => "mat." + FieldName;
+        public override IEnumerable<string> Refs() { yield break; }
+    }
+
     // ===== a single SSA assignment ============================================
 
     class SgStatement

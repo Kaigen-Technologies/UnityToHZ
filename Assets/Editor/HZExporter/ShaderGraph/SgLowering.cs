@@ -106,6 +106,9 @@ namespace HZExporter.ShaderGraph
         public static SgValue From(SgSlot slot)
         {
             var t = slot.StaticType();
+            if (t == SgType.Texture2D || t == SgType.SamplerState)
+                throw new NotImplementedException(
+                    $"slot '{slot.DisplayName}' of type {slot.Type} cannot have a literal default — must be wired");
             if (t == SgType.Unknown)
             {
                 // DynamicValue/DynamicVector default to scalar — see SgRhs.cs
@@ -311,7 +314,7 @@ namespace HZExporter.ShaderGraph
                 return new SgValue { Rhs = entry.temp.Rhs, Type = requestedType, IsTemp = false };
             return new SgValue
             {
-                Rhs = Sg.Swizzle(entry.temp.Rhs, requestedSlot.OutputName),
+                Rhs = Sg.Swizzle(entry.temp.Rhs, SgNames.ToSnakeCase(requestedSlot.OutputName)),
                 Type = requestedType,
                 IsTemp = false,
             };
@@ -375,7 +378,7 @@ namespace HZExporter.ShaderGraph
                 var coerced = SgCodegen.CoerceRhsForReturn(v.Rhs, v.Type, slot.StaticType());
                 outputs.Add(new SgFunctionOutput
                 {
-                    Name = slot.OutputName,
+                    Name = SgNames.ToSnakeCase(slot.OutputName),
                     Type = slot.StaticType(),
                     Rhs = coerced,
                 });
@@ -387,7 +390,7 @@ namespace HZExporter.ShaderGraph
             var fn = new SgFunctionDef
             {
                 Name = fnName,
-                StructName = outputs.Count > 1 ? fnName + "_Outputs" : null,
+                StructName = outputs.Count > 1 ? fnName + "_outputs" : null,
                 Outputs = outputs,
                 Body = fnCtx.Statements,
             };
@@ -438,17 +441,92 @@ namespace HZExporter.ShaderGraph
             string path = UnityEditor.AssetDatabase.GUIDToAssetPath(guid);
             n = string.IsNullOrEmpty(path)
                 ? "subgraph_" + guid.Substring(0, 8)
-                : "subgraph_" + Sanitize(System.IO.Path.GetFileNameWithoutExtension(path));
+                : "subgraph_" + SgNames.ToSnakeCase(System.IO.Path.GetFileNameWithoutExtension(path));
             _fnNames[guid] = n;
             return n;
         }
+    }
 
-        static string Sanitize(string s)
+    // PropertyNode: resolves to `mat.<fieldName>` for value-typed properties,
+    // or to an SgRhsTextureRef for Texture2D properties (so SampleTexture2D
+    // can extract the field name structurally).
+    class PropertyNodeHandler : NodeHandler
+    {
+        public override SgValue Lower(SgNode node, int outSlotNum, LowerCtx ctx)
         {
-            var sb = new System.Text.StringBuilder(s.Length);
-            foreach (var c in s)
-                sb.Append(char.IsLetterOrDigit(c) || c == '_' ? c : '_');
-            return sb.ToString();
+            if (!node.Raw.TryGetValue("m_Property", out var pr) || !(pr is Dictionary<string, object> prd)
+                || !prd.TryGetValue("m_Id", out var pid) || !(pid is string propId))
+                throw new System.Exception("PropertyNode missing m_Property reference");
+            if (!ctx.Graph.PropertiesById.TryGetValue(propId, out var prop))
+                throw new System.Exception($"PropertyNode references unknown property '{propId}'");
+
+            if (prop.Type == SgType.Texture2D)
+                return new SgValue
+                {
+                    Rhs = new SgRhsTextureRef { FieldName = prop.FieldName },
+                    Type = SgType.Texture2D,
+                    IsTemp = false,
+                };
+
+            // Value-typed properties become reads of the MaterialFS field.
+            // Wrapped as Raw so the optimizer leaves them alone (the value
+            // isn't compile-time known — the engine binds it at draw time).
+            return new SgValue
+            {
+                Rhs = Sg.Raw("mat." + prop.FieldName),
+                Type = prop.Type,
+                IsTemp = false,
+            };
+        }
+    }
+
+    // SampleTexture2DNode: emits `texture_sample(<name>, mat.<name>, uv)`. The
+    // texture name comes from inspecting the Texture input — it must trace
+    // back to a Texture2D PropertyNode (we don't yet support inline texture
+    // resources). UV defaults to v_uv when nothing is wired.
+    //
+    // Slot layout: 0=RGBA(out), 1=Texture(in), 2=UV(in), 3=Sampler(in),
+    //              4=R(out), 5=G(out), 6=B(out), 7=A(out).
+    class SampleTexture2DNodeHandler : NodeHandler
+    {
+        public override SgValue Lower(SgNode node, int outSlotNum, LowerCtx ctx)
+        {
+            if (outSlotNum == 0) return EmitSample(node, ctx);
+            if (outSlotNum >= 4 && outSlotNum <= 7)
+            {
+                // Force-cache RGBA at slot 0 (LowerCtx caches by output slot
+                // already; this is a recursive call into Output()) and pull a
+                // component out via swizzle.
+                var rgba = ctx.Output(node.Id, 0);
+                string s; switch (outSlotNum)
+                {
+                    case 4: s = "x"; break; case 5: s = "y"; break;
+                    case 6: s = "z"; break; case 7: s = "w"; break;
+                    default: throw new System.Exception();
+                }
+                return ctx.EmitTemp(SgType.Float, Sg.Swizzle(rgba.Rhs, s));
+            }
+            throw new System.Exception($"SampleTexture2DNode: invalid output slot {outSlotNum}");
+        }
+
+        SgValue EmitSample(SgNode node, LowerCtx ctx)
+        {
+            var texInput = ctx.Input(node.Id, 1);
+            if (!(texInput.Rhs is SgRhsTextureRef texRef))
+                throw new System.NotImplementedException(
+                    "SampleTexture2D: Texture input must come from a Texture2D PropertyNode");
+
+            // UV: edge → use it; otherwise default to v_uv.
+            string uvExpr = "v_uv";
+            var uvEdge = ctx.Graph.FindEdgeIntoSlot(node.Id, 2);
+            if (uvEdge != null)
+            {
+                var uv = ctx.Output(uvEdge.OutputNodeId, uvEdge.OutputSlotIdNum);
+                uvExpr = uv.Rhs.ToGlsl();
+            }
+
+            return ctx.EmitTemp(SgType.Vec4,
+                Sg.Raw($"texture_sample({texRef.FieldName}, mat.{texRef.FieldName}, {uvExpr})"));
         }
     }
 
@@ -499,10 +577,12 @@ namespace HZExporter.ShaderGraph
             Pattern("SaturateNode",    a => Sg.Call("clamp", a[0], Sg.Lit(0.0), Sg.Lit(1.0)), SameAsIn, "In");
 
             // ----- custom -----------------------------------------------------
-            _handlers["UVNode"]       = new UVNodeHandler();
-            _handlers["SplitNode"]    = new SplitNodeHandler();
-            _handlers["Vector1Node"]  = new Vector1NodeHandler();
-            _handlers["SubGraphNode"] = new SubGraphNodeHandler();
+            _handlers["UVNode"]              = new UVNodeHandler();
+            _handlers["SplitNode"]           = new SplitNodeHandler();
+            _handlers["Vector1Node"]         = new Vector1NodeHandler();
+            _handlers["SubGraphNode"]        = new SubGraphNodeHandler();
+            _handlers["PropertyNode"]        = new PropertyNodeHandler();
+            _handlers["SampleTexture2DNode"] = new SampleTexture2DNodeHandler();
         }
 
         public static NodeHandler Lookup(string nodeType)

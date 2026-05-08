@@ -72,6 +72,7 @@ namespace HZExporter.ShaderGraph
             string bodyStr = body.ToString().TrimEnd('\n');
 
             return template
+                .Replace("${MATERIAL_STRUCT}", FormatMaterialStruct(g))
                 .Replace("${FUNCTIONS}", functions.ToString())
                 .Replace("${MAIN_BODY}", bodyStr);
         }
@@ -83,6 +84,43 @@ namespace HZExporter.ShaderGraph
             readonly SgFunctionOutput _o;
             public FunctionOutputView(SgFunctionOutput o) { _o = o; }
             public SgRhs Rhs { get => _o.Rhs; set => _o.Rhs = value; }
+        }
+
+        // MaterialFS struct: one field per declared property, in declaration
+        // order. Texture properties get the @texture2D annotation. Graphs
+        // with no exposed properties still get a single placeholder field
+        // (the engine compiler requires at least one).
+        static string FormatMaterialStruct(SgGraph g)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("@material");
+            sb.AppendLine("struct MaterialFS {");
+            if (g.Properties.Count == 0)
+            {
+                sb.AppendLine("    vec4 _placeholder;");
+            }
+            else
+            {
+                foreach (var p in g.Properties)
+                {
+                    if (p.Type == SgType.Texture2D)
+                    {
+                        sb.AppendLine("    @texture2D");
+                        sb.Append("    uint ").Append(p.FieldName).AppendLine(";");
+                    }
+                    else if (p.Type == SgType.SamplerState)
+                    {
+                        // engine uses a default sampler — skip
+                    }
+                    else
+                    {
+                        sb.Append("    ").Append(SgTypes.Glsl(p.Type)).Append(' ')
+                          .Append(p.FieldName).AppendLine(";");
+                    }
+                }
+            }
+            sb.AppendLine("};");
+            return sb.ToString();
         }
 
         static string FormatFunction(SgFunctionDef fn)
@@ -197,11 +235,7 @@ flat in uint v_material_offset;
 in vec3 v_normal;
 out vec4 frag_color;
 
-@material
-struct MaterialFS {
-    vec4 _placeholder;
-};
-
+${MATERIAL_STRUCT}
 ${FUNCTIONS}void main() {
     MaterialFS mat = MaterialFS_unpack(v_material_offset);
 ${MAIN_BODY}
@@ -251,11 +285,7 @@ in float v_bitangent_sign;
 in float v_view_depth;
 out vec4 frag_color;
 
-@material
-struct MaterialFS {
-    vec4 _placeholder;
-};
-
+${MATERIAL_STRUCT}
 ${FUNCTIONS}void main() {
     MaterialFS mat = MaterialFS_unpack(v_material_offset);
 ${MAIN_BODY}

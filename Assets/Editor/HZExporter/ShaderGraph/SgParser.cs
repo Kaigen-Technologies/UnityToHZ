@@ -29,11 +29,59 @@ namespace HZExporter.ShaderGraph
             ResolveVariant(g, raw, graphData);
             CollectBlockContext(graphData, "m_VertexContext", g.VertexBlockIds);
             CollectBlockContext(graphData, "m_FragmentContext", g.FragmentBlockIds);
+            ParseProperties(g, raw, graphData);
             ParseSlots(g, raw);
             ParseNodes(g, raw);
             ParseEdges(g, graphData);
 
             return g;
+        }
+
+        // Material-exposed properties. The GraphData's m_Properties array
+        // dictates declaration order; the property objects themselves live
+        // elsewhere in the multi-object stream.
+        static void ParseProperties(SgGraph g,
+                                    Dictionary<string, Dictionary<string, object>> raw,
+                                    Dictionary<string, object> graphData)
+        {
+            if (!TryGetIdList(graphData, "m_Properties", out var propIds)) return;
+            foreach (var pid in propIds)
+            {
+                if (!raw.TryGetValue(pid, out var pobj)) continue;
+                string fq = pobj.TryGetValue("m_Type", out var to) ? to as string : "";
+                var prop = new SgProperty
+                {
+                    Id = pid,
+                    Name = pobj.TryGetValue("m_Name", out var n) ? n as string : null,
+                    ReferenceName = pobj.TryGetValue("m_DefaultReferenceName", out var rn) ? rn as string : null,
+                    Type = MapPropertyType(fq),
+                };
+                if (pobj.TryGetValue("m_Value", out var v)) prop.DefaultValue = v;
+                prop.FieldName = MakeFieldName(prop.ReferenceName, prop.Name);
+                g.Properties.Add(prop);
+                g.PropertiesById[pid] = prop;
+            }
+        }
+
+        static SgType MapPropertyType(string fq)
+        {
+            if (fq.EndsWith(".ColorShaderProperty"))     return SgType.Vec4;
+            if (fq.EndsWith(".Texture2DShaderProperty")) return SgType.Texture2D;
+            if (fq.EndsWith(".Vector1ShaderProperty"))   return SgType.Float;
+            if (fq.EndsWith(".Vector2ShaderProperty"))   return SgType.Vec2;
+            if (fq.EndsWith(".Vector3ShaderProperty"))   return SgType.Vec3;
+            if (fq.EndsWith(".Vector4ShaderProperty"))   return SgType.Vec4;
+            if (fq.EndsWith(".BooleanShaderProperty"))   return SgType.Bool;
+            return SgType.Unknown;
+        }
+
+        // Field name in MaterialFS — derived from Unity's reference name
+        // (`_Color`) by snake-casing (`color`). Falls back to m_Name when no
+        // reference name is available.
+        static string MakeFieldName(string refName, string fallback)
+        {
+            string s = !string.IsNullOrEmpty(refName) ? refName : fallback;
+            return string.IsNullOrEmpty(s) ? "_unnamed" : SgNames.ToSnakeCase(s);
         }
 
         // ----- helpers -------------------------------------------------------

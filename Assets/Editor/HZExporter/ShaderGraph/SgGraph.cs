@@ -22,6 +22,8 @@ namespace HZExporter.ShaderGraph
         Vec4,
         Mat4,
         Bool,
+        Texture2D,        // sampleable texture (engine binds to a uint handle)
+        SamplerState,     // sampler — not yet emitted as a value
     }
 
     static class SgTypes
@@ -34,8 +36,9 @@ namespace HZExporter.ShaderGraph
                 case SgType.Vec2:  return "vec2";
                 case SgType.Vec3:  return "vec3";
                 case SgType.Vec4:  return "vec4";
-                case SgType.Mat4:  return "mat4";
-                case SgType.Bool:  return "bool";
+                case SgType.Mat4:      return "mat4";
+                case SgType.Bool:      return "bool";
+                case SgType.Texture2D: return "uint";    // texture handles are uint indices in MaterialFS
             }
             throw new Exception($"no GLSL name for type {t}");
         }
@@ -136,6 +139,44 @@ namespace HZExporter.ShaderGraph
         }
     }
 
+    // Identifier conversion. Used everywhere we mint a GLSL name from a
+    // user-typed Unity name (property reference names, subgraph file names,
+    // SubGraphOutputNode slot names, …). Rules:
+    //   • lower → upper:                BaseColor    → base_color
+    //   • upper → upper-then-lower:     XMLParser    → xml_parser
+    //   • letter → digit:               Texture2D    → texture_2d
+    //                                   OutVector1   → out_vector_1
+    //   • digit → upper-then-lower:     MyVec3Comp   → my_vec_3_comp
+    //   • non-alnum becomes _, runs of _ collapsed, leading/trailing _ stripped
+    static class SgNames
+    {
+        public static string ToSnakeCase(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "_";
+            var sb = new System.Text.StringBuilder(s.Length + 4);
+            for (int i = 0; i < s.Length; i++)
+            {
+                char c = s[i];
+                char prev = i > 0 ? s[i - 1] : '\0';
+                char next = i + 1 < s.Length ? s[i + 1] : '\0';
+
+                if (i > 0)
+                {
+                    if (char.IsLower(prev) && char.IsUpper(c)) sb.Append('_');
+                    else if (char.IsUpper(prev) && char.IsUpper(c) && char.IsLower(next)) sb.Append('_');
+                    else if (char.IsLetter(prev) && char.IsDigit(c)) sb.Append('_');
+                    else if (char.IsDigit(prev) && char.IsUpper(c) && char.IsLower(next)) sb.Append('_');
+                }
+
+                if (char.IsLetterOrDigit(c) || c == '_') sb.Append(char.ToLowerInvariant(c));
+                else sb.Append('_');
+            }
+            var result = sb.ToString();
+            while (result.Contains("__")) result = result.Replace("__", "_");
+            return result.Trim('_');
+        }
+    }
+
     // ===== graph nodes/slots/edges/properties =================================
 
     class SgNode
@@ -179,9 +220,28 @@ namespace HZExporter.ShaderGraph
                     return SgType.Vec4;
                 case "BooleanMaterialSlot":
                     return SgType.Bool;
+                case "UVMaterialSlot":
+                    return SgType.Vec2;
+                case "Texture2DMaterialSlot":
+                case "Texture2DInputMaterialSlot":
+                    return SgType.Texture2D;
+                case "SamplerStateMaterialSlot":
+                    return SgType.SamplerState;
             }
             return SgType.Unknown;
         }
+    }
+
+    // A material-exposed input. Mirrors Unity's ShaderProperty objects in
+    // m_Properties — these become fields of the engine's MaterialFS struct.
+    class SgProperty
+    {
+        public string Id;             // m_ObjectId — used by PropertyNode m_Property.m_Id
+        public string Name;           // m_Name (display)
+        public string ReferenceName;  // m_DefaultReferenceName ("_Color", "_Texture2D")
+        public string FieldName;      // GLSL field in MaterialFS — derived from ReferenceName
+        public SgType Type;
+        public object DefaultValue;   // m_Value (for non-texture types)
     }
 
     class SgEdge
@@ -200,6 +260,11 @@ namespace HZExporter.ShaderGraph
         public Dictionary<string, SgNode> Nodes = new Dictionary<string, SgNode>();
         public Dictionary<string, SgSlot> Slots = new Dictionary<string, SgSlot>();
         public List<SgEdge> Edges = new List<SgEdge>();
+
+        // Properties in declaration order; PropertiesById indexes them by
+        // m_ObjectId for PropertyNode lookups.
+        public List<SgProperty> Properties = new List<SgProperty>();
+        public Dictionary<string, SgProperty> PropertiesById = new Dictionary<string, SgProperty>();
 
         public SgNode FindFragmentBlock(string serializedDescriptor)
         {
