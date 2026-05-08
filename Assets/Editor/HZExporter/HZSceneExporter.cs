@@ -342,10 +342,13 @@ namespace HZExporter
                 sb.AppendLine($"    max {F(-b.min.x)} {F(b.max.y)} {F(b.max.z)}");
             }
 
-            // Camera
+            // Camera — pos/rot in the engine Camera component are world-space (the engine
+            // builds view/view_proj from these directly, not via the entity-tree hierarchy).
+            // Use worldPosition/worldRotation so cameras nested under non-identity parents
+            // export correctly.
             if (info.isCamera)
             {
-                var mirrored = new Quaternion(info.rotation.x, -info.rotation.y, -info.rotation.z, info.rotation.w);
+                var mirrored = new Quaternion(info.worldRotation.x, -info.worldRotation.y, -info.worldRotation.z, info.worldRotation.w);
                 var flip180Y = Quaternion.Euler(0, 180, 0);
                 var cq = mirrored * flip180Y;
 
@@ -362,7 +365,7 @@ namespace HZExporter
                 sb.AppendLine($"    y {F(cq.y)}");
                 sb.AppendLine($"    z {F(cq.z)}");
                 sb.AppendLine($"    w {F(cq.w)}");
-                sb.AppendLine($"  pos {F(-info.position.x)} {F(info.position.y)} {F(info.position.z)}");
+                sb.AppendLine($"  pos {F(-info.worldPosition.x)} {F(info.worldPosition.y)} {F(info.worldPosition.z)}");
                 sb.AppendLine($"  fov {F(info.fov)}");
                 sb.AppendLine($"  near_plane {F(info.nearPlane)}");
                 sb.AppendLine($"  far_plane {F(info.farPlane)}");
