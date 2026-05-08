@@ -124,6 +124,18 @@ namespace HZExporter.ShaderGraph
                     var (sb, sc) = PropagateConsts(sw.Base, known);
                     return sc ? ((SgRhs)new SgRhsSwizzle { Base = sb, Swizzle = sw.Swizzle }, true) : (r, false);
                 }
+                case SgRhsRawTemplate rt:
+                {
+                    var newArgs = new List<SgRhs>(rt.Args.Count);
+                    bool ach = false;
+                    foreach (var arg in rt.Args)
+                    {
+                        var (na, nc) = PropagateConsts(arg, known);
+                        if (nc) ach = true;
+                        newArgs.Add(na);
+                    }
+                    return ach ? ((SgRhs)new SgRhsRawTemplate { Template = rt.Template, Args = newArgs }, true) : (r, false);
+                }
             }
             return (r, false);
         }
@@ -244,6 +256,17 @@ namespace HZExporter.ShaderGraph
                 case SgRhsSwizzle sw:
                     var (sb, sc) = ApplyRulesRec(sw.Base);
                     if (sc) { r = new SgRhsSwizzle { Base = sb, Swizzle = sw.Swizzle }; changed = true; }
+                    break;
+                case SgRhsRawTemplate rt:
+                    var rtArgs = new List<SgRhs>(rt.Args.Count);
+                    bool rtChanged = false;
+                    foreach (var arg in rt.Args)
+                    {
+                        var (rta, rtc) = ApplyRulesRec(arg);
+                        if (rtc) rtChanged = true;
+                        rtArgs.Add(rta);
+                    }
+                    if (rtChanged) { r = new SgRhsRawTemplate { Template = rt.Template, Args = rtArgs }; changed = true; }
                     break;
             }
 
@@ -375,6 +398,18 @@ namespace HZExporter.ShaderGraph
                     var (sb, sc) = SubstituteOnce(sw.Base, name, replacement);
                     return sc ? ((SgRhs)new SgRhsSwizzle { Base = sb, Swizzle = sw.Swizzle }, true) : (r, false);
                 }
+                case SgRhsRawTemplate rt:
+                    for (int i = 0; i < rt.Args.Count; i++)
+                    {
+                        var (na, did) = SubstituteOnce(rt.Args[i], name, replacement);
+                        if (did)
+                        {
+                            var newArgs = new List<SgRhs>(rt.Args);
+                            newArgs[i] = na;
+                            return (new SgRhsRawTemplate { Template = rt.Template, Args = newArgs }, true);
+                        }
+                    }
+                    return (r, false);
             }
             return (r, false);
         }
@@ -431,6 +466,12 @@ namespace HZExporter.ShaderGraph
                 }
                 case SgRhsSwizzle sw:
                     return new SgRhsSwizzle { Base = RenameRefs(sw.Base, rename), Swizzle = sw.Swizzle };
+                case SgRhsRawTemplate rt:
+                {
+                    var args = new List<SgRhs>(rt.Args.Count);
+                    foreach (var arg in rt.Args) args.Add(RenameRefs(arg, rename));
+                    return new SgRhsRawTemplate { Template = rt.Template, Args = args };
+                }
             }
             return r;
         }

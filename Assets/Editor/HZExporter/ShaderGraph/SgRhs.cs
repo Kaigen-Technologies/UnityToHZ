@@ -160,6 +160,39 @@ namespace HZExporter.ShaderGraph
         public override IEnumerable<string> Refs() => RefList;
     }
 
+    // GLSL fragment with positional placeholders `{0}`, `{1}`, ... that get
+    // substituted at ToGlsl time using each Args[i]. Unlike SgRhsRaw, this
+    // walks operand SgRhs structurally so the optimizer's renumber pass can
+    // refresh embedded temp names. Used by auto-generated patterns whose
+    // body doesn't fit a clean shape (RemapNode, FresnelNode, etc).
+    class SgRhsRawTemplate : SgRhs
+    {
+        public string Template;
+        public List<SgRhs> Args = new List<SgRhs>();
+
+        public override string ToGlsl()
+        {
+            var sb = new System.Text.StringBuilder(Template.Length + 32);
+            for (int i = 0; i < Template.Length; i++)
+            {
+                char c = Template[i];
+                if (c == '{' && i + 2 < Template.Length && Template[i + 2] == '}' && char.IsDigit(Template[i + 1]))
+                {
+                    int idx = Template[i + 1] - '0';
+                    if (idx < Args.Count) sb.Append(Args[idx].ToGlsl());
+                    i += 2;
+                }
+                else sb.Append(c);
+            }
+            return sb.ToString();
+        }
+
+        public override IEnumerable<string> Refs()
+        {
+            foreach (var a in Args) foreach (var r in a.Refs()) yield return r;
+        }
+    }
+
     // A reference to a texture-typed material property. Behaves opaquely for
     // the optimizer (no folding) and is recognised structurally by node
     // handlers like SampleTexture2D (which need the FieldName to expand into
@@ -226,6 +259,14 @@ namespace HZExporter.ShaderGraph
         public static SgRhs Swizzle(SgRhs b, string s) => new SgRhsSwizzle { Base = b, Swizzle = s };
         public static SgRhs Raw(string glsl, params string[] refs)
             => new SgRhsRaw { Glsl = glsl, RefList = new List<string>(refs) };
+
+        // Builder for complex-expression bodies that reference other SgRhs
+        // operands. The template uses positional placeholders `{0}`, `{1}`,
+        // … which are substituted at ToGlsl time — so the optimizer's
+        // renumbering pass can refresh embedded temp names through the
+        // operands structurally.
+        public static SgRhs RawTemplate(string template, params SgRhs[] inputs)
+            => new SgRhsRawTemplate { Template = template, Args = new List<SgRhs>(inputs) };
     }
 
     // ===== constant evaluator =================================================

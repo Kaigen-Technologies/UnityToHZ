@@ -609,24 +609,20 @@ namespace HZExporter.ShaderGraph
 
         static SgNodes()
         {
-            // ----- pattern-driven (data-only) ---------------------------------
-            Pattern("MultiplyNode",    a => Sg.Bin("*", a[0], a[1]),                       PromoteAB, "A", "B");
-            Pattern("AddNode",         a => Sg.Bin("+", a[0], a[1]),                       PromoteAB, "A", "B");
-            Pattern("SubtractNode",    a => Sg.Bin("-", a[0], a[1]),                       PromoteAB, "A", "B");
-            Pattern("DivideNode",      a => Sg.Bin("/", a[0], a[1]),                       PromoteAB, "A", "B");
+            // ----- bulk-registered patterns (auto-derived from Unity's
+            //       ShaderGraph package via tools/generate_sg_nodes.py) -------
+            SgGeneratedNodes.RegisterAll(Pattern);
 
-            Pattern("AbsoluteNode",    a => Sg.Call("abs",   a[0]),                        SameAsIn,  "In");
-            Pattern("FloorNode",       a => Sg.Call("floor", a[0]),                        SameAsIn,  "In");
-            Pattern("CeilingNode",     a => Sg.Call("ceil",  a[0]),                        SameAsIn,  "In");
-            Pattern("RoundNode",       a => Sg.Call("round", a[0]),                        SameAsIn,  "In");
-            Pattern("FractionNode",    a => Sg.Call("fract", a[0]),                        SameAsIn,  "In");
-            Pattern("SignNode",        a => Sg.Call("sign",  a[0]),                        SameAsIn,  "In");
-            Pattern("SquareRootNode",  a => Sg.Call("sqrt",  a[0]),                        SameAsIn,  "In");
-            Pattern("OneMinusNode",    a => Sg.Bin("-", Sg.Lit(1.0), a[0]),                SameAsIn,  "In");
-            Pattern("NegateNode",      a => Sg.Neg(a[0]),                                  SameAsIn,  "In");
-            Pattern("SaturateNode",    a => Sg.Call("clamp", a[0], Sg.Lit(0.0), Sg.Lit(1.0)), SameAsIn, "In");
+            // ----- manual patterns for nodes the auto-generator can't reach --
+            // MultiplyNode isn't a CodeFunctionNode (it picks `*` vs `mul()`
+            // based on operand types in C#); we always pick `*` since GLSL's
+            // `*` does the right thing for vec*vec, vec*scalar, mat*vec, and
+            // mat*mat (the operand-order convention also matches Unity's
+            // matrix*matrix output, since both pre-multiply column vectors).
+            Pattern("MultiplyNode", a => Sg.Bin("*", a[0], a[1]), PromoteAB, "A", "B");
 
-            // ----- custom -----------------------------------------------------
+            // ----- custom handlers --------------------------------------------
+            // (these override any auto-generated entry with the same name)
             _handlers["UVNode"]              = new UVNodeHandler();
             _handlers["SplitNode"]           = new SplitNodeHandler();
             _handlers["Vector1Node"]         = new Vector1NodeHandler();
