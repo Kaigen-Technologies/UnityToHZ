@@ -27,11 +27,15 @@ namespace HZExporter
         {
             string text = File.ReadAllText(shadergraphPath);
             var graph = SgParser.Parse(text);
+            // Source name preserved in the generated comment (traceability),
+            // but the on-disk filename is snake-cased so all engine paths stay
+            // consistent — `1_UnlitTest.shadergraph` → `1_unlit_test.hz.glsl`.
             string name = Path.GetFileNameWithoutExtension(shadergraphPath);
+            string fileStem = SgNames.ToSnakeCase(name);
             string glsl = SgCodegen.Emit(graph, name);
 
             Directory.CreateDirectory(outDir);
-            string outPath = Path.Combine(outDir, name + ".hz.glsl");
+            string outPath = Path.Combine(outDir, fileStem + ".hz.glsl");
             File.WriteAllText(outPath, glsl);
             Debug.Log($"[HZ-SG] {name} -> {outPath} (variant={graph.Variant})");
         }
