@@ -30,11 +30,51 @@ namespace HZExporter.ShaderGraph
             CollectBlockContext(graphData, "m_VertexContext", g.VertexBlockIds);
             CollectBlockContext(graphData, "m_FragmentContext", g.FragmentBlockIds);
             ParseProperties(g, raw, graphData);
+            ParseKeywords(g, raw, graphData);
             ParseSlots(g, raw);
             ParseNodes(g, raw);
             ParseEdges(g, graphData);
 
             return g;
+        }
+
+        // Shader keywords (boolean toggles + enum variants) referenced from
+        // the GraphData's m_Keywords array. Each one drives a `#ifdef` branch
+        // in the generated shader.
+        static void ParseKeywords(SgGraph g,
+                                  Dictionary<string, Dictionary<string, object>> raw,
+                                  Dictionary<string, object> graphData)
+        {
+            if (!TryGetIdList(graphData, "m_Keywords", out var kwIds)) return;
+            foreach (var kid in kwIds)
+            {
+                if (!raw.TryGetValue(kid, out var kobj)) continue;
+                int ktype = kobj.TryGetValue("m_KeywordType", out var kt) && kt is double ktd ? (int)ktd : 0;
+                int dval  = kobj.TryGetValue("m_Value", out var dv) && dv is double dvd ? (int)dvd : 0;
+                var kw = new SgKeyword
+                {
+                    Id = kid,
+                    Name = kobj.TryGetValue("m_Name", out var n) ? n as string : null,
+                    ReferenceName = kobj.TryGetValue("m_DefaultReferenceName", out var rn) ? rn as string : null,
+                    IsBoolean = ktype == 0,
+                    DefaultValue = dval,
+                };
+                if (kobj.TryGetValue("m_Entries", out var es) && es is List<object> entries)
+                {
+                    foreach (var e in entries)
+                    {
+                        if (!(e is Dictionary<string, object> ed)) continue;
+                        kw.Entries.Add(new SgKeywordEntry
+                        {
+                            Id = ed.TryGetValue("id", out var eid) && eid is double eidd ? (int)eidd : 0,
+                            DisplayName = ed.TryGetValue("displayName", out var dn) ? dn as string : null,
+                            ReferenceName = ed.TryGetValue("referenceName", out var ern) ? ern as string : null,
+                        });
+                    }
+                }
+                g.Keywords.Add(kw);
+                g.KeywordsById[kid] = kw;
+            }
         }
 
         // Material-exposed properties. The GraphData's m_Properties array

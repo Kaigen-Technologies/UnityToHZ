@@ -14,7 +14,7 @@
 #
 # Exit: 0 on "ok", 1 on compile errors, 2 on timeout/connection failure.
 
-PORT=7321
+PORT=7322
 TIMEOUT="${1:-90}"
 
 activate_unity() {

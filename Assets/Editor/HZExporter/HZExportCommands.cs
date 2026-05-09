@@ -33,6 +33,14 @@ public static class HZExportCommands
         catch (System.Exception e) { Debug.LogError($"[HZ-SG] CharacterBaseShader: {e.Message}\n{e.StackTrace}"); }
     }
 
+    public static void ExportSurfaceShader()
+    {
+        const string src = "Assets/Idyllic Fantasy Nature/Shader/Surface.shadergraph";
+        string outDir = OutputDir + "/shaders";
+        try { HZShaderGraphExporter.ExportFile(src, outDir); }
+        catch (System.Exception e) { Debug.LogError($"[HZ-SG] Surface: {e.Message}\n{e.StackTrace}"); }
+    }
+
     /// <summary>Translate every .shadergraph under Assets/ShaderGraphExport/ into a
     /// .hz.glsl file under ExportedAssets/shaders/. Built up in steps — see
     /// HZShaderGraphExporter for current scope.</summary>

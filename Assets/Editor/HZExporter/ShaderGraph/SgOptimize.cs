@@ -64,6 +64,11 @@ namespace HZExporter.ShaderGraph
             var known = new Dictionary<string, SgConst>();
             foreach (var s in statements)
             {
+                // Conditional statements (keyword-driven branches) are opaque
+                // to constant folding from the outside — each branch was
+                // already optimized in its own ctx by KeywordNodeHandler.
+                if (s.Branches != null) continue;
+
                 var (prop, pc) = PropagateConsts(s.Rhs, known);
                 if (pc) { s.Rhs = prop; changed = true; }
 
@@ -216,6 +221,7 @@ namespace HZExporter.ShaderGraph
             bool any = false;
             foreach (var s in statements)
             {
+                if (s.Branches != null) continue;   // conditionals are opaque
                 var (newRhs, ch) = ApplyRulesRec(s.Rhs);
                 if (ch) { s.Rhs = newRhs; any = true; }
             }
@@ -292,11 +298,11 @@ namespace HZExporter.ShaderGraph
 
             // Iterate from the end backwards: if a statement's name is live,
             // its RHS refs become live too. Single backward pass suffices for
-            // SSA in topological order.
+            // SSA in topological order. Conditionals walk all branches.
             for (int i = statements.Count - 1; i >= 0; i--)
             {
                 if (!live.Contains(statements[i].Name)) continue;
-                foreach (var r in statements[i].Rhs.Refs()) live.Add(r);
+                foreach (var r in statements[i].Refs()) live.Add(r);
             }
 
             statements.RemoveAll(s => !live.Contains(s.Name));
@@ -320,6 +326,7 @@ namespace HZExporter.ShaderGraph
                 for (int i = 0; i < statements.Count; i++)
                 {
                     var s = statements[i];
+                    if (s.Branches != null) continue;   // can't inline a conditional
                     if (!useCount.TryGetValue(s.Name, out var n) || n != 1) continue;
                     if (!IsInlineable(s.Rhs)) continue;
 
@@ -418,7 +425,7 @@ namespace HZExporter.ShaderGraph
                               Dictionary<string, int> outCount)
         {
             foreach (var s in statements)
-                foreach (var r in s.Rhs.Refs()) Inc(outCount, r);
+                foreach (var r in s.Refs()) Inc(outCount, r);
             foreach (var a in assigns)
                 foreach (var r in a.Rhs.Refs()) Inc(outCount, r);
         }
@@ -440,8 +447,24 @@ namespace HZExporter.ShaderGraph
             }
             for (int i = 0; i < statements.Count; i++)
             {
-                statements[i].Rhs = RenameRefs(statements[i].Rhs, rename);
-                statements[i].Name = rename[statements[i].Name];
+                var s = statements[i];
+                if (s.Branches != null)
+                {
+                    foreach (var b in s.Branches)
+                    {
+                        b.Rhs = RenameRefs(b.Rhs, rename);
+                        // Branch body temps live in their own `{ }` scope and
+                        // use a different prefix — but their RHSs may still
+                        // reference outer-scope temps that need renaming.
+                        foreach (var bs in b.Body)
+                            if (bs.Rhs != null) bs.Rhs = RenameRefs(bs.Rhs, rename);
+                    }
+                }
+                else
+                {
+                    s.Rhs = RenameRefs(s.Rhs, rename);
+                }
+                s.Name = rename[s.Name];
             }
             foreach (var a in assigns) a.Rhs = RenameRefs(a.Rhs, rename);
         }

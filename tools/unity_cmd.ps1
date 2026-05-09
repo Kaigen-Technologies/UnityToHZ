@@ -1,6 +1,6 @@
 param([string]$cmd = "ping")
 
-$client = New-Object System.Net.Sockets.TcpClient("127.0.0.1", 7321)
+$client = New-Object System.Net.Sockets.TcpClient("127.0.0.1", 7322)
 $stream = $client.GetStream()
 $bytes = [System.Text.Encoding]::UTF8.GetBytes($cmd)
 $stream.Write($bytes, 0, $bytes.Length)

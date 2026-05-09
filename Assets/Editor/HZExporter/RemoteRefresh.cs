@@ -9,7 +9,7 @@ using UnityEditor.Compilation;
 using UnityEngine;
 
 /// <summary>
-/// Listens on TCP port 7321 for commands from external processes.
+/// Listens on TCP port 7322 for commands from external processes.
 /// Supported commands:
 ///   "refresh"  — CompilationPipeline.RequestScriptCompilation (forces compile)
 ///   "log"      — returns last compilation result
@@ -19,7 +19,7 @@ using UnityEngine;
 [InitializeOnLoad]
 public static class RemoteRefresh
 {
-    const int Port = 7321;
+    const int Port = 7322;
     static TcpListener s_listener;
     static Thread s_thread;
     static volatile bool s_running;

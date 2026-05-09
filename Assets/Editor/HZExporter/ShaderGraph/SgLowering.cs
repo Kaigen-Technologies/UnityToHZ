@@ -41,8 +41,22 @@ namespace HZExporter.ShaderGraph
         // `mat.<field>` (since `mat` isn't in scope inside a function).
         public bool IsSubGraph;
 
+        // Prefix for newly-emitted temp names. Defaults to `_n`. Per-branch
+        // KeywordNode contexts override this to `_b<idx>_n` so branch-local
+        // temps never collide with outer or sibling-branch names.
+        public string TempPrefix = "_n";
+
+        // Set of keyword IDs referenced by this context's lowering — used by
+        // codegen to emit `// @keyword <name>` header comments.
+        public readonly HashSet<string> UsedKeywords = new HashSet<string>();
+
         readonly Dictionary<string, SgValue> _cache = new Dictionary<string, SgValue>();
         int _tempCounter;
+
+        // Number of conditional-branch sub-contexts this ctx has spawned —
+        // used to give branch-local temps unique prefixes (`_b0_n0`, `_b1_n0`).
+        int _branchCounter;
+        public int NextBranchIndex() => _branchCounter++;
 
         public LowerCtx(SgGraph g) { Graph = g; }
 
@@ -82,7 +96,7 @@ namespace HZExporter.ShaderGraph
 
         public SgValue EmitTemp(SgType t, SgRhs rhs)
         {
-            string name = "_n" + (_tempCounter++);
+            string name = TempPrefix + (_tempCounter++);
             Statements.Add(new SgStatement { Name = name, Type = t, Rhs = rhs });
             return SgValue.Temp(name, t);
         }
@@ -93,9 +107,19 @@ namespace HZExporter.ShaderGraph
         // (which formats `<base>.<field>`).
         public SgValue EmitStructTemp(string structTypeName, SgRhs rhs)
         {
-            string name = "_n" + (_tempCounter++);
+            string name = TempPrefix + (_tempCounter++);
             Statements.Add(new SgStatement { Name = name, Type = SgType.Unknown, TypeName = structTypeName, Rhs = rhs });
             return SgValue.Temp(name, SgType.Unknown);
+        }
+
+        // Forward-declares an outer-scope temp and follows it with one or
+        // more `#if defined(...)`-gated assignment branches. Used by
+        // KeywordNodeHandler.
+        public SgValue EmitConditional(SgType t, List<SgConditionalBranch> branches)
+        {
+            string name = TempPrefix + (_tempCounter++);
+            Statements.Add(new SgStatement { Name = name, Type = t, Branches = branches });
+            return SgValue.Temp(name, t);
         }
 
         // Per-instance cache for SubGraphNode call sites — first output query
@@ -596,6 +620,142 @@ namespace HZExporter.ShaderGraph
         }
     }
 
+    // KeywordNode: a `#ifdef`-driven compile-time branch on a shader keyword.
+    // For each variant input on the node, we lower the chain feeding it in
+    // a fresh nested LowerCtx whose temps live inside the branch's `{ }`
+    // block (separate prefix prevents collisions). The result is an
+    // SgConditionalStatement that declares one outer-scope temp and assigns
+    // it inside each `#if defined(...)` branch.
+    class KeywordNodeHandler : NodeHandler
+    {
+        public override SgValue Lower(SgNode node, int outSlotNum, LowerCtx ctx)
+        {
+            if (!node.Raw.TryGetValue("m_Keyword", out var k) || !(k is Dictionary<string, object> kd)
+                || !kd.TryGetValue("m_Id", out var kid) || !(kid is string keywordId))
+                throw new System.Exception("KeywordNode missing m_Keyword reference");
+            if (!ctx.Graph.KeywordsById.TryGetValue(keywordId, out var keyword))
+                throw new System.Exception($"KeywordNode references unknown keyword '{keywordId}'");
+
+            ctx.UsedKeywords.Add(keyword.Id);
+
+            var branches = new List<SgConditionalBranch>();
+            SgType outType = SgType.Unknown;
+
+            if (keyword.IsBoolean)
+            {
+                int onSlot = node.SlotByName.TryGetValue("On", out var os) ? os : 1;
+                int offSlot = node.SlotByName.TryGetValue("Off", out var fs) ? fs : 2;
+                branches.Add(LowerBranch(node, onSlot,  $"{keyword.ReferenceName}_ON", ctx));
+                branches.Add(LowerBranch(node, offSlot, null,                          ctx));
+            }
+            else
+            {
+                int defaultIdx = System.Math.Max(0, System.Math.Min(keyword.DefaultValue, keyword.Entries.Count - 1));
+                for (int i = 0; i < keyword.Entries.Count; i++)
+                {
+                    var entry = keyword.Entries[i];
+                    if (!node.SlotByName.TryGetValue(entry.DisplayName, out var slot))
+                        throw new System.Exception(
+                            $"KeywordNode '{keyword.Name}' has no slot for entry '{entry.DisplayName}'");
+                    string define = i == defaultIdx ? null : $"{keyword.ReferenceName}_{entry.ReferenceName}";
+                    branches.Add(LowerBranch(node, slot, define, ctx));
+                }
+                int elseIdx = branches.FindIndex(b => b.Define == null);
+                if (elseIdx >= 0 && elseIdx != branches.Count - 1)
+                {
+                    var def = branches[elseIdx];
+                    branches.RemoveAt(elseIdx);
+                    branches.Add(def);
+                }
+            }
+
+            // Result type: the resolved type of the first branch (all
+            // variants are wired to the same DynamicValue output port, so
+            // they share a type after Shader Graph's type-resolution).
+            outType = branches.Count > 0 ? branches[0].RhsType : SgType.Vec4;
+            return ctx.EmitConditional(outType, branches);
+        }
+
+        SgConditionalBranch LowerBranch(SgNode node, int slotNum, string define, LowerCtx parentCtx)
+        {
+            int idx = parentCtx.NextBranchIndex();
+            var branchCtx = new LowerCtx(parentCtx.Graph)
+            {
+                IsVertexStage = parentCtx.IsVertexStage,
+                IsSubGraph = parentCtx.IsSubGraph,
+                TempPrefix = $"_b{idx}_n",
+            };
+            // Lower the value flowing into the branch's input slot. This may
+            // recursively emit temps into branchCtx.Statements (branch-local).
+            var v = branchCtx.Input(node.Id, slotNum);
+            // Promote any subgraph functions surfaced inside the branch.
+            parentCtx.Functions.AddRange(branchCtx.Functions);
+            // Propagate keyword usage too.
+            foreach (var kw in branchCtx.UsedKeywords) parentCtx.UsedKeywords.Add(kw);
+            return new SgConditionalBranch
+            {
+                Define = define,
+                RhsType = v.Type,
+                Body = branchCtx.Statements,
+                Rhs = v.Rhs,
+            };
+        }
+    }
+
+    // TransformNode: coordinate-space conversion. m_Conversion.{from,to}
+    // identifies the spaces (0=Object, 1=View, 2=World, 3=Tangent,
+    // 4=AbsoluteWorld, 5=Screen); m_ConversionType is 0=Position, 1=Direction,
+    // 2=Normal. We support the conversions we've actually hit; others throw
+    // until they come up so we add them deliberately.
+    class TransformNodeHandler : NodeHandler
+    {
+        public override SgValue Lower(SgNode node, int outSlotNum, LowerCtx ctx)
+        {
+            int from = ReadInt(node, "m_Conversion", "from");
+            int to   = ReadInt(node, "m_Conversion", "to");
+            int kind = 0;
+            if (node.Raw.TryGetValue("m_ConversionType", out var ct) && ct is double d) kind = (int)d;
+
+            var input = ctx.InputByName(node, "In");
+
+            if (from == to)
+                return new SgValue { Rhs = input.Rhs, Type = SgType.Vec3, IsTemp = false };
+
+            // Tangent → World direction/normal: build worldDir = T*x + B*y + N*z
+            // where B is the per-vertex-handed cross product. Engine's @fs
+            // exposes v_tangent, v_normal, v_bitangent_sign for this exact
+            // basis. Fragment stage only.
+            if (from == 3 && to == 2 && (kind == 1 || kind == 2))
+            {
+                if (ctx.IsVertexStage)
+                    throw new System.NotImplementedException("Tangent→World transform requires fragment-stage TBN");
+                var rhs = Sg.RawTemplate(
+                    "(v_tangent * {0}.x + cross(v_normal, v_tangent) * v_bitangent_sign * {0}.y + v_normal * {0}.z)",
+                    input.Rhs);
+                return ctx.EmitTemp(SgType.Vec3, rhs);
+            }
+
+            // Object → World: model matrix; w-component depends on kind
+            // (1.0 for positions, 0.0 for directions/normals).
+            if (from == 0 && to == 2)
+            {
+                string w = (kind == 0) ? "1.0" : "0.0";
+                var rhs = Sg.RawTemplate("(v.model * vec4({0}, " + w + ")).xyz", input.Rhs);
+                return ctx.EmitTemp(SgType.Vec3, rhs);
+            }
+
+            throw new System.NotImplementedException(
+                $"TransformNode space {from}->{to} (kind={kind}) not supported");
+        }
+
+        static int ReadInt(SgNode node, string outer, string inner)
+        {
+            if (!node.Raw.TryGetValue(outer, out var o) || !(o is Dictionary<string, object> d)) return 0;
+            if (!d.TryGetValue(inner, out var v) || !(v is double dv)) return 0;
+            return (int)dv;
+        }
+    }
+
     // ColorNode: a literal color baked into the graph (different from
     // PropertyNode for ColorShaderProperty — that one's an exposed material
     // input). Emits the inspector-set rgba as an inline vec4. The output
@@ -632,11 +792,25 @@ namespace HZExporter.ShaderGraph
     {
         public override SgValue Lower(SgNode node, int outSlotNum, LowerCtx ctx)
         {
-            if (!ctx.IsVertexStage)
-                throw new System.NotImplementedException("PositionNode currently only supported in the vertex stage");
-
             int space = 0;
             if (node.Raw.TryGetValue("m_Space", out var s) && s is double d) space = (int)d;
+
+            // In the fragment stage we only have the world-space position
+            // varying (`v_world_pos` — Lit template only). Object/View/etc.
+            // would need additional varyings; fall back to v_world_pos with
+            // a comment so the user can spot it if the visual is off.
+            if (!ctx.IsVertexStage)
+            {
+                if (space == 2)
+                    return new SgValue { Rhs = Sg.Raw("v_world_pos"), Type = SgType.Vec3, IsTemp = false };
+                return new SgValue
+                {
+                    Rhs = Sg.Raw($"v_world_pos /* TODO: PositionNode space {space} not implemented in @fs */"),
+                    Type = SgType.Vec3,
+                    IsTemp = false,
+                };
+            }
+
             switch (space)
             {
                 case 0: // Object
@@ -803,6 +977,26 @@ namespace HZExporter.ShaderGraph
                 a => Sg.RawTemplate("(mix({0}, 1.0 - (1.0 - {1}) * (1.0 - {0}), {2}))", a[0], a[1], a[2]),
                 PromoteAB, "Base", "Blend", "Opacity");
 
+            // ContrastNode: HLSL body uses a `$precision midpoint = pow(0.5, 2.2)`
+            // local — auto-gen skipped due to multi-statement. The midpoint
+            // value (≈ 0.21763764) is constant; precompute and inline.
+            Pattern("ContrastNode",
+                a => Sg.RawTemplate("(({0} - 0.21763764) * {1} + 0.21763764)", a[0], a[1]),
+                SameAsIn, "In", "Contrast");
+
+            // NormalBlendNode (default mode): HLSL uses Unity's SafeNormalize +
+            // $precision3 macro. Functional GLSL form is normalize(vec3(rg
+            // sum, b multiply)).
+            Pattern("NormalBlendNode",
+                a => Sg.RawTemplate("normalize(vec3({0}.rg + {1}.rg, {0}.b * {1}.b))", a[0], a[1]),
+                _ => SgType.Vec3, "A", "B");
+
+            // NormalStrengthNode: HLSL uses $precision3 + lerp/saturate. GLSL
+            // equivalent: vec3(rg * strength, mix(1, b, clamp(strength, 0, 1))).
+            Pattern("NormalStrengthNode",
+                a => Sg.RawTemplate("vec3({0}.rg * {1}, mix(1.0, {0}.b, clamp({1}, 0.0, 1.0)))", a[0], a[1]),
+                _ => SgType.Vec3, "In", "Strength");
+
             // ----- custom handlers --------------------------------------------
             // (these override any auto-generated entry with the same name)
             _handlers["UVNode"]              = new UVNodeHandler();
@@ -819,6 +1013,8 @@ namespace HZExporter.ShaderGraph
             _handlers["SampleGradient"]          = new SampleGradientHandler();
             _handlers["RedirectNodeData"]        = new RedirectNodeDataHandler();
             _handlers["ColorNode"]               = new ColorNodeHandler();
+            _handlers["TransformNode"]           = new TransformNodeHandler();
+            _handlers["KeywordNode"]             = new KeywordNodeHandler();
         }
 
         public static NodeHandler Lookup(string nodeType)

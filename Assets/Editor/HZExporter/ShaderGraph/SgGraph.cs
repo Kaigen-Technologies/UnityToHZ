@@ -237,6 +237,25 @@ namespace HZExporter.ShaderGraph
         }
     }
 
+    // A shader keyword (boolean toggle or enum variant). Drives `#ifdef`
+    // compile-time branches in the generated shader.
+    class SgKeyword
+    {
+        public string Id;
+        public string Name;             // m_Name (display)
+        public string ReferenceName;    // m_DefaultReferenceName, e.g. "_BLEND_NORMALS"
+        public bool IsBoolean;          // m_KeywordType: 0=Bool, 1=Enum
+        public int DefaultValue;        // m_Value (boolean: 0=Off/1=On; enum: entry index)
+        public List<SgKeywordEntry> Entries = new List<SgKeywordEntry>();
+    }
+
+    class SgKeywordEntry
+    {
+        public int Id;
+        public string DisplayName;
+        public string ReferenceName;    // entry tag, e.g. "VERTEX_POSITION"
+    }
+
     // A material-exposed input. Mirrors Unity's ShaderProperty objects in
     // m_Properties — these become fields of the engine's MaterialFS struct.
     class SgProperty
@@ -271,6 +290,9 @@ namespace HZExporter.ShaderGraph
         // m_ObjectId for PropertyNode lookups.
         public List<SgProperty> Properties = new List<SgProperty>();
         public Dictionary<string, SgProperty> PropertiesById = new Dictionary<string, SgProperty>();
+
+        public List<SgKeyword> Keywords = new List<SgKeyword>();
+        public Dictionary<string, SgKeyword> KeywordsById = new Dictionary<string, SgKeyword>();
 
         public SgNode FindFragmentBlock(string serializedDescriptor)
         {

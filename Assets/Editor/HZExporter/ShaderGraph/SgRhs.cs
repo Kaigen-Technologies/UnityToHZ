@@ -231,8 +231,66 @@ namespace HZExporter.ShaderGraph
         // in place of `SgTypes.Glsl(Type)`.
         public string TypeName;
         public SgRhs Rhs;
-        public string Format() =>
-            $"{TypeName ?? SgTypes.Glsl(Type)} {Name} = {Rhs.ToGlsl()};";
+
+        // Optional `#ifdef`-driven conditional form — when non-null, this
+        // statement renders as a forward-declared temp followed by guarded
+        // assignment branches (instead of `<type> name = rhs;`). Used by
+        // KeywordNode to emit shader-keyword-driven compile-time branches.
+        public List<SgConditionalBranch> Branches;
+
+        public string Format()
+        {
+            if (Branches == null)
+                return $"{TypeName ?? SgTypes.Glsl(Type)} {Name} = {Rhs.ToGlsl()};";
+            return FormatConditional();
+        }
+
+        string FormatConditional()
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.Append(TypeName ?? SgTypes.Glsl(Type)).Append(' ').Append(Name).Append(";\n");
+            for (int i = 0; i < Branches.Count; i++)
+            {
+                var b = Branches[i];
+                if (b.Define != null)
+                    sb.Append(i == 0 ? "    #if defined(" : "    #elif defined(").Append(b.Define).Append(")\n");
+                else
+                    sb.Append("    #else\n");
+                sb.Append("    {\n");
+                foreach (var s in b.Body)
+                    foreach (var line in s.Format().Split('\n'))
+                        sb.Append("        ").Append(line).Append('\n');
+                sb.Append("        ").Append(Name).Append(" = ").Append(b.Rhs.ToGlsl()).Append(";\n");
+                sb.Append("    }\n");
+            }
+            sb.Append("    #endif");
+            return sb.ToString();
+        }
+
+        // All refs flowing into this statement, walking branches when set.
+        // Used by the optimizer's CountRefs / DCE seeds.
+        public IEnumerable<string> Refs()
+        {
+            if (Branches == null)
+            {
+                foreach (var r in Rhs.Refs()) yield return r;
+                yield break;
+            }
+            foreach (var b in Branches)
+            {
+                foreach (var s in b.Body)
+                    foreach (var r in s.Refs()) yield return r;
+                foreach (var r in b.Rhs.Refs()) yield return r;
+            }
+        }
+    }
+
+    class SgConditionalBranch
+    {
+        public string Define;            // null = #else / default branch
+        public SgType RhsType;           // resolved type of Rhs — drives the outer temp's declared type
+        public List<SgStatement> Body = new List<SgStatement>();
+        public SgRhs Rhs;
     }
 
     // A free-standing function emitted ahead of main(). Used for inlining

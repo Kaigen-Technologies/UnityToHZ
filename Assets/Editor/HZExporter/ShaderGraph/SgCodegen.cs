@@ -12,6 +12,25 @@ namespace HZExporter.ShaderGraph
         {
             var sb = new StringBuilder();
             sb.AppendLine($"// Generated from {sourceName}.shadergraph by HZShaderGraphExporter");
+
+            // Keyword manifest. Engine compiler reads these to generate the
+            // `#define` permutations / variant matrix. We list every keyword
+            // declared on the graph (regardless of whether the lowering
+            // ended up referencing it — variants the user may rely on
+            // downstream) plus an explicit `referenced=` flag.
+            foreach (var kw in g.Keywords)
+            {
+                if (kw.IsBoolean)
+                    sb.AppendLine($"// @keyword {kw.ReferenceName} Boolean default={(kw.DefaultValue == 0 ? "Off" : "On")}");
+                else
+                {
+                    var entries = string.Join(",", kw.Entries.ConvertAll(e => e.ReferenceName));
+                    string def = kw.DefaultValue >= 0 && kw.DefaultValue < kw.Entries.Count
+                        ? kw.Entries[kw.DefaultValue].ReferenceName : "?";
+                    sb.AppendLine($"// @keyword {kw.ReferenceName} Enum entries={entries} default={def}");
+                }
+            }
+
             sb.AppendLine("#include \"renderer.glsl\"");
             sb.AppendLine();
 
@@ -55,6 +74,9 @@ namespace HZExporter.ShaderGraph
             {
                 assigns.Add(LowerSurface(g, ctx, "Metallic",   "metallic",   SgType.Float, Sg.Lit(0.0)));
                 assigns.Add(LowerSurface(g, ctx, "Smoothness", "smoothness", SgType.Float, Sg.Lit(0.5)));
+                assigns.Add(LowerSurface(g, ctx, "NormalTS",   "normal_ts",  SgType.Vec3,  Sg.LitConst(SgConst.Vec(SgType.Vec3, 0.0, 0.0, 1.0))));
+                assigns.Add(LowerSurface(g, ctx, "Emission",   "emission",   SgType.Vec3,  Sg.LitConst(SgConst.Vec(SgType.Vec3, 0.0, 0.0, 0.0))));
+                assigns.Add(LowerSurface(g, ctx, "Occlusion",  "occlusion",  SgType.Float, Sg.Lit(1.0)));
             }
             // Alpha clip: lower Alpha + AlphaClipThreshold into local
             // assigns; the discard line is appended verbatim after the
@@ -343,7 +365,7 @@ ${MATERIAL_STRUCT}
 ${FUNCTIONS}void main() {
     MaterialFS mat = MaterialFS_unpack(v_material_offset);
 ${MAIN_BODY}
-    vec3 N = normalize(v_normal);
+    vec3 N = apply_normal_map(v_normal, v_tangent, v_bitangent_sign, normal_ts);
 
     SurfaceInput surface = SurfaceInput(base_color, metallic, smoothness);
     LightingInput li = LightingInput(v_world_pos, N, hz_scene.camera_pos);
@@ -362,6 +384,8 @@ ${MAIN_BODY}
         lit += ibl_ambient(surface, li, hz_scene.lights, cubemap_idx, intensity);
     }
 
+    lit *= occlusion;
+    lit += emission;
     frag_color = vec4(lit, 1.0);
 }
 @end

@@ -17,7 +17,7 @@
 #   ./tools/unity_cmd.sh "exec:HZExportCommands.ExportScene"
 
 CMD="${1:-ping}"
-PORT=7321
+PORT=7322
 
 needs_tick() {
     case "$1" in
