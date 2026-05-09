@@ -56,6 +56,14 @@ namespace HZExporter.ShaderGraph
                 assigns.Add(LowerSurface(g, ctx, "Metallic",   "metallic",   SgType.Float, Sg.Lit(0.0)));
                 assigns.Add(LowerSurface(g, ctx, "Smoothness", "smoothness", SgType.Float, Sg.Lit(0.5)));
             }
+            // Alpha clip: lower Alpha + AlphaClipThreshold into local
+            // assigns; the discard line is appended verbatim after the
+            // optimizer runs.
+            if (g.AlphaClip)
+            {
+                assigns.Add(LowerSurface(g, ctx, "Alpha",               "alpha",                SgType.Float, Sg.Lit(1.0)));
+                assigns.Add(LowerSurface(g, ctx, "AlphaClipThreshold",  "alpha_clip_threshold", SgType.Float, Sg.Lit(0.5)));
+            }
             SgOptimize.Run(ctx.Statements, assigns);
 
             // ----- functions (subgraphs from either stage, deduped) --------
@@ -83,6 +91,8 @@ namespace HZExporter.ShaderGraph
             var body = new StringBuilder();
             foreach (var s in ctx.Statements) body.Append("    ").Append(s.Format()).Append('\n');
             foreach (var a in assigns)        body.Append("    ").Append(a.Format()).Append('\n');
+            if (g.AlphaClip)
+                body.Append("    if (alpha < alpha_clip_threshold) discard;\n");
             string bodyStr = body.ToString().TrimEnd('\n');
 
             return template
@@ -163,16 +173,22 @@ namespace HZExporter.ShaderGraph
 
         static string FormatFunction(SgFunctionDef fn)
         {
+            // Parameter list — shared by both single- and struct-return forms.
+            var paramStrs = new string[fn.Params.Count];
+            for (int i = 0; i < fn.Params.Count; i++)
+                paramStrs[i] = SgTypes.Glsl(fn.Params[i].Type) + " " + fn.Params[i].Name;
+            string paramList = string.Join(", ", paramStrs);
+
             var sb = new StringBuilder();
             if (fn.StructName != null)
             {
-                // struct definition + struct-returning function
                 sb.Append("struct ").Append(fn.StructName).Append(" {\n");
                 foreach (var o in fn.Outputs)
                     sb.Append("    ").Append(SgTypes.Glsl(o.Type)).Append(' ').Append(o.Name).Append(";\n");
                 sb.Append("};\n\n");
 
-                sb.Append(fn.StructName).Append(' ').Append(fn.Name).Append("() {\n");
+                sb.Append(fn.StructName).Append(' ').Append(fn.Name)
+                  .Append('(').Append(paramList).Append(") {\n");
                 foreach (var s in fn.Body) sb.Append("    ").Append(s.Format()).Append('\n');
                 var args = new string[fn.Outputs.Count];
                 for (int i = 0; i < fn.Outputs.Count; i++) args[i] = fn.Outputs[i].Rhs.ToGlsl();
@@ -181,9 +197,9 @@ namespace HZExporter.ShaderGraph
             }
             else
             {
-                // single value-returning function
                 var o = fn.Outputs[0];
-                sb.Append(SgTypes.Glsl(o.Type)).Append(' ').Append(fn.Name).Append("() {\n");
+                sb.Append(SgTypes.Glsl(o.Type)).Append(' ').Append(fn.Name)
+                  .Append('(').Append(paramList).Append(") {\n");
                 foreach (var s in fn.Body) sb.Append("    ").Append(s.Format()).Append('\n');
                 sb.Append("    return ").Append(o.Rhs.ToGlsl()).Append(";\n");
                 sb.Append("}\n");

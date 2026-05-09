@@ -15,6 +15,24 @@ public static class HZExportCommands
     // Asset-relative prefix (how the engine sees the paths, relative to assets/)
     const string AssetPrefix = "unity";
 
+    /// <summary>Translate the BasicShader real-world test graph
+    /// (Assets/yyyrjis/ModularAnimeCharacter1/Shaders/BasicShader.shadergraph).</summary>
+    public static void ExportBasicShader()
+    {
+        const string src = "Assets/yyyrjis/ModularAnimeCharacter1/Shaders/BasicShader.shadergraph";
+        string outDir = OutputDir + "/shaders";
+        try { HZShaderGraphExporter.ExportFile(src, outDir); }
+        catch (System.Exception e) { Debug.LogError($"[HZ-SG] BasicShader: {e.Message}\n{e.StackTrace}"); }
+    }
+
+    public static void ExportCharacterBaseShader()
+    {
+        const string src = "Assets/yyyrjis/ModularAnimeCharacter1/Shaders/CharacterBaseShader.shadergraph";
+        string outDir = OutputDir + "/shaders";
+        try { HZShaderGraphExporter.ExportFile(src, outDir); }
+        catch (System.Exception e) { Debug.LogError($"[HZ-SG] CharacterBaseShader: {e.Message}\n{e.StackTrace}"); }
+    }
+
     /// <summary>Translate every .shadergraph under Assets/ShaderGraphExport/ into a
     /// .hz.glsl file under ExportedAssets/shaders/. Built up in steps — see
     /// HZShaderGraphExporter for current scope.</summary>

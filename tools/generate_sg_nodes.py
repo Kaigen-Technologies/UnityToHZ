@@ -270,6 +270,10 @@ def make_pattern(node) -> tuple[str | None, str | None]:
             )
         # Now convert the markers to {N} placeholders.
         substituted = re.sub(r"\x00(\d+)\x00", r"{\1}", substituted)
+        # Wrap in parens so the result is safe to splice into any consumer
+        # context (otherwise something like `a ? b : c` consumed by `x * _`
+        # parses as `(x * a) ? b : c` due to operator precedence).
+        substituted = "(" + substituted + ")"
         # Escape for C# string literal (no interpolation needed — plain string).
         cs_string = substituted.replace("\\", "\\\\").replace("\"", "\\\"")
         if not in_names:

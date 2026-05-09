@@ -35,6 +35,12 @@ namespace HZExporter.ShaderGraph
         // this from their parent context via SubGraphNodeHandler.
         public bool IsVertexStage;
 
+        // True when this context is lowering inside a subgraph function
+        // (rather than the parent shader's main). Used by PropertyNodeHandler
+        // to emit subgraph-property reads as bare parameter names instead of
+        // `mat.<field>` (since `mat` isn't in scope inside a function).
+        public bool IsSubGraph;
+
         readonly Dictionary<string, SgValue> _cache = new Dictionary<string, SgValue>();
         int _tempCounter;
 
@@ -341,9 +347,11 @@ namespace HZExporter.ShaderGraph
             if (fn == null)
                 fn = BuildFunction(node, ctx, sg, guid, fnName);
 
-            // Emit `<retType> _nN = fnName();` — struct-typed for multi-output,
-            // primitive-typed for single-output.
-            var callRhs = Sg.Call(fnName);
+            // Emit `<retType> _nN = fnName(args…);` — struct-typed for
+            // multi-output, primitive-typed for single-output. Args come from
+            // the SubGraphNode's input slots, mapped to subgraph properties.
+            var callArgs = ResolveCallArgs(node, sg, ctx);
+            var callRhs = Sg.Call(fnName, callArgs.ToArray());
             var temp = fn.StructName != null
                 ? ctx.EmitStructTemp(fn.StructName, callRhs)
                 : ctx.EmitTemp(fn.Outputs[0].Type, callRhs);
@@ -360,7 +368,21 @@ namespace HZExporter.ShaderGraph
             foreach (var n in sg.Nodes.Values) if (n.Type == "SubGraphOutputNode") { sgOut = n; break; }
             if (sgOut == null) throw new System.Exception($"subgraph {guid} has no SubGraphOutputNode");
 
-            var fnCtx = new LowerCtx(sg) { IsVertexStage = ctx.IsVertexStage };
+            var fnCtx = new LowerCtx(sg) { IsVertexStage = ctx.IsVertexStage, IsSubGraph = true };
+
+            // Subgraph properties become function parameters. PropertyNode
+            // inside the subgraph body will reference them as bare names.
+            // Texture-typed properties aren't supported as subgraph inputs
+            // here yet — error if encountered.
+            var fnParams = new List<SgFunctionParam>();
+            foreach (var prop in sg.Properties)
+            {
+                if (prop.Type == SgType.Texture2D)
+                    throw new System.NotImplementedException(
+                        $"subgraph {guid}: Texture2D properties as subgraph inputs not yet supported");
+                fnParams.Add(new SgFunctionParam { Name = prop.FieldName, Type = prop.Type });
+            }
+
             var outputs = new List<SgFunctionOutput>();
 
             // Iterate the SubGraphNode's slots in their numeric m_Id order so
@@ -396,11 +418,38 @@ namespace HZExporter.ShaderGraph
             {
                 Name = fnName,
                 StructName = outputs.Count > 1 ? fnName + "_outputs" : null,
+                Params = fnParams,
                 Outputs = outputs,
                 Body = fnCtx.Statements,
             };
             ctx.Functions.Add(fn);
             return fn;
+        }
+
+        // For each subgraph property (in declaration order), find the
+        // SubGraphNode input slot whose m_ShaderOutputName matches the
+        // property's reference name, lower the value flowing in, and produce
+        // an SgRhs to pass as the call argument.
+        List<SgRhs> ResolveCallArgs(SgNode node, SgGraph sg, LowerCtx ctx)
+        {
+            var args = new List<SgRhs>();
+            foreach (var prop in sg.Properties)
+            {
+                int slotNum = -1;
+                foreach (var kv in node.SlotByNum)
+                {
+                    if (!ctx.Graph.Slots.TryGetValue(kv.Value, out var s)) continue;
+                    if (s.IsOutput) continue;
+                    if (s.OutputName == prop.ReferenceName) { slotNum = kv.Key; break; }
+                }
+                if (slotNum < 0)
+                    throw new System.Exception(
+                        $"SubGraphNode missing input slot for subgraph property '{prop.ReferenceName}'");
+
+                var v = ctx.Input(node.Id, slotNum);
+                args.Add(SgCodegen.CoerceRhsForReturn(v.Rhs, v.Type, prop.Type));
+            }
+            return args;
         }
 
         // m_SerializedSubGraph is a JSON string nested inside the outer JSON:
@@ -449,6 +498,129 @@ namespace HZExporter.ShaderGraph
                 : "subgraph_" + SgNames.ToSnakeCase(System.IO.Path.GetFileNameWithoutExtension(path));
             _fnNames[guid] = n;
             return n;
+        }
+    }
+
+    // NormalVectorNode: per-fragment surface normal in the requested space.
+    // Engine's @fs already has world-space `v_normal` as a varying; we reject
+    // other spaces until the engine plumbs them.
+    class NormalVectorNodeHandler : NodeHandler
+    {
+        public override SgValue Lower(SgNode node, int outSlotNum, LowerCtx ctx)
+        {
+            int space = 0;
+            if (node.Raw.TryGetValue("m_Space", out var s) && s is double d) space = (int)d;
+            switch (space)
+            {
+                case 2: // World
+                    return new SgValue { Rhs = Sg.Raw("v_normal"), Type = SgType.Vec3, IsTemp = false };
+                default:
+                    throw new System.NotImplementedException($"NormalVectorNode space {space} not supported");
+            }
+        }
+    }
+
+    // MainLightDirectionNode: the engine's primary directional light, points
+    // FROM the light. Unity's convention is the same.
+    class MainLightDirectionNodeHandler : NodeHandler
+    {
+        public override SgValue Lower(SgNode node, int outSlotNum, LowerCtx ctx)
+            => new SgValue { Rhs = Sg.Raw("hz_scene.lights.directional[0].direction"), Type = SgType.Vec3, IsTemp = false };
+    }
+
+    // GradientNode: emit a `GRADIENT_N(rgb1, t1, rgb2, t2, …)` literal. The
+    // node serializes color stops (rgb in xyz, position in w) in
+    // `m_SerializableColorKeys`; the engine macro expects up to 4 stops, so
+    // we clamp/pad to 4. Alpha keys are ignored — the engine's gradient
+    // helpers don't carry alpha.
+    class GradientNodeHandler : NodeHandler
+    {
+        public override SgValue Lower(SgNode node, int outSlotNum, LowerCtx ctx)
+        {
+            var keys = node.Raw.TryGetValue("m_SerializableColorKeys", out var k) ? k as List<object> : null;
+            if (keys == null || keys.Count == 0)
+                throw new System.Exception("GradientNode has no color keys");
+
+            // Engine only ships GRADIENT_4 today; if fewer keys, pad by
+            // repeating the last; if more, truncate.
+            const int N = 4;
+            var parts = new List<string>();
+            for (int i = 0; i < N; i++)
+            {
+                int srcIdx = System.Math.Min(i, keys.Count - 1);
+                var key = keys[srcIdx] as Dictionary<string, object>;
+                double r = key.TryGetValue("x", out var v0) && v0 is double xx ? xx : 0;
+                double g = key.TryGetValue("y", out var v1) && v1 is double yy ? yy : 0;
+                double b = key.TryGetValue("z", out var v2) && v2 is double zz ? zz : 0;
+                double t = key.TryGetValue("w", out var v3) && v3 is double ww ? ww : 0;
+                parts.Add($"vec3({SgTypes.FormatFloat(r)}, {SgTypes.FormatFloat(g)}, {SgTypes.FormatFloat(b)})");
+                parts.Add(SgTypes.FormatFloat(t));
+            }
+            string macro = $"GRADIENT_4({string.Join(", ", parts)})";
+
+            // Type is "Gradient" (engine struct). Emit a temp with TypeName
+            // override so subsequent SampleGradient consumers can read it.
+            return ctx.EmitStructTemp("Gradient", Sg.Raw(macro));
+        }
+    }
+
+    // SampleGradient: takes a Gradient + a Time scalar, returns vec4 (sampled
+    // color). Engine helper is `gradient_sample_classic`.
+    // Slot numbers: m_DisplayName tells us — we look up by name to be
+    // robust against ordering changes.
+    class SampleGradientHandler : NodeHandler
+    {
+        public override SgValue Lower(SgNode node, int outSlotNum, LowerCtx ctx)
+        {
+            // Inputs typically named "Gradient" and "Time"; output "Out".
+            var grad = ctx.InputByName(node, "Gradient");
+            var t    = ctx.InputByName(node, "Time");
+            return ctx.EmitTemp(SgType.Vec4, Sg.RawTemplate("gradient_sample_classic({0}, {1})", grad.Rhs, t.Rhs));
+        }
+    }
+
+    // RedirectNodeData: visual-only graph reroute. Two slots — one input,
+    // one output, both same type. Forward the input verbatim.
+    class RedirectNodeDataHandler : NodeHandler
+    {
+        public override SgValue Lower(SgNode node, int outSlotNum, LowerCtx ctx)
+        {
+            // The input slot is whichever has m_SlotType=0 (input). Find it
+            // and pull the value through.
+            foreach (var kv in node.SlotByNum)
+            {
+                if (!ctx.Graph.Slots.TryGetValue(kv.Value, out var slot)) continue;
+                if (!slot.IsOutput) return ctx.Input(node.Id, kv.Key);
+            }
+            throw new System.Exception("RedirectNodeData has no input slot");
+        }
+    }
+
+    // ColorNode: a literal color baked into the graph (different from
+    // PropertyNode for ColorShaderProperty — that one's an exposed material
+    // input). Emits the inspector-set rgba as an inline vec4. The output
+    // slot's type decides whether we drop the alpha (Color/RGB → vec3) or
+    // keep it (Color/RGBA → vec4).
+    class ColorNodeHandler : NodeHandler
+    {
+        public override SgValue Lower(SgNode node, int outSlotNum, LowerCtx ctx)
+        {
+            if (!node.Raw.TryGetValue("m_Color", out var mc) || !(mc is Dictionary<string, object> colorObj)
+                || !colorObj.TryGetValue("color", out var c) || !(c is Dictionary<string, object> rgba))
+                throw new System.Exception("ColorNode missing m_Color.color");
+
+            double r = rgba.TryGetValue("r", out var v0) && v0 is double rr ? rr : 0;
+            double g = rgba.TryGetValue("g", out var v1) && v1 is double gg ? gg : 0;
+            double b = rgba.TryGetValue("b", out var v2) && v2 is double bb ? bb : 0;
+            double a = rgba.TryGetValue("a", out var v3) && v3 is double aa ? aa : 1;
+
+            // Slot type drives Vec3 vs Vec4 (some ColorNodes have an RGBA
+            // output, others RGB).
+            var slot = ctx.Graph.Slots[node.SlotByNum[outSlotNum]];
+            var t = slot.StaticType();
+            if (t == SgType.Vec3)
+                return new SgValue { Rhs = Sg.LitConst(SgConst.Vec(SgType.Vec3, r, g, b)), Type = SgType.Vec3, IsTemp = false };
+            return new SgValue { Rhs = Sg.LitConst(SgConst.Vec(SgType.Vec4, r, g, b, a)), Type = SgType.Vec4, IsTemp = false };
         }
     }
 
@@ -518,12 +690,13 @@ namespace HZExporter.ShaderGraph
                     IsTemp = false,
                 };
 
-            // Value-typed properties become reads of the MaterialFS field.
-            // Wrapped as Raw so the optimizer leaves them alone (the value
-            // isn't compile-time known — the engine binds it at draw time).
+            // Inside a subgraph, properties are function parameters — emit
+            // a bare identifier. Outside (main shader), they're reads of the
+            // MaterialFS struct.
+            string expr = ctx.IsSubGraph ? prop.FieldName : "mat." + prop.FieldName;
             return new SgValue
             {
-                Rhs = Sg.Raw("mat." + prop.FieldName),
+                Rhs = Sg.Raw(expr),
                 Type = prop.Type,
                 IsTemp = false,
             };
@@ -621,16 +794,31 @@ namespace HZExporter.ShaderGraph
             // matrix*matrix output, since both pre-multiply column vectors).
             Pattern("MultiplyNode", a => Sg.Bin("*", a[0], a[1]), PromoteAB, "A", "B");
 
+            // BlendNode's HLSL body is multi-statement (computes intermediate
+            // Out and then mixes), so the auto-generator skips it. Default
+            // mode is screen blend; we emit the screen-blend formula directly
+            // and trust the engine compiler / driver to fold simple cases.
+            // Slot order: 0 = Base, 1 = Blend, 2 = Opacity, 3 = Out.
+            Pattern("BlendNode",
+                a => Sg.RawTemplate("(mix({0}, 1.0 - (1.0 - {1}) * (1.0 - {0}), {2}))", a[0], a[1], a[2]),
+                PromoteAB, "Base", "Blend", "Opacity");
+
             // ----- custom handlers --------------------------------------------
             // (these override any auto-generated entry with the same name)
             _handlers["UVNode"]              = new UVNodeHandler();
             _handlers["SplitNode"]           = new SplitNodeHandler();
             _handlers["Vector1Node"]         = new Vector1NodeHandler();
             _handlers["SubGraphNode"]        = new SubGraphNodeHandler();
-            _handlers["PropertyNode"]        = new PropertyNodeHandler();
-            _handlers["SampleTexture2DNode"] = new SampleTexture2DNodeHandler();
-            _handlers["PositionNode"]        = new PositionNodeHandler();
-            _handlers["TimeNode"]            = new TimeNodeHandler();
+            _handlers["PropertyNode"]            = new PropertyNodeHandler();
+            _handlers["SampleTexture2DNode"]     = new SampleTexture2DNodeHandler();
+            _handlers["PositionNode"]            = new PositionNodeHandler();
+            _handlers["TimeNode"]                = new TimeNodeHandler();
+            _handlers["NormalVectorNode"]        = new NormalVectorNodeHandler();
+            _handlers["MainLightDirectionNode"]  = new MainLightDirectionNodeHandler();
+            _handlers["GradientNode"]            = new GradientNodeHandler();
+            _handlers["SampleGradient"]          = new SampleGradientHandler();
+            _handlers["RedirectNodeData"]        = new RedirectNodeDataHandler();
+            _handlers["ColorNode"]               = new ColorNodeHandler();
         }
 
         public static NodeHandler Lookup(string nodeType)

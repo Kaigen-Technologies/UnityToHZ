@@ -189,7 +189,22 @@ namespace HZExporter.ShaderGraph
 
         public override IEnumerable<string> Refs()
         {
-            foreach (var a in Args) foreach (var r in a.Refs()) yield return r;
+            // Yield each operand's refs once per occurrence of `{i}` in the
+            // template — so the optimizer's use-count is accurate. (If the
+            // template uses {0} twice, that operand is referenced twice;
+            // inline-once-used must not collapse it.)
+            var counts = new int[Args.Count];
+            for (int i = 0; i + 2 < Template.Length; i++)
+            {
+                if (Template[i] == '{' && Template[i + 2] == '}' && char.IsDigit(Template[i + 1]))
+                {
+                    int idx = Template[i + 1] - '0';
+                    if (idx < counts.Length) counts[idx]++;
+                }
+            }
+            for (int i = 0; i < Args.Count; i++)
+                for (int n = 0; n < counts[i]; n++)
+                    foreach (var r in Args[i].Refs()) yield return r;
         }
     }
 
@@ -234,8 +249,15 @@ namespace HZExporter.ShaderGraph
     {
         public string Name;
         public string StructName;                                  // null ⇒ single-return form
+        public List<SgFunctionParam> Params = new List<SgFunctionParam>();
         public List<SgFunctionOutput> Outputs = new List<SgFunctionOutput>();
         public List<SgStatement> Body = new List<SgStatement>();
+    }
+
+    class SgFunctionParam
+    {
+        public string Name;       // identifier as it appears in the function signature + body
+        public SgType Type;
     }
 
     class SgFunctionOutput

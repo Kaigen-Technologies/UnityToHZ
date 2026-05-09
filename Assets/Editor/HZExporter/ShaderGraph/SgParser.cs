@@ -105,6 +105,10 @@ namespace HZExporter.ShaderGraph
                 foreach (var tid in targetIds)
                 {
                     if (!raw.TryGetValue(tid, out var target)) continue;
+
+                    // Pull AlphaClip / SurfaceType / etc. while we're here.
+                    if (target.TryGetValue("m_AlphaClip", out var ac) && ac is bool acb) g.AlphaClip = acb;
+
                     if (target.TryGetValue("m_ActiveSubTarget", out var subRef)
                         && subRef is Dictionary<string, object> subDict
                         && subDict.TryGetValue("m_Id", out var subIdObj)
@@ -224,8 +228,18 @@ namespace HZExporter.ShaderGraph
         static bool IsSlotType(string fq) =>
             fq.EndsWith("MaterialSlot");
 
-        static bool IsNodeType(string fq) =>
-            !string.IsNullOrEmpty(fq) && ShortTypeName(fq).EndsWith("Node");
+        static bool IsNodeType(string fq)
+        {
+            if (string.IsNullOrEmpty(fq)) return false;
+            string sn = ShortTypeName(fq);
+            // Matches XxxNode plus a few peripheral types (RedirectNodeData,
+            // SampleGradient — which doesn't end in "Node"). Whitelist
+            // explicit non-"Node" suffixes here as Unity adds them.
+            if (sn.EndsWith("Node")) return true;
+            if (sn == "RedirectNodeData") return true;
+            if (sn == "SampleGradient") return true;
+            return false;
+        }
 
         static string ShortTypeName(string fq)
         {

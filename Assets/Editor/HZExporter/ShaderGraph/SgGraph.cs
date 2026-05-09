@@ -74,6 +74,11 @@ namespace HZExporter.ShaderGraph
         // (handled by the node, not here).
         public static SgType Promote(SgType a, SgType b)
         {
+            // Bool is treated as a "rank-zero" type — defer to the other
+            // operand. Used by BranchNode where the predicate is bool but
+            // the value branches drive the result type.
+            if (a == SgType.Bool) return b;
+            if (b == SgType.Bool) return a;
             if (a == SgType.Mat4 || b == SgType.Mat4) return SgType.Mat4;
             int ra = Rank(a), rb = Rank(b);
             if (ra == 0 || rb == 0) throw new Exception($"cannot promote {a} and {b}");
@@ -255,6 +260,7 @@ namespace HZExporter.ShaderGraph
     class SgGraph
     {
         public SgVariant Variant;
+        public bool AlphaClip;                 // from active target's m_AlphaClip
         public List<string> VertexBlockIds = new List<string>();
         public List<string> FragmentBlockIds = new List<string>();
         public Dictionary<string, SgNode> Nodes = new Dictionary<string, SgNode>();
