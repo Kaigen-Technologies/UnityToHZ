@@ -347,6 +347,60 @@ namespace HZExporter.ShaderGraph
         // operands structurally.
         public static SgRhs RawTemplate(string template, params SgRhs[] inputs)
             => new SgRhsRawTemplate { Template = template, Args = new List<SgRhs>(inputs) };
+
+        // HLSL-style truncating binary op. When operands are different-rank
+        // vectors (e.g. vec4 × vec3), GLSL rejects the expression — so we
+        // swizzle the larger one down to the smaller's rank before the op.
+        // Float-with-vec broadcasts in GLSL natively, so we leave those.
+        // Mat operands fall through to plain Bin (callers handle).
+        public static SgRhs BinPromote(string op, SgValue a, SgValue b)
+        {
+            int ra = SgTypes.Rank(a.Type), rb = SgTypes.Rank(b.Type);
+            if (ra > 0 && rb > 0 && ra != rb)
+            {
+                int target = System.Math.Min(ra, rb);
+                if (target > 1)
+                {
+                    string swizzle = "xyzw".Substring(0, target);
+                    var aRhs = ra > target ? Swizzle(a.Rhs, swizzle) : a.Rhs;
+                    var bRhs = rb > target ? Swizzle(b.Rhs, swizzle) : b.Rhs;
+                    return Bin(op, aRhs, bRhs);
+                }
+            }
+            return Bin(op, a.Rhs, b.Rhs);
+        }
+
+        // HLSL-style truncating function call. When operands have mixed
+        // vector ranks (e.g. mix(vec4, vec4, vec3) for `lerp(float4, float4,
+        // float3)`), GLSL rejects the call — so we swizzle every operand
+        // down to the minimum vector rank present. Float-rank operands stay
+        // as-is (GLSL broadcasts scalars naturally). Used by multi-arg
+        // intrinsics like mix / smoothstep / clamp where all vector args
+        // must share rank.
+        public static SgRhs CallPromote(string fn, params SgValue[] vs)
+        {
+            int minRank = int.MaxValue;
+            foreach (var v in vs)
+            {
+                int r = SgTypes.Rank(v.Type);
+                if (r > 1 && r < minRank) minRank = r;
+            }
+            var args = new SgRhs[vs.Length];
+            if (minRank == int.MaxValue)
+            {
+                for (int i = 0; i < vs.Length; i++) args[i] = vs[i].Rhs;
+            }
+            else
+            {
+                string sw = "xyzw".Substring(0, minRank);
+                for (int i = 0; i < vs.Length; i++)
+                {
+                    int r = SgTypes.Rank(vs[i].Type);
+                    args[i] = r > minRank ? Swizzle(vs[i].Rhs, sw) : vs[i].Rhs;
+                }
+            }
+            return new SgRhsCall { Func = fn, Args = new List<SgRhs>(args) };
+        }
     }
 
     // ===== constant evaluator =================================================

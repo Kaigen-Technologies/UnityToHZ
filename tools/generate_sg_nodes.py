@@ -212,12 +212,13 @@ def make_pattern(node) -> tuple[str | None, str | None]:
     rule        = out_type_rule(out_type, in_params)
     slot_names  = ", ".join(f'"{n}"' for n in in_names)
 
-    # Operand can be a parameter name or a numeric literal. Returns the C#
-    # code fragment for that operand, or None if it doesn't fit.
-    def operand_code(token: str) -> str | None:
+    # The Build callback now receives `SgValue[]` (not `SgRhs[]`). For SgRhs
+    # contexts (Sg.Call args, Sg.Neg, Sg.Bin's literal-augmented form) we
+    # use `v[i].Rhs`; for type-aware ops (Sg.BinPromote) we pass `v[i]`.
+    def operand_rhs(token: str) -> str | None:
         token = token.strip()
         if token in arg_idx:
-            return f"a[{arg_idx[token]}]"
+            return f"v[{arg_idx[token]}].Rhs"
         if re.fullmatch(r"-?\d+(?:\.\d*)?(?:[eE][-+]?\d+)?", token):
             return f"Sg.Lit({token})"
         return None
@@ -225,26 +226,45 @@ def make_pattern(node) -> tuple[str | None, str | None]:
     NUM = r"-?\d+(?:\.\d*)?(?:[eE][-+]?\d+)?"
     OPERAND = rf"(?:[A-Za-z_]\w*|{NUM})"
 
-    # Shape 1: simple function call `f(arg, arg, ...)` — each arg is a
-    # parameter name or a numeric literal.
+    # GLSL builtins where every vector operand must share the same rank — we
+    # rank-align all SgValue operands to the minimum so HLSL-style truncation
+    # works (e.g. lerp(float4, float4, float3) → mix(.xyz, .xyz, .xyz)).
+    PROMOTE_FNS = {"mix", "smoothstep", "clamp", "step", "min", "max", "pow", "mod"}
+
+    # Shape 1: simple function call `f(arg, arg, ...)`.
     m = re.fullmatch(r"(\w+)\s*\(\s*([^()]*)\s*\)", expr)
     if m:
         fn = m.group(1)
         raw_args = [s.strip() for s in m.group(2).split(",")] if m.group(2).strip() else []
-        coded = [operand_code(a) for a in raw_args]
+        # Use CallPromote when (a) the function needs rank-aligned args, and
+        # (b) every arg is a declared parameter (not a literal — literals
+        # already broadcast naturally).
+        if fn in PROMOTE_FNS and raw_args and all(a in arg_idx for a in raw_args):
+            args = ", ".join(f"v[{arg_idx[a]}]" for a in raw_args)
+            builder = f'v => Sg.CallPromote("{fn}", {args})'
+            return f'Pattern("{cls}", {builder}, {rule}, {slot_names});', None
+        coded = [operand_rhs(a) for a in raw_args]
         if all(c is not None for c in coded):
             args = ", ".join(coded)
-            builder = f'a => Sg.Call("{fn}", {args})' if args else f'a => Sg.Call("{fn}")'
+            builder = f'v => Sg.Call("{fn}", {args})' if args else f'v => Sg.Call("{fn}")'
             return f'Pattern("{cls}", {builder}, {rule}, {slot_names});', None
 
-    # Shape 2: simple binary op `A op B` — each side is a parameter name or
-    # a numeric literal.
+    # Shape 2: simple binary op `A op B`. Bare-parameter binops (no literals)
+    # use Sg.BinPromote so vec_n × vec_m mismatches truncate HLSL-style;
+    # binops with a numeric literal stay as plain Sg.Bin (the literal is a
+    # scalar; GLSL broadcasts naturally).
     m = re.fullmatch(rf"({OPERAND})\s*([+\-*/])\s*({OPERAND})", expr)
     if m:
         a_text, op, b_text = m.group(1), m.group(2), m.group(3)
-        a_code, b_code = operand_code(a_text), operand_code(b_text)
+        if a_text in arg_idx and b_text in arg_idx:
+            builder = f'v => Sg.BinPromote("{op}", v[{arg_idx[a_text]}], v[{arg_idx[b_text]}])'
+            # Override the rule with ArithPromote so OutType matches the
+            # truncating semantics (min-rank when both vec_n).
+            arith_rule = "ArithPromote" if rule == "PromoteAB" else rule
+            return f'Pattern("{cls}", {builder}, {arith_rule}, {slot_names});', None
+        a_code, b_code = operand_rhs(a_text), operand_rhs(b_text)
         if a_code and b_code:
-            builder = f'a => Sg.Bin("{op}", {a_code}, {b_code})'
+            builder = f'v => Sg.Bin("{op}", {a_code}, {b_code})'
             return f'Pattern("{cls}", {builder}, {rule}, {slot_names});', None
 
     # Shape 3: unary minus `-In`.
@@ -252,7 +272,7 @@ def make_pattern(node) -> tuple[str | None, str | None]:
     if m:
         name = m.group(1)
         if name in arg_idx:
-            builder = f"a => Sg.Neg(a[{arg_idx[name]}])"
+            builder = f"v => Sg.Neg(v[{arg_idx[name]}].Rhs)"
             return f'Pattern("{cls}", {builder}, {rule}, {slot_names});', None
 
     # Shape 4: complex expression — emit as Sg.RawTemplate with structural
@@ -277,10 +297,10 @@ def make_pattern(node) -> tuple[str | None, str | None]:
         # Escape for C# string literal (no interpolation needed — plain string).
         cs_string = substituted.replace("\\", "\\\\").replace("\"", "\\\"")
         if not in_names:
-            builder = f'a => Sg.Raw("{cs_string}")'
+            builder = f'v => Sg.Raw("{cs_string}")'
         else:
-            refs = ", ".join(f"a[{i}]" for i in range(len(in_names)))
-            builder = f'a => Sg.RawTemplate("{cs_string}", {refs})'
+            refs = ", ".join(f"v[{i}].Rhs" for i in range(len(in_names)))
+            builder = f'v => Sg.RawTemplate("{cs_string}", {refs})'
         return f'Pattern("{cls}", {builder}, {rule}, {slot_names});', None
 
     return None, "expression references something other than declared parameters"
@@ -326,7 +346,7 @@ def main():
         f.write("using System;\nusing System.Collections.Generic;\n\n")
         f.write("namespace HZExporter.ShaderGraph\n{\n")
         f.write("    static class SgGeneratedNodes\n    {\n")
-        f.write("        public delegate void Registrar(string nodeType, Func<SgRhs[], SgRhs> build,\n")
+        f.write("        public delegate void Registrar(string nodeType, Func<SgValue[], SgRhs> build,\n")
         f.write("                                       Func<SgType[], SgType> outType, params string[] inputs);\n\n")
         f.write("        public static void RegisterAll(Registrar Pattern)\n        {\n")
         for _, line in deduped:
@@ -335,6 +355,11 @@ def main():
         f.write("        // Type-resolution rules used by the Pattern lines above.\n")
         f.write("        static SgType PromoteAB(SgType[] inT) => SgTypes.Promote(inT[0], inT[1]);\n")
         f.write("        static SgType SameAsIn(SgType[] inT) => inT[0];\n")
+        f.write("        static SgType ArithPromote(SgType[] inT)\n        {\n")
+        f.write("            int ra = SgTypes.Rank(inT[0]), rb = SgTypes.Rank(inT[1]);\n")
+        f.write("            if (ra > 1 && rb > 1 && ra != rb) return SgTypes.FromRank(System.Math.Min(ra, rb));\n")
+        f.write("            return SgTypes.Promote(inT[0], inT[1]);\n")
+        f.write("        }\n")
         f.write("    }\n}\n")
 
     SKIP_FILE.parent.mkdir(parents=True, exist_ok=True)

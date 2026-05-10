@@ -182,6 +182,12 @@ namespace HZExporter.ShaderGraph
                     {
                         // engine uses a default sampler — skip
                     }
+                    else if (p.Type == SgType.Bool)
+                    {
+                        // Engine's MaterialFS preprocessor doesn't support
+                        // bool fields — store as float and convert at access.
+                        sb.Append("    float ").Append(p.FieldName).AppendLine(";");
+                    }
                     else
                     {
                         sb.Append("    ").Append(SgTypes.Glsl(p.Type)).Append(' ')
@@ -305,6 +311,7 @@ ${VERTEX_BODY}    vec4 world_pos = v.model * vec4(${VS_POS}, 1.0);
 @end
 
 @fs
+#define HZ_RENDERER_LIGHTING_BASIC
 in vec2 v_uv;
 in vec2 v_uv1;
 flat in uint v_material_offset;

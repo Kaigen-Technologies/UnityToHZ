@@ -8,83 +8,89 @@ namespace HZExporter.ShaderGraph
 {
     static class SgGeneratedNodes
     {
-        public delegate void Registrar(string nodeType, Func<SgRhs[], SgRhs> build,
+        public delegate void Registrar(string nodeType, Func<SgValue[], SgRhs> build,
                                        Func<SgType[], SgType> outType, params string[] inputs);
 
         public static void RegisterAll(Registrar Pattern)
         {
-            Pattern("AbsoluteNode", a => Sg.Call("abs", a[0]), SameAsIn, "In");
-            Pattern("AddNode", a => Sg.Bin("+", a[0], a[1]), PromoteAB, "A", "B");
-            Pattern("AllNode", a => Sg.Call("all", a[0]), _ => SgType.Bool, "In");
-            Pattern("AndNode", a => Sg.RawTemplate("({0} && {1})", a[0], a[1]), _ => SgType.Bool, "A", "B");
-            Pattern("AnyNode", a => Sg.Call("any", a[0]), _ => SgType.Bool, "In");
-            Pattern("ArccosineNode", a => Sg.Call("acos", a[0]), SameAsIn, "In");
-            Pattern("ArcsineNode", a => Sg.Call("asin", a[0]), SameAsIn, "In");
-            Pattern("Arctangent2Node", a => Sg.Call("atan", a[0], a[1]), PromoteAB, "A", "B");
-            Pattern("ArctangentNode", a => Sg.Call("atan", a[0]), SameAsIn, "In");
-            Pattern("BranchNode", a => Sg.RawTemplate("({0} ? {1} : {2})", a[0], a[1], a[2]), PromoteAB, "Predicate", "True", "False");
-            Pattern("CeilingNode", a => Sg.Call("ceil", a[0]), SameAsIn, "In");
-            Pattern("ClampNode", a => Sg.Call("clamp", a[0], a[1], a[2]), PromoteAB, "In", "Min", "Max");
-            Pattern("ColorspaceConversionNode", a => Sg.RawTemplate("({0})", a[0]), _ => SgType.Vec3, "In");
-            Pattern("ComparisonNode", a => Sg.RawTemplate("({0} == {1} ? 1 : 0)", a[0], a[1]), _ => SgType.Bool, "A", "B");
-            Pattern("CosineNode", a => Sg.Call("cos", a[0]), SameAsIn, "In");
-            Pattern("CrossProductNode", a => Sg.Call("cross", a[0], a[1]), _ => SgType.Vec3, "A", "B");
-            Pattern("DegreesToRadiansNode", a => Sg.Call("radians", a[0]), SameAsIn, "In");
-            Pattern("DistanceNode", a => Sg.Call("distance", a[0], a[1]), _ => SgType.Float, "A", "B");
-            Pattern("DivideNode", a => Sg.Bin("/", a[0], a[1]), PromoteAB, "A", "B");
-            Pattern("DotProductNode", a => Sg.Call("dot", a[0], a[1]), _ => SgType.Float, "A", "B");
-            Pattern("ExponentialNode", a => Sg.Call("exp", a[0]), SameAsIn, "In");
-            Pattern("FloorNode", a => Sg.Call("floor", a[0]), SameAsIn, "In");
-            Pattern("FractionNode", a => Sg.Call("fract", a[0]), SameAsIn, "In");
-            Pattern("FresnelNode", a => Sg.RawTemplate("(pow((1.0 - clamp(dot(normalize({0}), {1}), 0.0, 1.0)), {2}))", a[0], a[1], a[2]), _ => SgType.Float, "Normal", "ViewDir", "Power");
-            Pattern("HyperbolicCosineNode", a => Sg.Call("cosh", a[0]), SameAsIn, "In");
-            Pattern("HyperbolicSineNode", a => Sg.Call("sinh", a[0]), SameAsIn, "In");
-            Pattern("HyperbolicTangentNode", a => Sg.Call("tanh", a[0]), SameAsIn, "In");
-            Pattern("InverseLerpNode", a => Sg.RawTemplate("(({2} - {0})/({1} - {0}))", a[0], a[1], a[2]), PromoteAB, "A", "B", "T");
-            Pattern("IsInfiniteNode", a => Sg.Call("isinf", a[0]), _ => SgType.Bool, "In");
-            Pattern("IsNanNode", a => Sg.RawTemplate("(isnan({0}) ? 1 : 0)", a[0]), _ => SgType.Bool, "In");
-            Pattern("LengthNode", a => Sg.Call("length", a[0]), _ => SgType.Float, "In");
-            Pattern("LerpNode", a => Sg.Call("mix", a[0], a[1], a[2]), PromoteAB, "A", "B", "T");
-            Pattern("LogNode", a => Sg.Call("log", a[0]), SameAsIn, "In");
-            Pattern("MatrixDeterminantNode", a => Sg.Call("determinant", a[0]), _ => SgType.Float, "In");
-            Pattern("MatrixTransposeNode", a => Sg.Call("transpose", a[0]), SameAsIn, "In");
-            Pattern("MaximumNode", a => Sg.Call("max", a[0], a[1]), PromoteAB, "A", "B");
-            Pattern("MinimumNode", a => Sg.Call("min", a[0], a[1]), PromoteAB, "A", "B");
-            Pattern("ModuloNode", a => Sg.Call("mod", a[0], a[1]), PromoteAB, "A", "B");
-            Pattern("NandNode", a => Sg.RawTemplate("(!({0} && {1}))", a[0], a[1]), _ => SgType.Bool, "A", "B");
-            Pattern("NegateNode", a => Sg.Bin("*", Sg.Lit(-1), a[0]), SameAsIn, "In");
-            Pattern("NormalizeNode", a => Sg.Call("normalize", a[0]), SameAsIn, "In");
-            Pattern("NotNode", a => Sg.RawTemplate("(!{0})", a[0]), _ => SgType.Bool, "In");
-            Pattern("OneMinusNode", a => Sg.Bin("-", Sg.Lit(1), a[0]), SameAsIn, "In");
-            Pattern("OrNode", a => Sg.RawTemplate("({0} || {1})", a[0], a[1]), _ => SgType.Bool, "A", "B");
-            Pattern("PosterizeNode", a => Sg.RawTemplate("(floor({0} * {1}) / {1})", a[0], a[1]), PromoteAB, "In", "Steps");
-            Pattern("PowerNode", a => Sg.Call("pow", a[0], a[1]), PromoteAB, "A", "B");
-            Pattern("PreviewNode", a => Sg.RawTemplate("({0})", a[0]), SameAsIn, "In");
-            Pattern("ProjectionNode", a => Sg.RawTemplate("({1} * dot({0}, {1}) / dot({1}, {1}))", a[0], a[1]), PromoteAB, "A", "B");
-            Pattern("RadiansToDegreesNode", a => Sg.Call("degrees", a[0]), SameAsIn, "In");
-            Pattern("ReciprocalNode", a => Sg.Bin("/", Sg.Lit(1.0), a[0]), SameAsIn, "In");
-            Pattern("ReciprocalSquareRootNode", a => Sg.Call("inversesqrt", a[0]), SameAsIn, "In");
-            Pattern("ReflectionNode", a => Sg.Call("reflect", a[0], a[1]), PromoteAB, "In", "Normal");
-            Pattern("ReflectionProbeNode", a => Sg.Call("SHADERGRAPH_REFLECTION_PROBE", a[0], a[1], a[2]), _ => SgType.Vec3, "ViewDir", "Normal", "LOD");
-            Pattern("RejectionNode", a => Sg.RawTemplate("({0} - ({1} * dot({0}, {1}) / dot({1}, {1})))", a[0], a[1]), PromoteAB, "A", "B");
-            Pattern("RemapNode", a => Sg.RawTemplate("({2}.x + ({0} - {1}.x) * ({2}.y - {2}.x) / ({1}.y - {1}.x))", a[0], a[1], a[2]), SameAsIn, "In", "InMinMax", "OutMinMax");
-            Pattern("RoundNode", a => Sg.Call("round", a[0]), SameAsIn, "In");
-            Pattern("SaturateNode", a => Sg.Call("clamp", a[0], Sg.Lit(0.0), Sg.Lit(1.0)), SameAsIn, "In");
-            Pattern("SceneColorNode", a => Sg.RawTemplate("(SHADERGRAPH_SAMPLE_SCENE_COLOR({0}.xy))", a[0]), _ => SgType.Vec3, "UV");
-            Pattern("SceneDepthNode", a => Sg.RawTemplate("(Linear01Depth(SHADERGRAPH_SAMPLE_SCENE_DEPTH({0}.xy), _ZBufferParams))", a[0]), _ => SgType.Float, "UV");
-            Pattern("SignNode", a => Sg.Call("sign", a[0]), SameAsIn, "In");
-            Pattern("SineNode", a => Sg.Call("sin", a[0]), SameAsIn, "In");
-            Pattern("SmoothstepNode", a => Sg.Call("smoothstep", a[0], a[1], a[2]), PromoteAB, "Edge1", "Edge2", "In");
-            Pattern("SquareRootNode", a => Sg.Call("sqrt", a[0]), SameAsIn, "In");
-            Pattern("StepNode", a => Sg.Call("step", a[0], a[1]), PromoteAB, "Edge", "In");
-            Pattern("SubtractNode", a => Sg.Bin("-", a[0], a[1]), PromoteAB, "A", "B");
-            Pattern("TangentNode", a => Sg.Call("tan", a[0]), SameAsIn, "In");
-            Pattern("TilingAndOffsetNode", a => Sg.RawTemplate("({0} * {1} + {2})", a[0], a[1], a[2]), _ => SgType.Vec2, "UV", "Tiling", "Offset");
-            Pattern("TruncateNode", a => Sg.Call("trunc", a[0]), SameAsIn, "In");
+            Pattern("AbsoluteNode", v => Sg.Call("abs", v[0].Rhs), SameAsIn, "In");
+            Pattern("AddNode", v => Sg.BinPromote("+", v[0], v[1]), ArithPromote, "A", "B");
+            Pattern("AllNode", v => Sg.Call("all", v[0].Rhs), _ => SgType.Bool, "In");
+            Pattern("AndNode", v => Sg.RawTemplate("({0} && {1})", v[0].Rhs, v[1].Rhs), _ => SgType.Bool, "A", "B");
+            Pattern("AnyNode", v => Sg.Call("any", v[0].Rhs), _ => SgType.Bool, "In");
+            Pattern("ArccosineNode", v => Sg.Call("acos", v[0].Rhs), SameAsIn, "In");
+            Pattern("ArcsineNode", v => Sg.Call("asin", v[0].Rhs), SameAsIn, "In");
+            Pattern("Arctangent2Node", v => Sg.Call("atan", v[0].Rhs, v[1].Rhs), PromoteAB, "A", "B");
+            Pattern("ArctangentNode", v => Sg.Call("atan", v[0].Rhs), SameAsIn, "In");
+            Pattern("BranchNode", v => Sg.RawTemplate("({0} ? {1} : {2})", v[0].Rhs, v[1].Rhs, v[2].Rhs), PromoteAB, "Predicate", "True", "False");
+            Pattern("CeilingNode", v => Sg.Call("ceil", v[0].Rhs), SameAsIn, "In");
+            Pattern("ClampNode", v => Sg.CallPromote("clamp", v[0], v[1], v[2]), PromoteAB, "In", "Min", "Max");
+            Pattern("ColorspaceConversionNode", v => Sg.RawTemplate("({0})", v[0].Rhs), _ => SgType.Vec3, "In");
+            Pattern("ComparisonNode", v => Sg.RawTemplate("({0} == {1} ? 1 : 0)", v[0].Rhs, v[1].Rhs), _ => SgType.Bool, "A", "B");
+            Pattern("CosineNode", v => Sg.Call("cos", v[0].Rhs), SameAsIn, "In");
+            Pattern("CrossProductNode", v => Sg.Call("cross", v[0].Rhs, v[1].Rhs), _ => SgType.Vec3, "A", "B");
+            Pattern("DegreesToRadiansNode", v => Sg.Call("radians", v[0].Rhs), SameAsIn, "In");
+            Pattern("DistanceNode", v => Sg.Call("distance", v[0].Rhs, v[1].Rhs), _ => SgType.Float, "A", "B");
+            Pattern("DivideNode", v => Sg.BinPromote("/", v[0], v[1]), ArithPromote, "A", "B");
+            Pattern("DotProductNode", v => Sg.Call("dot", v[0].Rhs, v[1].Rhs), _ => SgType.Float, "A", "B");
+            Pattern("ExponentialNode", v => Sg.Call("exp", v[0].Rhs), SameAsIn, "In");
+            Pattern("FloorNode", v => Sg.Call("floor", v[0].Rhs), SameAsIn, "In");
+            Pattern("FractionNode", v => Sg.Call("fract", v[0].Rhs), SameAsIn, "In");
+            Pattern("FresnelNode", v => Sg.RawTemplate("(pow((1.0 - clamp(dot(normalize({0}), {1}), 0.0, 1.0)), {2}))", v[0].Rhs, v[1].Rhs, v[2].Rhs), _ => SgType.Float, "Normal", "ViewDir", "Power");
+            Pattern("HyperbolicCosineNode", v => Sg.Call("cosh", v[0].Rhs), SameAsIn, "In");
+            Pattern("HyperbolicSineNode", v => Sg.Call("sinh", v[0].Rhs), SameAsIn, "In");
+            Pattern("HyperbolicTangentNode", v => Sg.Call("tanh", v[0].Rhs), SameAsIn, "In");
+            Pattern("InverseLerpNode", v => Sg.RawTemplate("(({2} - {0})/({1} - {0}))", v[0].Rhs, v[1].Rhs, v[2].Rhs), PromoteAB, "A", "B", "T");
+            Pattern("IsInfiniteNode", v => Sg.Call("isinf", v[0].Rhs), _ => SgType.Bool, "In");
+            Pattern("IsNanNode", v => Sg.RawTemplate("(isnan({0}) ? 1 : 0)", v[0].Rhs), _ => SgType.Bool, "In");
+            Pattern("LengthNode", v => Sg.Call("length", v[0].Rhs), _ => SgType.Float, "In");
+            Pattern("LerpNode", v => Sg.CallPromote("mix", v[0], v[1], v[2]), PromoteAB, "A", "B", "T");
+            Pattern("LogNode", v => Sg.Call("log", v[0].Rhs), SameAsIn, "In");
+            Pattern("MatrixDeterminantNode", v => Sg.Call("determinant", v[0].Rhs), _ => SgType.Float, "In");
+            Pattern("MatrixTransposeNode", v => Sg.Call("transpose", v[0].Rhs), SameAsIn, "In");
+            Pattern("MaximumNode", v => Sg.CallPromote("max", v[0], v[1]), PromoteAB, "A", "B");
+            Pattern("MinimumNode", v => Sg.CallPromote("min", v[0], v[1]), PromoteAB, "A", "B");
+            Pattern("ModuloNode", v => Sg.CallPromote("mod", v[0], v[1]), PromoteAB, "A", "B");
+            Pattern("NandNode", v => Sg.RawTemplate("(!({0} && {1}))", v[0].Rhs, v[1].Rhs), _ => SgType.Bool, "A", "B");
+            Pattern("NegateNode", v => Sg.Bin("*", Sg.Lit(-1), v[0].Rhs), SameAsIn, "In");
+            Pattern("NormalizeNode", v => Sg.Call("normalize", v[0].Rhs), SameAsIn, "In");
+            Pattern("NotNode", v => Sg.RawTemplate("(!{0})", v[0].Rhs), _ => SgType.Bool, "In");
+            Pattern("OneMinusNode", v => Sg.Bin("-", Sg.Lit(1), v[0].Rhs), SameAsIn, "In");
+            Pattern("OrNode", v => Sg.RawTemplate("({0} || {1})", v[0].Rhs, v[1].Rhs), _ => SgType.Bool, "A", "B");
+            Pattern("PosterizeNode", v => Sg.RawTemplate("(floor({0} * {1}) / {1})", v[0].Rhs, v[1].Rhs), PromoteAB, "In", "Steps");
+            Pattern("PowerNode", v => Sg.CallPromote("pow", v[0], v[1]), PromoteAB, "A", "B");
+            Pattern("PreviewNode", v => Sg.RawTemplate("({0})", v[0].Rhs), SameAsIn, "In");
+            Pattern("ProjectionNode", v => Sg.RawTemplate("({1} * dot({0}, {1}) / dot({1}, {1}))", v[0].Rhs, v[1].Rhs), PromoteAB, "A", "B");
+            Pattern("RadiansToDegreesNode", v => Sg.Call("degrees", v[0].Rhs), SameAsIn, "In");
+            Pattern("ReciprocalNode", v => Sg.Bin("/", Sg.Lit(1.0), v[0].Rhs), SameAsIn, "In");
+            Pattern("ReciprocalSquareRootNode", v => Sg.Call("inversesqrt", v[0].Rhs), SameAsIn, "In");
+            Pattern("ReflectionNode", v => Sg.Call("reflect", v[0].Rhs, v[1].Rhs), PromoteAB, "In", "Normal");
+            Pattern("ReflectionProbeNode", v => Sg.Call("SHADERGRAPH_REFLECTION_PROBE", v[0].Rhs, v[1].Rhs, v[2].Rhs), _ => SgType.Vec3, "ViewDir", "Normal", "LOD");
+            Pattern("RejectionNode", v => Sg.RawTemplate("({0} - ({1} * dot({0}, {1}) / dot({1}, {1})))", v[0].Rhs, v[1].Rhs), PromoteAB, "A", "B");
+            Pattern("RemapNode", v => Sg.RawTemplate("({2}.x + ({0} - {1}.x) * ({2}.y - {2}.x) / ({1}.y - {1}.x))", v[0].Rhs, v[1].Rhs, v[2].Rhs), SameAsIn, "In", "InMinMax", "OutMinMax");
+            Pattern("RoundNode", v => Sg.Call("round", v[0].Rhs), SameAsIn, "In");
+            Pattern("SaturateNode", v => Sg.Call("clamp", v[0].Rhs, Sg.Lit(0.0), Sg.Lit(1.0)), SameAsIn, "In");
+            Pattern("SceneColorNode", v => Sg.RawTemplate("(SHADERGRAPH_SAMPLE_SCENE_COLOR({0}.xy))", v[0].Rhs), _ => SgType.Vec3, "UV");
+            Pattern("SceneDepthNode", v => Sg.RawTemplate("(Linear01Depth(SHADERGRAPH_SAMPLE_SCENE_DEPTH({0}.xy), _ZBufferParams))", v[0].Rhs), _ => SgType.Float, "UV");
+            Pattern("SignNode", v => Sg.Call("sign", v[0].Rhs), SameAsIn, "In");
+            Pattern("SineNode", v => Sg.Call("sin", v[0].Rhs), SameAsIn, "In");
+            Pattern("SmoothstepNode", v => Sg.CallPromote("smoothstep", v[0], v[1], v[2]), PromoteAB, "Edge1", "Edge2", "In");
+            Pattern("SquareRootNode", v => Sg.Call("sqrt", v[0].Rhs), SameAsIn, "In");
+            Pattern("StepNode", v => Sg.CallPromote("step", v[0], v[1]), PromoteAB, "Edge", "In");
+            Pattern("SubtractNode", v => Sg.BinPromote("-", v[0], v[1]), ArithPromote, "A", "B");
+            Pattern("TangentNode", v => Sg.Call("tan", v[0].Rhs), SameAsIn, "In");
+            Pattern("TilingAndOffsetNode", v => Sg.RawTemplate("({0} * {1} + {2})", v[0].Rhs, v[1].Rhs, v[2].Rhs), _ => SgType.Vec2, "UV", "Tiling", "Offset");
+            Pattern("TruncateNode", v => Sg.Call("trunc", v[0].Rhs), SameAsIn, "In");
         }
 
         // Type-resolution rules used by the Pattern lines above.
         static SgType PromoteAB(SgType[] inT) => SgTypes.Promote(inT[0], inT[1]);
         static SgType SameAsIn(SgType[] inT) => inT[0];
+        static SgType ArithPromote(SgType[] inT)
+        {
+            int ra = SgTypes.Rank(inT[0]), rb = SgTypes.Rank(inT[1]);
+            if (ra > 1 && rb > 1 && ra != rb) return SgTypes.FromRank(System.Math.Min(ra, rb));
+            return SgTypes.Promote(inT[0], inT[1]);
+        }
     }
 }

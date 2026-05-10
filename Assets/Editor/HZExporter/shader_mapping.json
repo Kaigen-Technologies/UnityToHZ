@@ -70,6 +70,34 @@
       ]
     },
     {
+      "unityShader": "Idyllic Fantasy Nature/Surface",
+      "engineShader": "shaders/surface_material.hza",
+      "engineSkinnedShader": "shaders/surface_material.hza",
+      "customShader": true,
+      "properties": [
+        { "unity": "_Color",                     "slot": "color",                     "kind": "color4" },
+        { "unity": "_Coverage_Color",            "slot": "coverage_color",            "kind": "color4" },
+        { "unity": "_Contrast",                  "slot": "contrast",                  "kind": "float" },
+        { "unity": "_Fade",                      "slot": "fade",                      "kind": "float" },
+        { "unity": "_Level",                     "slot": "level",                     "kind": "float" },
+        { "unity": "_Metallic",                  "slot": "metallic",                  "kind": "float" },
+        { "unity": "_Smoothness",                "slot": "smoothness",                "kind": "float" },
+        { "unity": "_Coverage_Smoothness",       "slot": "coverage_smoothness",       "kind": "float" },
+        { "unity": "_Normal_Strength",           "slot": "normal_strength",           "kind": "float" },
+        { "unity": "_Coverage_Normal_Strength",  "slot": "coverage_normal_strength",  "kind": "float" },
+        { "unity": "_Base_Map_Scale",            "slot": "base_map_scale",            "kind": "float" },
+        { "unity": "_Coverage_Map_Scale",        "slot": "coverage_map_scale",        "kind": "float" },
+        { "unity": "_Coverage_Mask_Scale",       "slot": "coverage_mask_scale",       "kind": "float" },
+        { "unity": "_Base_Map",                  "slot": "base_map",                  "kind": "texture" },
+        { "unity": "_Coverage_Base_Map",         "slot": "coverage_base_map",         "kind": "texture" },
+        { "unity": "_Normal_Map",                "slot": "normal_map",                "kind": "texture_normal" },
+        { "unity": "_Coverage_Normal_Map",       "slot": "coverage_normal_map",       "kind": "texture_normal" },
+        { "unity": "_Metallic_Map",              "slot": "metallic_map",              "kind": "texture" },
+        { "unity": "_Coverage_Metallic_Map",     "slot": "coverage_metallic_map",     "kind": "texture" },
+        { "unity": "_Coverage_Mask",             "slot": "coverage_mask",             "kind": "texture" }
+      ]
+    },
+    {
       "unityShader": "Shader Graphs/CharacterBaseShader",
       "engineShader": "shaders/lofi_character_material.hza",
       "engineSkinnedShader": "shaders/lofi_character_material.hza",

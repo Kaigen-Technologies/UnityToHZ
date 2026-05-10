@@ -76,15 +76,36 @@ namespace HZExporter.ShaderGraph
 
         public SgValue Input(string nodeId, int inSlotNum)
         {
-            var edge = Graph.FindEdgeIntoSlot(nodeId, inSlotNum);
-            if (edge != null) return Output(edge.OutputNodeId, edge.OutputSlotIdNum);
-
             if (!Graph.Nodes.TryGetValue(nodeId, out var node)
                 || !node.SlotByNum.TryGetValue(inSlotNum, out var slotId)
-                || !Graph.Slots.TryGetValue(slotId, out var slot))
+                || !Graph.Slots.TryGetValue(slotId, out var consumerSlot))
                 throw new Exception($"slot {nodeId}:{inSlotNum} cannot be resolved");
 
-            return SgLiterals.From(slot);
+            // Resolve the upstream value (or a literal default).
+            SgValue v;
+            var edge = Graph.FindEdgeIntoSlot(nodeId, inSlotNum);
+            if (edge != null) v = Output(edge.OutputNodeId, edge.OutputSlotIdNum);
+            else v = SgLiterals.From(consumerSlot);
+
+            // Coerce to the consumer slot's declared type when it's strongly
+            // typed (Vector1/2/3/4, ColorRGB/A, Boolean, Texture2D, …) and
+            // differs from what the upstream produced. This mirrors Unity
+            // Shader Graph's silent-truncation/broadcast at every connection
+            // and is what lets vec4 → vec2 (UV), vec4 → vec3 (color), etc.
+            // happen automatically. DynamicValue/DynamicVector slots have
+            // StaticType=Unknown so we leave their values alone.
+            var want = consumerSlot.StaticType();
+            if (want != SgType.Unknown && want != v.Type
+                && v.Type != SgType.Unknown    // upstream was opaque (e.g. Raw) — nothing to coerce
+                && want != SgType.Texture2D    // can't coerce arbitrary value into a texture
+                && want != SgType.SamplerState
+                && v.Type != SgType.Texture2D
+                && v.Type != SgType.SamplerState)
+            {
+                v.Rhs = SgCodegen.CoerceRhsForReturn(v.Rhs, v.Type, want);
+                v.Type = want;
+            }
+            return v;
         }
 
         public SgValue InputByName(SgNode node, string slotName)
@@ -261,11 +282,14 @@ namespace HZExporter.ShaderGraph
     }
 
     // Pattern-driven handler: data + a builder lambda. Most arithmetic and
-    // builtin nodes fit this — see the registry below.
+    // builtin nodes fit this — see the registry below. The Build callback
+    // gets full SgValues so type-aware ops (e.g. Multiply truncating vec4 to
+    // match a vec3 sibling, mirroring Unity Shader Graph's HLSL semantics)
+    // can introspect ranks at build time.
     class PatternHandler : NodeHandler
     {
         public string[] InputNames;
-        public Func<SgRhs[], SgRhs> Build;
+        public Func<SgValue[], SgRhs> Build;
         public Func<SgType[], SgType> OutType;
 
         public override SgValue Lower(SgNode node, int outSlotNum, LowerCtx ctx)
@@ -274,11 +298,10 @@ namespace HZExporter.ShaderGraph
             for (int i = 0; i < InputNames.Length; i++)
                 values[i] = ctx.InputByName(node, InputNames[i]);
 
-            var rhsArr = new SgRhs[values.Length];
             var tArr = new SgType[values.Length];
-            for (int i = 0; i < values.Length; i++) { rhsArr[i] = values[i].Rhs; tArr[i] = values[i].Type; }
+            for (int i = 0; i < values.Length; i++) tArr[i] = values[i].Type;
 
-            var rhs = Build(rhsArr);
+            var rhs = Build(values);
             var outT = OutType(tArr);
             return ctx.EmitTemp(outT, rhs);
         }
@@ -669,10 +692,26 @@ namespace HZExporter.ShaderGraph
                 }
             }
 
-            // Result type: the resolved type of the first branch (all
-            // variants are wired to the same DynamicValue output port, so
-            // they share a type after Shader Graph's type-resolution).
-            outType = branches.Count > 0 ? branches[0].RhsType : SgType.Vec4;
+            // Result type: the highest-rank type across all branches. With
+            // DynamicValue slots one branch may be e.g. vec4 (wired) while
+            // another is float (default-of-unconnected). GLSL won't accept
+            // assigning a float to a vec4 temp, so coerce each branch's
+            // Rhs to the unified outer type.
+            if (branches.Count == 0) outType = SgType.Vec4;
+            else
+            {
+                outType = branches[0].RhsType;
+                for (int i = 1; i < branches.Count; i++)
+                    outType = SgTypes.Promote(outType, branches[i].RhsType);
+            }
+            for (int i = 0; i < branches.Count; i++)
+            {
+                if (branches[i].RhsType != outType)
+                {
+                    branches[i].Rhs = SgCodegen.CoerceRhsForReturn(branches[i].Rhs, branches[i].RhsType, outType);
+                    branches[i].RhsType = outType;
+                }
+            }
             return ctx.EmitConditional(outType, branches);
         }
 
@@ -866,11 +905,21 @@ namespace HZExporter.ShaderGraph
 
             // Inside a subgraph, properties are function parameters — emit
             // a bare identifier. Outside (main shader), they're reads of the
-            // MaterialFS struct.
-            string expr = ctx.IsSubGraph ? prop.FieldName : "mat." + prop.FieldName;
+            // MaterialFS struct. Bool properties live in the engine struct
+            // as `float` (engine constraint) — wrap with `> 0.5` so the
+            // value flows back as a real bool.
+            string baseExpr = ctx.IsSubGraph ? prop.FieldName : "mat." + prop.FieldName;
+            if (prop.Type == SgType.Bool)
+                return new SgValue
+                {
+                    Rhs = Sg.Raw("(" + baseExpr + " > 0.5)"),
+                    Type = SgType.Bool,
+                    IsTemp = false,
+                };
+
             return new SgValue
             {
-                Rhs = Sg.Raw(expr),
+                Rhs = Sg.Raw(baseExpr),
                 Type = prop.Type,
                 IsTemp = false,
             };
@@ -913,17 +962,28 @@ namespace HZExporter.ShaderGraph
                 throw new System.NotImplementedException(
                     "SampleTexture2D: Texture input must come from a Texture2D PropertyNode");
 
-            // UV: edge → use it; otherwise default to v_uv.
-            string uvExpr = "v_uv";
+            // UV: pull through ctx.Input so the slot's Vec2 static type
+            // coerces vec4/vec3 upstreams via .xy. Default to v_uv when
+            // unconnected (UVMaterialSlot's m_Value is (0,0) which would
+            // produce vec2(0) literally — same as Unity's "no input" intent
+            // is to use the per-vertex UV0 varying).
+            SgRhs uvRhs;
             var uvEdge = ctx.Graph.FindEdgeIntoSlot(node.Id, 2);
             if (uvEdge != null)
             {
-                var uv = ctx.Output(uvEdge.OutputNodeId, uvEdge.OutputSlotIdNum);
-                uvExpr = uv.Rhs.ToGlsl();
+                var uv = ctx.Input(node.Id, 2);
+                uvRhs = uv.Rhs;
+            }
+            else
+            {
+                uvRhs = Sg.Raw("v_uv");
             }
 
+            // Use RawTemplate so the UV's structural ref survives optimizer
+            // renumbering — Sg.Raw bakes the temp name into a string and goes
+            // stale.
             return ctx.EmitTemp(SgType.Vec4,
-                Sg.Raw($"texture_sample({texRef.FieldName}, mat.{texRef.FieldName}, {uvExpr})"));
+                Sg.RawTemplate($"texture_sample({texRef.FieldName}, mat.{texRef.FieldName}, {{0}})", uvRhs));
         }
     }
 
@@ -966,7 +1026,7 @@ namespace HZExporter.ShaderGraph
             // `*` does the right thing for vec*vec, vec*scalar, mat*vec, and
             // mat*mat (the operand-order convention also matches Unity's
             // matrix*matrix output, since both pre-multiply column vectors).
-            Pattern("MultiplyNode", a => Sg.Bin("*", a[0], a[1]), PromoteAB, "A", "B");
+            Pattern("MultiplyNode", v => Sg.BinPromote("*", v[0], v[1]), ArithPromote, "A", "B");
 
             // BlendNode's HLSL body is multi-statement (computes intermediate
             // Out and then mixes), so the auto-generator skips it. Default
@@ -974,27 +1034,27 @@ namespace HZExporter.ShaderGraph
             // and trust the engine compiler / driver to fold simple cases.
             // Slot order: 0 = Base, 1 = Blend, 2 = Opacity, 3 = Out.
             Pattern("BlendNode",
-                a => Sg.RawTemplate("(mix({0}, 1.0 - (1.0 - {1}) * (1.0 - {0}), {2}))", a[0], a[1], a[2]),
+                v => Sg.RawTemplate("(mix({0}, 1.0 - (1.0 - {1}) * (1.0 - {0}), {2}))", v[0].Rhs, v[1].Rhs, v[2].Rhs),
                 PromoteAB, "Base", "Blend", "Opacity");
 
             // ContrastNode: HLSL body uses a `$precision midpoint = pow(0.5, 2.2)`
             // local — auto-gen skipped due to multi-statement. The midpoint
             // value (≈ 0.21763764) is constant; precompute and inline.
             Pattern("ContrastNode",
-                a => Sg.RawTemplate("(({0} - 0.21763764) * {1} + 0.21763764)", a[0], a[1]),
+                v => Sg.RawTemplate("(({0} - 0.21763764) * {1} + 0.21763764)", v[0].Rhs, v[1].Rhs),
                 SameAsIn, "In", "Contrast");
 
             // NormalBlendNode (default mode): HLSL uses Unity's SafeNormalize +
             // $precision3 macro. Functional GLSL form is normalize(vec3(rg
             // sum, b multiply)).
             Pattern("NormalBlendNode",
-                a => Sg.RawTemplate("normalize(vec3({0}.rg + {1}.rg, {0}.b * {1}.b))", a[0], a[1]),
+                v => Sg.RawTemplate("normalize(vec3({0}.rg + {1}.rg, {0}.b * {1}.b))", v[0].Rhs, v[1].Rhs),
                 _ => SgType.Vec3, "A", "B");
 
             // NormalStrengthNode: HLSL uses $precision3 + lerp/saturate. GLSL
             // equivalent: vec3(rg * strength, mix(1, b, clamp(strength, 0, 1))).
             Pattern("NormalStrengthNode",
-                a => Sg.RawTemplate("vec3({0}.rg * {1}, mix(1.0, {0}.b, clamp({1}, 0.0, 1.0)))", a[0], a[1]),
+                v => Sg.RawTemplate("vec3({0}.rg * {1}, mix(1.0, {0}.b, clamp({1}, 0.0, 1.0)))", v[0].Rhs, v[1].Rhs),
                 _ => SgType.Vec3, "In", "Strength");
 
             // ----- custom handlers --------------------------------------------
@@ -1023,7 +1083,7 @@ namespace HZExporter.ShaderGraph
             throw new NotImplementedException($"no handler registered for '{nodeType}'");
         }
 
-        static void Pattern(string nodeType, Func<SgRhs[], SgRhs> build,
+        static void Pattern(string nodeType, Func<SgValue[], SgRhs> build,
                             Func<SgType[], SgType> outType, params string[] inputs)
         {
             _handlers[nodeType] = new PatternHandler
@@ -1036,5 +1096,15 @@ namespace HZExporter.ShaderGraph
 
         static SgType PromoteAB(SgType[] inT) => SgTypes.Promote(inT[0], inT[1]);
         static SgType SameAsIn(SgType[] inT) => inT[0];
+
+        // For arithmetic with mismatched-rank vectors, mimic HLSL's
+        // mul-truncation — result is min-rank. Otherwise behave like Promote.
+        static SgType ArithPromote(SgType[] inT)
+        {
+            int ra = SgTypes.Rank(inT[0]), rb = SgTypes.Rank(inT[1]);
+            if (ra > 1 && rb > 1 && ra != rb)
+                return SgTypes.FromRank(System.Math.Min(ra, rb));
+            return SgTypes.Promote(inT[0], inT[1]);
+        }
     }
 }

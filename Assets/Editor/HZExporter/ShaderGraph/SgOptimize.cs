@@ -445,28 +445,32 @@ namespace HZExporter.ShaderGraph
                 string newName = "_n" + i;
                 rename[statements[i].Name] = newName;
             }
-            for (int i = 0; i < statements.Count; i++)
-            {
-                var s = statements[i];
-                if (s.Branches != null)
-                {
-                    foreach (var b in s.Branches)
-                    {
-                        b.Rhs = RenameRefs(b.Rhs, rename);
-                        // Branch body temps live in their own `{ }` scope and
-                        // use a different prefix — but their RHSs may still
-                        // reference outer-scope temps that need renaming.
-                        foreach (var bs in b.Body)
-                            if (bs.Rhs != null) bs.Rhs = RenameRefs(bs.Rhs, rename);
-                    }
-                }
-                else
-                {
-                    s.Rhs = RenameRefs(s.Rhs, rename);
-                }
-                s.Name = rename[s.Name];
-            }
+            for (int i = 0; i < statements.Count; i++) RenameStatement(statements[i], rename);
             foreach (var a in assigns) a.Rhs = RenameRefs(a.Rhs, rename);
+        }
+
+        // Walk a statement (assign or conditional) and rename refs to outer
+        // names. Recurses through nested conditional branches so deeply-nested
+        // `#if` blocks see fresh outer names. Branch-local temp names (with
+        // their `_b<idx>_n` prefix) aren't in `rename` so they're untouched.
+        static void RenameStatement(SgStatement s, Dictionary<string, string> rename)
+        {
+            if (s.Branches != null)
+            {
+                foreach (var b in s.Branches)
+                {
+                    b.Rhs = RenameRefs(b.Rhs, rename);
+                    foreach (var bs in b.Body) RenameStatement(bs, rename);
+                }
+            }
+            else if (s.Rhs != null)
+            {
+                s.Rhs = RenameRefs(s.Rhs, rename);
+            }
+            // Outer-named temps get renumbered; branch-locals use a different
+            // prefix and aren't keys in the rename map, so this is a no-op
+            // for them.
+            if (rename.TryGetValue(s.Name, out var nn)) s.Name = nn;
         }
 
         static SgRhs RenameRefs(SgRhs r, Dictionary<string, string> rename)
