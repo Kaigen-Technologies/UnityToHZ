@@ -53,6 +53,11 @@ namespace HZExporter.ShaderGraph
         readonly Dictionary<string, SgValue> _cache = new Dictionary<string, SgValue>();
         int _tempCounter;
 
+        // The node currently being lowered — set in Output() around the handler
+        // call so EmitTemp can stamp emitted statements with the node's GroupId
+        // (which codegen uses to inject `// === <group title> ===` headers).
+        string _currentNodeGroupId;
+
         // Number of conditional-branch sub-contexts this ctx has spawned —
         // used to give branch-local temps unique prefixes (`_b0_n0`, `_b1_n0`).
         int _branchCounter;
@@ -69,7 +74,10 @@ namespace HZExporter.ShaderGraph
                 throw new Exception($"unknown node '{nodeId}'");
 
             var handler = SgNodes.Lookup(node.Type);
+            var saved = _currentNodeGroupId;
+            _currentNodeGroupId = node.GroupId;
             var v = handler.Lower(node, outSlotNum, this);
+            _currentNodeGroupId = saved;
             _cache[key] = v;
             return v;
         }
@@ -118,7 +126,7 @@ namespace HZExporter.ShaderGraph
         public SgValue EmitTemp(SgType t, SgRhs rhs)
         {
             string name = TempPrefix + (_tempCounter++);
-            Statements.Add(new SgStatement { Name = name, Type = t, Rhs = rhs });
+            Statements.Add(new SgStatement { Name = name, Type = t, Rhs = rhs, GroupId = _currentNodeGroupId });
             return SgValue.Temp(name, t);
         }
 
@@ -823,6 +831,86 @@ namespace HZExporter.ShaderGraph
         }
     }
 
+    // BlendNode: 22 modes selectable via m_BlendMode (UnityEditor.ShaderGraph.BlendMode).
+    // Each mode computes Out from Base/Blend, then `Out = lerp(Base, Out, Opacity)`.
+    // Slot order: 0 = Base, 1 = Blend, 2 = Out, 3 = Opacity.
+    class BlendNodeHandler : NodeHandler
+    {
+        public override SgValue Lower(SgNode node, int outSlotNum, LowerCtx ctx)
+        {
+            int mode = 16; // Overlay (Unity default) when missing
+            if (node.Raw.TryGetValue("m_BlendMode", out var m) && m is double d) mode = (int)d;
+
+            var baseV  = ctx.InputByName(node, "Base");
+            var blendV = ctx.InputByName(node, "Blend");
+            var opV    = ctx.InputByName(node, "Opacity");
+
+            // Result type = promote(Base, Blend) — same rule as PromoteAB.
+            int rb = SgTypes.Rank(baseV.Type), rbl = SgTypes.Rank(blendV.Type);
+            SgType outT = rb >= rbl ? baseV.Type : blendV.Type;
+
+            // Inner = formula(Base, Blend). Final = mix(Base, Inner, Opacity).
+            // Operands are rank-aligned so vec4/vec3/float mixes obey HLSL
+            // truncation semantics (matches the engine GLSL compiler).
+            string inner;
+            switch (mode)
+            {
+                case 0:  inner = "(1.0 - (1.0 - {1})/({0} + 1e-12))"; break;                    // Burn
+                case 1:  inner = "min({1}, {0})"; break;                                         // Darken
+                case 2:  inner = "abs({1} - {0})"; break;                                        // Difference
+                case 3:  inner = "({0} / (1.0 - clamp({1}, 1e-6, 0.999999)))"; break;            // Dodge
+                case 4:  inner = "({0} / ({1} + 1e-12))"; break;                                 // Divide
+                case 5:  inner = "({1} + {0} - 2.0 * {1} * {0})"; break;                         // Exclusion
+                case 8:  inner = "max({1}, {0})"; break;                                         // Lighten
+                case 9:  inner = "({0} + {1} - 1.0)"; break;                                     // LinearBurn
+                case 10: inner = "({0} + {1})"; break;                                           // LinearDodge
+                case 12: inner = "({1} + 2.0 * {0} - 1.0)"; break;                               // LinearLightAddSub
+                case 13: inner = "({0} * {1})"; break;                                           // Multiply
+                case 14: inner = "(1.0 - abs(1.0 - {1} - {0}))"; break;                          // Negation
+                case 17: inner = "(step(0.5, {1}) * max(2.0 * ({0} - 0.5), {1}) + (1.0 - step(0.5, {1})) * min(2.0 * {0}, {1}))"; break; // PinLight
+                case 15: inner = "(1.0 - (1.0 - {1}) * (1.0 - {0}))"; break;                     // Screen
+                case 19: inner = "({0} - {1})"; break;                                           // Subtract
+                case 21:                                                                          // Overwrite — passes through to mix(Base, Blend, Opacity)
+                    return ctx.EmitTemp(outT, Sg.CallPromote("mix", baseV, blendV, opV));
+                default:
+                    // Unsupported modes (HardLight, HardMix, LinearLight, Overlay,
+                    // SoftLight, VividLight) need step()-driven branching that's
+                    // tedious; emit Screen as a visible fallback and a TODO.
+                    inner = "(1.0 - (1.0 - {1}) * (1.0 - {0})) /* TODO BlendMode " + mode + " */";
+                    break;
+            }
+
+            // Build the final mix(Base, formula, Opacity) with rank-aligned args.
+            // Steps: emit a temp for `formula(Base, Blend)`, then mix(Base, that, Opacity).
+            // Doing it as one nested expression keeps the optimizer happy.
+            // Align Base + Blend to a common rank. Use MAX rank: vectors stay,
+            // scalars get broadcast via vec_n(s). GLSL's min/max/clamp require
+            // matching genType OR (genType, float) overloads in that order —
+            // broadcasting upfront avoids both `min(float, vec)` and asymmetric-
+            // operand bugs (Burn, Dodge, Subtract are non-commutative).
+            int rankBB = System.Math.Max(SgTypes.Rank(baseV.Type), SgTypes.Rank(blendV.Type));
+            string vecCtor = rankBB == 2 ? "vec2" : rankBB == 3 ? "vec3" : rankBB == 4 ? "vec4" : null;
+            SgRhs Broadcast(SgValue v)
+            {
+                int r = SgTypes.Rank(v.Type);
+                if (r == rankBB || vecCtor == null) return v.Rhs;
+                if (r == 1) return new SgRhsCall { Func = vecCtor, Args = new List<SgRhs> { v.Rhs } };
+                // r > 1 && r < rankBB: truncate (HLSL-style)
+                if (r > rankBB) return Sg.Swizzle(v.Rhs, "xyzw".Substring(0, rankBB));
+                // r < rankBB but r > 1: pad with zeros via vec_n(v, 0, ...). Rare.
+                return new SgRhsCall { Func = vecCtor, Args = new List<SgRhs> { v.Rhs } };
+            }
+            var bAligned  = Broadcast(baseV);
+            var blAligned = Broadcast(blendV);
+            // Opacity stays scalar — mix(genType, genType, float) is a valid overload.
+            var opAligned = opV.Rhs;
+
+            var formula = Sg.RawTemplate(inner, bAligned, blAligned);
+            var rhs = Sg.RawTemplate("mix({0}, {1}, {2})", bAligned, formula, opAligned);
+            return ctx.EmitTemp(outT, rhs);
+        }
+    }
+
     // PositionNode: per-vertex position in the requested coordinate space.
     // Vertex-stage only. Object space → `v.pos`; World space → the model
     // matrix applied to v.pos. Other spaces (View, Tangent, AbsoluteWorld,
@@ -1028,14 +1116,9 @@ namespace HZExporter.ShaderGraph
             // matrix*matrix output, since both pre-multiply column vectors).
             Pattern("MultiplyNode", v => Sg.BinPromote("*", v[0], v[1]), ArithPromote, "A", "B");
 
-            // BlendNode's HLSL body is multi-statement (computes intermediate
-            // Out and then mixes), so the auto-generator skips it. Default
-            // mode is screen blend; we emit the screen-blend formula directly
-            // and trust the engine compiler / driver to fold simple cases.
-            // Slot order: 0 = Base, 1 = Blend, 2 = Opacity, 3 = Out.
-            Pattern("BlendNode",
-                v => Sg.RawTemplate("(mix({0}, 1.0 - (1.0 - {1}) * (1.0 - {0}), {2}))", v[0].Rhs, v[1].Rhs, v[2].Rhs),
-                PromoteAB, "Base", "Blend", "Opacity");
+            // BlendNode is mode-driven (m_BlendMode) — handled by a custom
+            // handler below that reads the mode and emits the per-mode
+            // formula. Auto-pattern would always emit Screen.
 
             // ContrastNode: HLSL body uses a `$precision midpoint = pow(0.5, 2.2)`
             // local — auto-gen skipped due to multi-statement. The midpoint
@@ -1075,6 +1158,7 @@ namespace HZExporter.ShaderGraph
             _handlers["ColorNode"]               = new ColorNodeHandler();
             _handlers["TransformNode"]           = new TransformNodeHandler();
             _handlers["KeywordNode"]             = new KeywordNodeHandler();
+            _handlers["BlendNode"]               = new BlendNodeHandler();
         }
 
         public static NodeHandler Lookup(string nodeType)

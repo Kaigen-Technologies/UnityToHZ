@@ -51,8 +51,8 @@
     },
     {
       "unityShader": "Shader Graphs/BasicShader",
-      "engineShader": "shaders/lofi_basic_material.hza",
-      "engineSkinnedShader": "shaders/lofi_basic_material.hza",
+      "engineShader": "shaders/basic_shader_material.hza",
+      "engineSkinnedShader": "shaders/basic_shader_material.hza",
       "customShader": true,
       "properties": [
         { "unity": "_Highlight_Intensity", "slot": "highlight_intensity", "kind": "float" },
@@ -64,9 +64,9 @@
         { "unity": "_Color_3",             "slot": "color_3",             "kind": "color4" },
         { "unity": "_Color_4",             "slot": "color_4",             "kind": "color4" },
         { "unity": "_Line_Color",          "slot": "line_color",          "kind": "color4" },
-        { "unity": "_Base_Color_Texture",  "slot": "base_color",          "kind": "texture" },
-        { "unity": "_ILM_Texture",         "slot": "ilm",                 "kind": "texture" },
-        { "unity": "_OLS_Texture",         "slot": "ols",                 "kind": "texture" }
+        { "unity": "_Base_Color_Texture",  "slot": "base_color_texture",  "kind": "texture" },
+        { "unity": "_ILM_Texture",         "slot": "ilm_texture",         "kind": "texture" },
+        { "unity": "_OLS_Texture",         "slot": "ols_texture",         "kind": "texture" }
       ]
     },
     {
@@ -99,8 +99,8 @@
     },
     {
       "unityShader": "Shader Graphs/CharacterBaseShader",
-      "engineShader": "shaders/lofi_character_material.hza",
-      "engineSkinnedShader": "shaders/lofi_character_material.hza",
+      "engineShader": "shaders/character_base_shader_material.hza",
+      "engineSkinnedShader": "shaders/character_base_shader_material.hza",
       "customShader": true,
       "properties": [
         { "unity": "_Shadow_Sharpness",     "slot": "shadow_sharpness",     "kind": "float" },
@@ -119,13 +119,13 @@
         { "unity": "_Eyelash_Color",        "slot": "eyelash_color",        "kind": "color4" },
         { "unity": "_Tattoo_Color",         "slot": "tattoo_color",         "kind": "color4" },
         { "unity": "_Line_Color",           "slot": "line_color",           "kind": "color4" },
-        { "unity": "_Body_Color_Texture",   "slot": "body_color",           "kind": "texture" },
-        { "unity": "_Body_OLS_Texture",     "slot": "body_ols",             "kind": "texture" },
-        { "unity": "_Face_Color_Texture",   "slot": "face_color",           "kind": "texture" },
-        { "unity": "_Face_OLS_Texture",     "slot": "face_ols",             "kind": "texture" },
-        { "unity": "_Eye_Texture",          "slot": "eye",                  "kind": "texture" },
-        { "unity": "_MouthLashTexture",     "slot": "mouth_lashes",         "kind": "texture" },
-        { "unity": "_MouthLashMask",        "slot": "mouth_lashes_mask",    "kind": "texture" },
+        { "unity": "_Body_Color_Texture",   "slot": "body_color_texture",   "kind": "texture" },
+        { "unity": "_Body_OLS_Texture",     "slot": "body_ols_texture",     "kind": "texture" },
+        { "unity": "_Face_Color_Texture",   "slot": "face_color_texture",   "kind": "texture" },
+        { "unity": "_Face_OLS_Texture",     "slot": "face_ols_texture",     "kind": "texture" },
+        { "unity": "_Eye_Texture",          "slot": "eye_texture",          "kind": "texture" },
+        { "unity": "_MouthLashTexture",     "slot": "mouth_lash_texture",   "kind": "texture" },
+        { "unity": "_MouthLashMask",        "slot": "mouth_lash_mask",      "kind": "texture" },
         { "unity": "_EyeballColorMask",     "slot": "eyeball_color_mask",   "kind": "texture" },
         { "unity": "_EyeballShadow",        "slot": "eyeball_shadow",       "kind": "texture" }
       ]

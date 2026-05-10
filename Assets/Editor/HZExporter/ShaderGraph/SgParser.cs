@@ -34,8 +34,59 @@ namespace HZExporter.ShaderGraph
             ParseSlots(g, raw);
             ParseNodes(g, raw);
             ParseEdges(g, graphData);
+            ParseAnnotations(g, raw, graphData);
 
             return g;
+        }
+
+        // GroupData (the colored bounding boxes in the editor) + StickyNoteData
+        // (free-form text boxes). Pure editor-side annotation — we keep them so
+        // codegen can emit `// === Title ===` section headers and `/* … */`
+        // sticky-note blocks for readability against the original graph.
+        static void ParseAnnotations(SgGraph g,
+                                     Dictionary<string, Dictionary<string, object>> raw,
+                                     Dictionary<string, object> graphData)
+        {
+            if (TryGetIdList(graphData, "m_GroupDatas", out var gids))
+            {
+                foreach (var gid in gids)
+                {
+                    if (!raw.TryGetValue(gid, out var gobj)) continue;
+                    string title = gobj.TryGetValue("m_Title", out var t) ? t as string : null;
+                    if (!string.IsNullOrEmpty(title)) g.GroupTitles[gid] = title;
+                }
+            }
+            if (TryGetIdList(graphData, "m_StickyNoteDatas", out var sids))
+            {
+                foreach (var sid in sids)
+                {
+                    if (!raw.TryGetValue(sid, out var sobj)) continue;
+                    var note = new SgStickyNote
+                    {
+                        Title = sobj.TryGetValue("m_Title", out var t) ? t as string : null,
+                        Content = sobj.TryGetValue("m_Content", out var c) ? c as string : null,
+                    };
+                    if (sobj.TryGetValue("m_Group", out var go)
+                        && go is Dictionary<string, object> gd
+                        && gd.TryGetValue("m_Id", out var ggid)
+                        && ggid is string ggidStr
+                        && !string.IsNullOrEmpty(ggidStr))
+                        note.GroupId = ggidStr;
+                    g.StickyNotes.Add(note);
+                }
+            }
+            // Stamp each node with its group id (when present).
+            foreach (var node in g.Nodes.Values)
+            {
+                if (node.Raw == null) continue;
+                if (node.Raw.TryGetValue("m_Group", out var go)
+                    && go is Dictionary<string, object> gd
+                    && gd.TryGetValue("m_Id", out var gid)
+                    && gid is string gidStr
+                    && !string.IsNullOrEmpty(gidStr)
+                    && g.GroupTitles.ContainsKey(gidStr))
+                    node.GroupId = gidStr;
+            }
         }
 
         // Shader keywords (boolean toggles + enum variants) referenced from

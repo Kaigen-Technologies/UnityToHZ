@@ -107,11 +107,12 @@ namespace HZExporter.ShaderGraph
 
             // ----- format bodies -------------------------------------------
             var vsBody = new StringBuilder();
-            foreach (var s in vsCtx.Statements) vsBody.Append("    ").Append(s.Format()).Append('\n');
+            EmitStatementsWithGroupHeaders(vsBody, vsCtx.Statements, g);
             foreach (var a in vsAssigns)        vsBody.Append("    ").Append(a.Format()).Append('\n');
 
             var body = new StringBuilder();
-            foreach (var s in ctx.Statements) body.Append("    ").Append(s.Format()).Append('\n');
+            EmitStickyNotes(body, g);
+            EmitStatementsWithGroupHeaders(body, ctx.Statements, g);
             foreach (var a in assigns)        body.Append("    ").Append(a.Format()).Append('\n');
             if (g.AlphaClip)
                 body.Append("    if (alpha < alpha_clip_threshold) discard;\n");
@@ -125,6 +126,49 @@ namespace HZExporter.ShaderGraph
                 .Replace("${VS_NORMAL}",   vsNormal)
                 .Replace("${VS_TANGENT}",  vsTangent)
                 .Replace("${MAIN_BODY}",   bodyStr);
+        }
+
+        // Emit statements with `// === <group title> ===` headers injected
+        // whenever the originating ShaderGraph group changes. Statements
+        // without a group ("ungrouped") pass through without a header. The
+        // first group transition emits a header; subsequent statements from
+        // the same group don't repeat it. Group titles may reappear if the
+        // optimizer interleaved their statements with statements from other
+        // groups — that's expected and visually accurate.
+        static void EmitStatementsWithGroupHeaders(StringBuilder sb, List<SgStatement> stmts, SgGraph g)
+        {
+            string lastGroup = null;
+            foreach (var s in stmts)
+            {
+                string gid = s.GroupId;
+                string title = (gid != null && g.GroupTitles.TryGetValue(gid, out var t)) ? t : null;
+                if (title != null && gid != lastGroup)
+                    sb.Append("    // === ").Append(title).Append(" ===\n");
+                lastGroup = gid;   // also clear when we re-enter "no group"
+                sb.Append("    ").Append(s.Format()).Append('\n');
+            }
+        }
+
+        // Sticky notes as a top-of-main /* ... */ block. They have no
+        // graph dependency so there's no good in-line position for them;
+        // collecting them above main() keeps the noise predictable.
+        static void EmitStickyNotes(StringBuilder sb, SgGraph g)
+        {
+            if (g.StickyNotes == null || g.StickyNotes.Count == 0) return;
+            foreach (var note in g.StickyNotes)
+            {
+                bool hasTitle = !string.IsNullOrEmpty(note.Title);
+                bool hasContent = !string.IsNullOrEmpty(note.Content);
+                if (!hasTitle && !hasContent) continue;
+                sb.Append("    /* ");
+                if (hasTitle) sb.Append(note.Title);
+                if (hasTitle && hasContent) sb.Append(":");
+                sb.Append('\n');
+                if (hasContent)
+                    foreach (var line in note.Content.Replace("\r", "").Split('\n'))
+                        sb.Append("     * ").Append(line).Append('\n');
+                sb.Append("     */\n");
+            }
         }
 
         // Lower a VertexDescription block. If the block has no incoming edge,
@@ -304,7 +348,7 @@ void main() {
 ${VERTEX_BODY}    vec4 world_pos = v.model * vec4(${VS_POS}, 1.0);
     gl_Position = hz_scene.view_proj * world_pos;
     v_uv = v.uv;
-    v_uv1 = v.uv1;
+    v_uv1 = vec2(v.uv1.x, 1.0 - v.uv1.y);
     v_material_offset = v.material_offset;
     v_normal = normalize((v.model * vec4(${VS_NORMAL}, 0.0)).xyz);
 }
@@ -348,7 +392,7 @@ ${VERTEX_BODY}    vec4 world_pos = v.model * vec4(${VS_POS}, 1.0);
     v_tangent = normalize((v.model * vec4(${VS_TANGENT}, 0.0)).xyz);
     v_bitangent_sign = v.bitangent_sign;
     v_uv = v.uv;
-    v_uv1 = v.uv1;
+    v_uv1 = vec2(v.uv1.x, 1.0 - v.uv1.y);
     v_material_offset = v.material_offset;
     v_view_depth = -(hz_scene.view * world_pos).z;
 }

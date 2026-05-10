@@ -232,6 +232,11 @@ namespace HZExporter.ShaderGraph
         public string TypeName;
         public SgRhs Rhs;
 
+        // Originating node's m_Group.m_Id — codegen uses this to inject
+        // `// === <title> ===` section headers when consecutive statements
+        // come from different graph groups. Null = ungrouped.
+        public string GroupId;
+
         // Optional `#ifdef`-driven conditional form — when non-null, this
         // statement renders as a forward-declared temp followed by guarded
         // assignment branches (instead of `<type> name = rhs;`). Used by

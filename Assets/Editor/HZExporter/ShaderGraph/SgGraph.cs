@@ -194,6 +194,7 @@ namespace HZExporter.ShaderGraph
         public Dictionary<string, int> SlotByName        // m_DisplayName → numeric m_Id
             = new Dictionary<string, int>();
         public Dictionary<string, object> Raw;           // raw JSON for handler-specific fields
+        public string GroupId;                           // m_Group.m_Id (empty when ungrouped)
     }
 
     class SgSlot
@@ -268,6 +269,13 @@ namespace HZExporter.ShaderGraph
         public object DefaultValue;   // m_Value (for non-texture types)
     }
 
+    class SgStickyNote
+    {
+        public string Title;
+        public string Content;
+        public string GroupId;     // optional — non-null when sticky belongs to a group
+    }
+
     class SgEdge
     {
         public string OutputNodeId;
@@ -293,6 +301,11 @@ namespace HZExporter.ShaderGraph
 
         public List<SgKeyword> Keywords = new List<SgKeyword>();
         public Dictionary<string, SgKeyword> KeywordsById = new Dictionary<string, SgKeyword>();
+
+        // Editor annotations — purely cosmetic, emitted as // comments in GLSL
+        // so generated shaders are easier to navigate against the original graph.
+        public Dictionary<string, string> GroupTitles = new Dictionary<string, string>();  // m_ObjectId → m_Title
+        public List<SgStickyNote> StickyNotes = new List<SgStickyNote>();
 
         public SgNode FindFragmentBlock(string serializedDescriptor)
         {
