@@ -267,6 +267,12 @@ namespace HZExporter.ShaderGraph
         public string FieldName;      // GLSL field in MaterialFS — derived from ReferenceName
         public SgType Type;
         public object DefaultValue;   // m_Value (for non-texture types)
+        // True for Texture2D properties that hold a tangent-space normal map.
+        // Unity does the [0,1]→[-1,1] decode transparently at the importer
+        // level; we replicate it at sample time. Detected via the reference
+        // name containing "normal" or "bump" (heuristic — covers _Normal_Map,
+        // _Coverage_Normal_Map, _BumpMap, _NormalTex etc.).
+        public bool IsNormalMap;
     }
 
     class SgStickyNote

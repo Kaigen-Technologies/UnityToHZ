@@ -215,6 +215,7 @@ namespace HZExporter.ShaderGraph
     class SgRhsTextureRef : SgRhs
     {
         public string FieldName;
+        public bool IsNormalMap;       // hint for SampleTexture2D to emit the [0,1]→[-1,1] decode
         public override string ToGlsl() => "mat." + FieldName;
         public override IEnumerable<string> Refs() { yield break; }
     }

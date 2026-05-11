@@ -730,7 +730,7 @@ public static class HZExportCommands
                         info.lightIntensity = light.intensity;
                         info.castShadow = light.shadows != LightShadows.None;
                         info.shadowDistance = QualitySettings.shadowDistance;
-                        Debug.Log($"[HZ] Entity: {go.name} (directional light, shadows={info.castShadow})");
+                        Debug.Log($"[HZ] Entity: {go.name} (directional light, shadows={info.castShadow}) fwd_unity={fwd} dir_exported={info.lightDirection}");
                     }
                     else if (light.type == LightType.Point)
                     {

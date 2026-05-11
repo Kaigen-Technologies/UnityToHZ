@@ -149,6 +149,11 @@ namespace HZExporter.ShaderGraph
                 };
                 if (pobj.TryGetValue("m_Value", out var v)) prop.DefaultValue = v;
                 prop.FieldName = MakeFieldName(prop.ReferenceName, prop.Name);
+                if (prop.Type == SgType.Texture2D && !string.IsNullOrEmpty(prop.ReferenceName))
+                {
+                    var lowered = prop.ReferenceName.ToLowerInvariant();
+                    prop.IsNormalMap = lowered.Contains("normal") || lowered.Contains("bump");
+                }
                 g.Properties.Add(prop);
                 g.PropertiesById[pid] = prop;
             }

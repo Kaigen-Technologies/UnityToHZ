@@ -1351,7 +1351,45 @@ namespace HZExporter
 
         static Texture2D MakeReadableNormalMap(Texture2D src)
         {
-            // Blit in linear space to get raw packed data
+            // Unity imports normal maps as either BC5 or DXT5nm with the X
+            // channel packed into alpha (or a separate plane). A plain
+            // Graphics.Blit through the default copy shader DOES NOT decode
+            // these formats — the destination texture ends up with R=255 /
+            // A=255 / B=128 constants and only G carrying real data, which
+            // destroys X. We have to either run a custom UnpackNormal shader
+            // during blit, or bypass the importer entirely and read the
+            // source file on disk. The latter is simpler and side-steps every
+            // Unity-version-specific quirk of the normal-map import path.
+            string path = UnityEditor.AssetDatabase.GetAssetPath(src);
+            if (!string.IsNullOrEmpty(path) && System.IO.File.Exists(path))
+            {
+                byte[] bytes = System.IO.File.ReadAllBytes(path);
+                Texture2D fromDisk = new Texture2D(2, 2, TextureFormat.RGBA32, false, true);
+                if (fromDisk.LoadImage(bytes))
+                {
+                    // Source PNGs are authored in the DirectX tangent-space
+                    // convention (+Y points down toward decreasing V). The
+                    // engine's TBN math uses OpenGL convention (+Y up). Flip
+                    // Y here so the engine receives a normal map it can
+                    // interpret without further adjustment.
+                    Color[] pixels = fromDisk.GetPixels();
+                    for (int i = 0; i < pixels.Length; i++)
+                    {
+                        float nx = pixels[i].r * 2f - 1f;
+                        float ny = -(pixels[i].g * 2f - 1f);
+                        float nz = Mathf.Sqrt(Mathf.Max(0f, 1f - nx * nx - ny * ny));
+                        pixels[i] = new Color(nx * 0.5f + 0.5f, ny * 0.5f + 0.5f, nz * 0.5f + 0.5f, 1f);
+                    }
+                    Texture2D unpacked = new Texture2D(fromDisk.width, fromDisk.height, TextureFormat.RGBA32, false, true);
+                    unpacked.SetPixels(pixels);
+                    unpacked.Apply();
+                    UnityEngine.Object.DestroyImmediate(fromDisk);
+                    return unpacked;
+                }
+                UnityEngine.Object.DestroyImmediate(fromDisk);
+            }
+            Debug.LogWarning($"[HZGlbWriter] normal-map source file unreadable for '{src.name}' — falling back to imported (alpha-packed X may be lost)");
+            // Fallback path (kept for in-memory textures with no source asset).
             RenderTexture tmp = RenderTexture.GetTemporary(src.width, src.height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
             Graphics.Blit(src, tmp);
             RenderTexture prev = RenderTexture.active;
@@ -1361,25 +1399,7 @@ namespace HZExporter
             packed.Apply();
             RenderTexture.active = prev;
             RenderTexture.ReleaseTemporary(tmp);
-
-            // Unity's sampler on NormalMap-typed textures already decodes into RGB form
-            // (r=nx_packed, g=ny_packed, b=nz_packed with nz reconstructed). Alpha is
-            // typically unused after decode and reads as 1. We just normalize/rebuild Z
-            // for stability and re-emit as a standard tangent-space normal PNG.
-            Color[] pixels = packed.GetPixels();
-            for (int i = 0; i < pixels.Length; i++)
-            {
-                float nx = pixels[i].r * 2f - 1f;
-                float ny = pixels[i].g * 2f - 1f;
-                float nz = Mathf.Sqrt(Mathf.Max(0f, 1f - nx * nx - ny * ny));
-                pixels[i] = new Color(nx * 0.5f + 0.5f, ny * 0.5f + 0.5f, nz * 0.5f + 0.5f, 1f);
-            }
-
-            Texture2D unpacked = new Texture2D(src.width, src.height, TextureFormat.RGBA32, false, true);
-            unpacked.SetPixels(pixels);
-            unpacked.Apply();
-            UnityEngine.Object.DestroyImmediate(packed);
-            return unpacked;
+            return packed;
         }
     }
 }

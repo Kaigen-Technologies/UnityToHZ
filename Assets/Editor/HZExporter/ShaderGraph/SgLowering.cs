@@ -173,6 +173,12 @@ namespace HZExporter.ShaderGraph
             if (t == SgType.Texture2D || t == SgType.SamplerState)
                 throw new NotImplementedException(
                     $"slot '{slot.DisplayName}' of type {slot.Type} cannot have a literal default — must be wired");
+            // UVMaterialSlot's m_Value is (0,0) which literally means "no
+            // input" in Unity — the runtime substitutes mesh UV0 (or UVn per
+            // m_Channel). Emit `v_uv` here so downstream texture samples and
+            // TilingAndOffsetNode chains see per-vertex UVs instead of origin.
+            if (slot.Type == "UVMaterialSlot")
+                return SgValue.Inline(Sg.Raw("v_uv"), SgType.Vec2);
             if (t == SgType.Unknown)
             {
                 // DynamicValue/DynamicVector default to scalar — see SgRhs.cs
@@ -726,11 +732,20 @@ namespace HZExporter.ShaderGraph
         SgConditionalBranch LowerBranch(SgNode node, int slotNum, string define, LowerCtx parentCtx)
         {
             int idx = parentCtx.NextBranchIndex();
+            // Build a tree-pathed prefix so nested KeywordNodes get unique
+            // temp names. Parent `_n` → `_b0_n`. Parent `_b0_n` → `_b0_b1_n`
+            // (with idx=1). Without this, a nested branch counter restarts
+            // at 0 and emits `_b0_n0` again, shadowing the outer branch's
+            // already-emitted `_b0_n0` and producing GLSL type errors when
+            // the conditional's result is assigned back.
+            string parentPath = parentCtx.TempPrefix.EndsWith("_n")
+                ? parentCtx.TempPrefix.Substring(0, parentCtx.TempPrefix.Length - 2)
+                : "";
             var branchCtx = new LowerCtx(parentCtx.Graph)
             {
                 IsVertexStage = parentCtx.IsVertexStage,
                 IsSubGraph = parentCtx.IsSubGraph,
-                TempPrefix = $"_b{idx}_n",
+                TempPrefix = $"{parentPath}_b{idx}_n",
             };
             // Lower the value flowing into the branch's input slot. This may
             // recursively emit temps into branchCtx.Statements (branch-local).
@@ -776,8 +791,13 @@ namespace HZExporter.ShaderGraph
             {
                 if (ctx.IsVertexStage)
                     throw new System.NotImplementedException("Tangent→World transform requires fragment-stage TBN");
+                // Normalize: tangent and bitangent aren't guaranteed orthonormal
+                // to v_normal post-interpolation, and downstream coverage masks
+                // take `.y` to test "is this face pointing up?" — without
+                // normalization the scalar isn't bounded to [-1, 1] and
+                // pow/contrast curves end up in nonsense regimes.
                 var rhs = Sg.RawTemplate(
-                    "(v_tangent * {0}.x + cross(v_normal, v_tangent) * v_bitangent_sign * {0}.y + v_normal * {0}.z)",
+                    "normalize(v_tangent * {0}.x + cross(v_normal, v_tangent) * v_bitangent_sign * {0}.y + v_normal * {0}.z)",
                     input.Rhs);
                 return ctx.EmitTemp(SgType.Vec3, rhs);
             }
@@ -986,7 +1006,7 @@ namespace HZExporter.ShaderGraph
             if (prop.Type == SgType.Texture2D)
                 return new SgValue
                 {
-                    Rhs = new SgRhsTextureRef { FieldName = prop.FieldName },
+                    Rhs = new SgRhsTextureRef { FieldName = prop.FieldName, IsNormalMap = prop.IsNormalMap },
                     Type = SgType.Texture2D,
                     IsTemp = false,
                 };
@@ -1069,9 +1089,17 @@ namespace HZExporter.ShaderGraph
 
             // Use RawTemplate so the UV's structural ref survives optimizer
             // renumbering — Sg.Raw bakes the temp name into a string and goes
-            // stale.
-            return ctx.EmitTemp(SgType.Vec4,
-                Sg.RawTemplate($"texture_sample({texRef.FieldName}, mat.{texRef.FieldName}, {{0}})", uvRhs));
+            // stale. For tangent-space normal-map properties (detected at
+            // parse time, see SgProperty.IsNormalMap), apply the [0,1]→[-1,1]
+            // decode that Unity does transparently at the texture importer
+            // level — without it, downstream world-space normal reconstructions
+            // would see flat sampler values (0.5, 0.5, 1.0) instead of zero
+            // perturbation, and any `normal.y > 0` style branching would also
+            // be wrong.
+            string template = texRef.IsNormalMap
+                ? $"vec4(texture_sample({texRef.FieldName}, mat.{texRef.FieldName}, {{0}}).xyz * 2.0 - 1.0, 1.0)"
+                : $"texture_sample({texRef.FieldName}, mat.{texRef.FieldName}, {{0}})";
+            return ctx.EmitTemp(SgType.Vec4, Sg.RawTemplate(template, uvRhs));
         }
     }
 
@@ -1189,6 +1217,26 @@ namespace HZExporter.ShaderGraph
             if (ra > 1 && rb > 1 && ra != rb)
                 return SgTypes.FromRank(System.Math.Min(ra, rb));
             return SgTypes.Promote(inT[0], inT[1]);
+        }
+
+        // For multi-arg builtins routed through Sg.CallPromote (mix, smoothstep,
+        // clamp, step, min, max, pow, mod), the call aligns all vector operands
+        // to the minimum vector rank present. The output type must match —
+        // i.e. min-rank over every operand with rank > 1. Scalars broadcast
+        // and don't pull the rank down.
+        static SgType PromoteAll(SgType[] inT)
+        {
+            int minRank = int.MaxValue;
+            int maxRank = 0;
+            foreach (var t in inT)
+            {
+                int r = SgTypes.Rank(t);
+                if (r <= 0) continue;          // matrix / unknown — out of scope
+                if (r > 1 && r < minRank) minRank = r;
+                if (r > maxRank) maxRank = r;
+            }
+            if (minRank == int.MaxValue) return SgTypes.FromRank(maxRank > 0 ? maxRank : 1);
+            return SgTypes.FromRank(minRank);
         }
     }
 }

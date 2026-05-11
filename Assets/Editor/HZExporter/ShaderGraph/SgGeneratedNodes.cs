@@ -24,7 +24,7 @@ namespace HZExporter.ShaderGraph
             Pattern("ArctangentNode", v => Sg.Call("atan", v[0].Rhs), SameAsIn, "In");
             Pattern("BranchNode", v => Sg.RawTemplate("({0} ? {1} : {2})", v[0].Rhs, v[1].Rhs, v[2].Rhs), PromoteAB, "Predicate", "True", "False");
             Pattern("CeilingNode", v => Sg.Call("ceil", v[0].Rhs), SameAsIn, "In");
-            Pattern("ClampNode", v => Sg.CallPromote("clamp", v[0], v[1], v[2]), PromoteAB, "In", "Min", "Max");
+            Pattern("ClampNode", v => Sg.CallPromote("clamp", v[0], v[1], v[2]), PromoteAll, "In", "Min", "Max");
             Pattern("ColorspaceConversionNode", v => Sg.RawTemplate("({0})", v[0].Rhs), _ => SgType.Vec3, "In");
             Pattern("ComparisonNode", v => Sg.RawTemplate("({0} == {1} ? 1 : 0)", v[0].Rhs, v[1].Rhs), _ => SgType.Bool, "A", "B");
             Pattern("CosineNode", v => Sg.Call("cos", v[0].Rhs), SameAsIn, "In");
@@ -44,13 +44,13 @@ namespace HZExporter.ShaderGraph
             Pattern("IsInfiniteNode", v => Sg.Call("isinf", v[0].Rhs), _ => SgType.Bool, "In");
             Pattern("IsNanNode", v => Sg.RawTemplate("(isnan({0}) ? 1 : 0)", v[0].Rhs), _ => SgType.Bool, "In");
             Pattern("LengthNode", v => Sg.Call("length", v[0].Rhs), _ => SgType.Float, "In");
-            Pattern("LerpNode", v => Sg.CallPromote("mix", v[0], v[1], v[2]), PromoteAB, "A", "B", "T");
+            Pattern("LerpNode", v => Sg.CallPromote("mix", v[0], v[1], v[2]), PromoteAll, "A", "B", "T");
             Pattern("LogNode", v => Sg.Call("log", v[0].Rhs), SameAsIn, "In");
             Pattern("MatrixDeterminantNode", v => Sg.Call("determinant", v[0].Rhs), _ => SgType.Float, "In");
             Pattern("MatrixTransposeNode", v => Sg.Call("transpose", v[0].Rhs), SameAsIn, "In");
-            Pattern("MaximumNode", v => Sg.CallPromote("max", v[0], v[1]), PromoteAB, "A", "B");
-            Pattern("MinimumNode", v => Sg.CallPromote("min", v[0], v[1]), PromoteAB, "A", "B");
-            Pattern("ModuloNode", v => Sg.CallPromote("mod", v[0], v[1]), PromoteAB, "A", "B");
+            Pattern("MaximumNode", v => Sg.CallPromote("max", v[0], v[1]), PromoteAll, "A", "B");
+            Pattern("MinimumNode", v => Sg.CallPromote("min", v[0], v[1]), PromoteAll, "A", "B");
+            Pattern("ModuloNode", v => Sg.CallPromote("mod", v[0], v[1]), PromoteAll, "A", "B");
             Pattern("NandNode", v => Sg.RawTemplate("(!({0} && {1}))", v[0].Rhs, v[1].Rhs), _ => SgType.Bool, "A", "B");
             Pattern("NegateNode", v => Sg.Bin("*", Sg.Lit(-1), v[0].Rhs), SameAsIn, "In");
             Pattern("NormalizeNode", v => Sg.Call("normalize", v[0].Rhs), SameAsIn, "In");
@@ -58,7 +58,11 @@ namespace HZExporter.ShaderGraph
             Pattern("OneMinusNode", v => Sg.Bin("-", Sg.Lit(1), v[0].Rhs), SameAsIn, "In");
             Pattern("OrNode", v => Sg.RawTemplate("({0} || {1})", v[0].Rhs, v[1].Rhs), _ => SgType.Bool, "A", "B");
             Pattern("PosterizeNode", v => Sg.RawTemplate("(floor({0} * {1}) / {1})", v[0].Rhs, v[1].Rhs), PromoteAB, "In", "Steps");
-            Pattern("PowerNode", v => Sg.CallPromote("pow", v[0], v[1]), PromoteAB, "A", "B");
+            // pow(negative, fractional) is undefined in GLSL. HLSL/Unity in
+            // practice returns 0, and Surface-style coverage shaders rely on
+            // that ("pow(level + normal.y, fade)" gives 0 on bottom-facing
+            // faces). Clamp the base to [0, +inf) so the GLSL impl matches.
+            Pattern("PowerNode", v => Sg.RawTemplate("pow(max({0}, 0.0), {1})", v[0].Rhs, v[1].Rhs), PromoteAll, "A", "B");
             Pattern("PreviewNode", v => Sg.RawTemplate("({0})", v[0].Rhs), SameAsIn, "In");
             Pattern("ProjectionNode", v => Sg.RawTemplate("({1} * dot({0}, {1}) / dot({1}, {1}))", v[0].Rhs, v[1].Rhs), PromoteAB, "A", "B");
             Pattern("RadiansToDegreesNode", v => Sg.Call("degrees", v[0].Rhs), SameAsIn, "In");
@@ -74,9 +78,9 @@ namespace HZExporter.ShaderGraph
             Pattern("SceneDepthNode", v => Sg.RawTemplate("(Linear01Depth(SHADERGRAPH_SAMPLE_SCENE_DEPTH({0}.xy), _ZBufferParams))", v[0].Rhs), _ => SgType.Float, "UV");
             Pattern("SignNode", v => Sg.Call("sign", v[0].Rhs), SameAsIn, "In");
             Pattern("SineNode", v => Sg.Call("sin", v[0].Rhs), SameAsIn, "In");
-            Pattern("SmoothstepNode", v => Sg.CallPromote("smoothstep", v[0], v[1], v[2]), PromoteAB, "Edge1", "Edge2", "In");
+            Pattern("SmoothstepNode", v => Sg.CallPromote("smoothstep", v[0], v[1], v[2]), PromoteAll, "Edge1", "Edge2", "In");
             Pattern("SquareRootNode", v => Sg.Call("sqrt", v[0].Rhs), SameAsIn, "In");
-            Pattern("StepNode", v => Sg.CallPromote("step", v[0], v[1]), PromoteAB, "Edge", "In");
+            Pattern("StepNode", v => Sg.CallPromote("step", v[0], v[1]), PromoteAll, "Edge", "In");
             Pattern("SubtractNode", v => Sg.BinPromote("-", v[0], v[1]), ArithPromote, "A", "B");
             Pattern("TangentNode", v => Sg.Call("tan", v[0].Rhs), SameAsIn, "In");
             Pattern("TilingAndOffsetNode", v => Sg.RawTemplate("({0} * {1} + {2})", v[0].Rhs, v[1].Rhs, v[2].Rhs), _ => SgType.Vec2, "UV", "Tiling", "Offset");
@@ -91,6 +95,21 @@ namespace HZExporter.ShaderGraph
             int ra = SgTypes.Rank(inT[0]), rb = SgTypes.Rank(inT[1]);
             if (ra > 1 && rb > 1 && ra != rb) return SgTypes.FromRank(System.Math.Min(ra, rb));
             return SgTypes.Promote(inT[0], inT[1]);
+        }
+        // Mirrors Sg.CallPromote: result rank = min over all vector operands
+        // (scalars broadcast and don't pull rank down).
+        static SgType PromoteAll(SgType[] inT)
+        {
+            int minRank = int.MaxValue, maxRank = 0;
+            foreach (var t in inT)
+            {
+                int r = SgTypes.Rank(t);
+                if (r <= 0) continue;
+                if (r > 1 && r < minRank) minRank = r;
+                if (r > maxRank) maxRank = r;
+            }
+            if (minRank == int.MaxValue) return SgTypes.FromRank(maxRank > 0 ? maxRank : 1);
+            return SgTypes.FromRank(minRank);
         }
     }
 }

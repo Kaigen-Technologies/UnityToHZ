@@ -242,7 +242,11 @@ def make_pattern(node) -> tuple[str | None, str | None]:
         if fn in PROMOTE_FNS and raw_args and all(a in arg_idx for a in raw_args):
             args = ", ".join(f"v[{arg_idx[a]}]" for a in raw_args)
             builder = f'v => Sg.CallPromote("{fn}", {args})'
-            return f'Pattern("{cls}", {builder}, {rule}, {slot_names});', None
+            # CallPromote truncates to the min vec rank across operands; the
+            # output rule has to match (otherwise the declared temp type and
+            # the actual RHS rank disagree → GLSL type error).
+            promote_rule = "PromoteAll" if rule == "PromoteAB" else rule
+            return f'Pattern("{cls}", {builder}, {promote_rule}, {slot_names});', None
         coded = [operand_rhs(a) for a in raw_args]
         if all(c is not None for c in coded):
             args = ", ".join(coded)
@@ -359,6 +363,19 @@ def main():
         f.write("            int ra = SgTypes.Rank(inT[0]), rb = SgTypes.Rank(inT[1]);\n")
         f.write("            if (ra > 1 && rb > 1 && ra != rb) return SgTypes.FromRank(System.Math.Min(ra, rb));\n")
         f.write("            return SgTypes.Promote(inT[0], inT[1]);\n")
+        f.write("        }\n")
+        f.write("        // Mirrors Sg.CallPromote: result rank = min over all vector operands\n")
+        f.write("        // (scalars broadcast and don't pull rank down).\n")
+        f.write("        static SgType PromoteAll(SgType[] inT)\n        {\n")
+        f.write("            int minRank = int.MaxValue, maxRank = 0;\n")
+        f.write("            foreach (var t in inT)\n            {\n")
+        f.write("                int r = SgTypes.Rank(t);\n")
+        f.write("                if (r <= 0) continue;\n")
+        f.write("                if (r > 1 && r < minRank) minRank = r;\n")
+        f.write("                if (r > maxRank) maxRank = r;\n")
+        f.write("            }\n")
+        f.write("            if (minRank == int.MaxValue) return SgTypes.FromRank(maxRank > 0 ? maxRank : 1);\n")
+        f.write("            return SgTypes.FromRank(minRank);\n")
         f.write("        }\n")
         f.write("    }\n}\n")
 

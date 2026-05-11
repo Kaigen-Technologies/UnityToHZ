@@ -291,10 +291,21 @@ namespace HZExporter
                         cm.properties.Add(new CustomProperty { slot = p.slot, kind = "color4", c4 = mat.GetColor(p.unity) });
                         break;
                     case "texture":
+                    case "texture_normal":
                     {
                         var tex = mat.GetTexture(p.unity) as Texture2D;
-                        if (tex == null) break;
-                        var readable = HZGlbWriter.MakeReadable(tex, false);
+                        if (tex == null)
+                        {
+                            Debug.LogWarning($"[HZShaderMap] '{mat.name}' has no Texture2D bound to '{p.unity}' (slot '{p.slot}') — skipping");
+                            break;
+                        }
+                        // Normal maps must be unpacked from Unity's DXT5nm layout
+                        // (X in alpha, Y in green) and blitted in linear space —
+                        // otherwise sampling returns gamma-corrected garbage and
+                        // the shader's [0,1]→[-1,1] decode produces meaningless
+                        // perturbations. Plain textures stay sRGB.
+                        bool isNormal = p.kind == "texture_normal";
+                        var readable = HZGlbWriter.MakeReadable(tex, isNormal);
                         HZGlbWriter.PadTo4(bin);
                         int off = (int)bin.Position;
                         byte[] png = readable.EncodeToPNG();
