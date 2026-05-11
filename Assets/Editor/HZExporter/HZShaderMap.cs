@@ -193,6 +193,11 @@ namespace HZExporter
             public bool isTransparent;                 // mirrors MaterialBlobAsset.is_transparent
             public BlendState blend;                   // optional, null → cooker default from isTransparent
             public List<CustomProperty> properties = new List<CustomProperty>();
+            // Engine MaterialKeywordBlob list. Populated from the material's
+            // shadergraph keyword catalog at export time. Boolean keywords
+            // appear only when ON; enum keywords always appear with their
+            // currently-selected entry.
+            public List<HZKeywordReader.KeywordKV> keywords = new List<HZKeywordReader.KeywordKV>();
         }
 
         // Slot → PBR role. Expanded later when custom engine shaders need non-PBR routing.
@@ -345,6 +350,7 @@ namespace HZExporter
                 isTransparent = entry.isTransparent,
                 blend = entry.blend,
                 properties = new List<CustomProperty>(),
+                keywords = HZKeywordReader.ReadEnabled(mat),
             };
 
             foreach (var p in entry.properties ?? new List<PropertyMap>())

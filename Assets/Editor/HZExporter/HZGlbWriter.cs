@@ -1304,7 +1304,25 @@ namespace HZExporter
                         break;
                 }
             }
-            json.Append("\n          ]\n");
+            json.Append("\n          ]");
+            // Engine-side MaterialBlobAsset.keywords. Always emit the array
+            // (possibly empty) so the cooker sees a deterministic shape; an
+            // empty array maps to BlobArray.len = 0 with no variant selection
+            // pressure.
+            json.Append(",\n          \"keywords\": [");
+            if (cm.keywords != null && cm.keywords.Count > 0)
+            {
+                json.Append("\n");
+                for (int i = 0; i < cm.keywords.Count; i++)
+                {
+                    var k = cm.keywords[i];
+                    if (i > 0) json.Append(",\n");
+                    json.Append("            { \"name\": \"" + EscapeJson(k.name ?? "") +
+                                "\", \"value\": \"" + EscapeJson(k.value ?? "") + "\" }");
+                }
+                json.Append("\n          ");
+            }
+            json.Append("]\n");
             json.Append("        }\n      }\n    }");
         }
 
