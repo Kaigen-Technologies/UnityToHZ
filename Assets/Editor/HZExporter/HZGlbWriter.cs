@@ -50,6 +50,7 @@ namespace HZExporter
             var tangents = mesh.tangents;
             var uvs = mesh.uv;
             var uvs1 = mesh.uv2;   // Unity's mesh.uv2 == UV1 / glTF TEXCOORD_1 / engine uvs1
+            var colors = mesh.colors32;  // glTF COLOR_0 — engine fills (1,1,1,1) when absent
             int vertexCount = mesh.vertexCount;
             bool useU16 = vertexCount <= 65535;
             int submeshCount = Math.Max(1, mesh.subMeshCount);
@@ -159,6 +160,24 @@ namespace HZExporter
             }
             int uv1Size = (int)bin.Position - uv1Offset;
 
+            // COLOR_0 — vertex colors, RGBA u8 normalized. Only emit when the
+            // mesh actually has per-vertex colors authored; engine path fills
+            // (1,1,1,1) by default when the attribute is absent.
+            int colorOffset = (int)bin.Position;
+            bool hasColors = colors != null && colors.Length == vertexCount;
+            if (hasColors)
+            {
+                for (int i = 0; i < vertexCount; i++)
+                {
+                    bin.WriteByte(colors[i].r);
+                    bin.WriteByte(colors[i].g);
+                    bin.WriteByte(colors[i].b);
+                    bin.WriteByte(colors[i].a);
+                }
+                // 4-byte stride — already padded by definition (RGBA u8 = 4 bytes per vert).
+            }
+            int colorSize = (int)bin.Position - colorOffset;
+
             // --- Embedded textures (per material) ---
             // Materials route either via PBR (shader_mapping.json default) or, when the entry is
             // marked customShader:true, via HZShaderMap.EmbedCustomMaterial — the latter yields a
@@ -229,6 +248,13 @@ namespace HZExporter
                 uv1BV = bvIdx++;
             }
 
+            int colorBV = -1;
+            if (hasColors)
+            {
+                bufferViews.Add(new { buffer = 0, byteOffset = colorOffset, byteLength = colorSize, byteStride = 4 });
+                colorBV = bvIdx++;
+            }
+
             int[] imageBVs = new int[imageEntries.Count];
             for (int ii = 0; ii < imageEntries.Count; ii++)
             {
@@ -270,36 +296,39 @@ namespace HZExporter
                 json.Append($"    {{ \"bufferView\": {submeshIndicesBV[s]}, \"componentType\": {(useU16 ? UNSIGNED_SHORT : UNSIGNED_INT)}, \"count\": {submeshIndexInfo[s].count}, \"type\": \"SCALAR\" }},\n");
                 submeshIndicesAcc[s] = accIdx++;
             }
+            // Build remaining accessors into a list so we can comma-join without
+            // re-counting which ones are still to come.
+            var trailingAcc = new List<string>();
             int posAcc = accIdx++;
-            json.Append($"    {{ \"bufferView\": {posBV}, \"componentType\": {FLOAT}, \"count\": {vertexCount}, \"type\": \"VEC3\", ");
-            json.Append($"\"min\": [{F(posMin[0])}, {F(posMin[1])}, {F(posMin[2])}], \"max\": [{F(posMax[0])}, {F(posMax[1])}, {F(posMax[2])}] }},\n");
+            trailingAcc.Add($"    {{ \"bufferView\": {posBV}, \"componentType\": {FLOAT}, \"count\": {vertexCount}, \"type\": \"VEC3\", \"min\": [{F(posMin[0])}, {F(posMin[1])}, {F(posMin[2])}], \"max\": [{F(posMax[0])}, {F(posMax[1])}, {F(posMax[2])}] }}");
             int normAcc = accIdx++;
-            json.Append($"    {{ \"bufferView\": {normBV}, \"componentType\": {FLOAT}, \"count\": {vertexCount}, \"type\": \"VEC3\" }}");
-            if (hasTangents || hasUVs || hasUV1) json.Append(",");
-            json.Append("\n");
+            trailingAcc.Add($"    {{ \"bufferView\": {normBV}, \"componentType\": {FLOAT}, \"count\": {vertexCount}, \"type\": \"VEC3\" }}");
             int tanAcc = -1;
             if (hasTangents)
             {
                 tanAcc = accIdx++;
-                json.Append($"    {{ \"bufferView\": {tanBV}, \"componentType\": {FLOAT}, \"count\": {vertexCount}, \"type\": \"VEC4\" }}");
-                if (hasUVs || hasUV1) json.Append(",");
-                json.Append("\n");
+                trailingAcc.Add($"    {{ \"bufferView\": {tanBV}, \"componentType\": {FLOAT}, \"count\": {vertexCount}, \"type\": \"VEC4\" }}");
             }
             int uvAcc = -1;
             if (hasUVs)
             {
                 uvAcc = accIdx++;
-                json.Append($"    {{ \"bufferView\": {uvBV}, \"componentType\": {FLOAT}, \"count\": {vertexCount}, \"type\": \"VEC2\" }}");
-                if (hasUV1) json.Append(",");
-                json.Append("\n");
+                trailingAcc.Add($"    {{ \"bufferView\": {uvBV}, \"componentType\": {FLOAT}, \"count\": {vertexCount}, \"type\": \"VEC2\" }}");
             }
             int uv1Acc = -1;
             if (hasUV1)
             {
                 uv1Acc = accIdx++;
-                json.Append($"    {{ \"bufferView\": {uv1BV}, \"componentType\": {FLOAT}, \"count\": {vertexCount}, \"type\": \"VEC2\" }}\n");
+                trailingAcc.Add($"    {{ \"bufferView\": {uv1BV}, \"componentType\": {FLOAT}, \"count\": {vertexCount}, \"type\": \"VEC2\" }}");
             }
-            json.Append("  ],\n");
+            int colorAcc = -1;
+            if (hasColors)
+            {
+                colorAcc = accIdx++;
+                trailingAcc.Add($"    {{ \"bufferView\": {colorBV}, \"componentType\": {UNSIGNED_BYTE}, \"normalized\": true, \"count\": {vertexCount}, \"type\": \"VEC4\" }}");
+            }
+            json.Append(string.Join(",\n", trailingAcc));
+            json.Append("\n  ],\n");
 
             // Images + textures
             if (imageEntries.Count > 0)
@@ -379,6 +408,7 @@ namespace HZExporter
                 if (tanAcc >= 0) json.Append($", \"TANGENT\": {tanAcc}");
                 if (uvAcc >= 0) json.Append($", \"TEXCOORD_0\": {uvAcc}");
                 if (uv1Acc >= 0) json.Append($", \"TEXCOORD_1\": {uv1Acc}");
+                if (colorAcc >= 0) json.Append($", \"COLOR_0\": {colorAcc}");
                 json.Append(" },\n");
                 json.Append($"        \"material\": {matRef}\n");
                 json.Append("      }");
@@ -503,10 +533,11 @@ namespace HZExporter
                 return idx;
             }
 
-            int AddAcc(int bv, int compType, int count, string type, float[] min = null, float[] max = null)
+            int AddAcc(int bv, int compType, int count, string type, float[] min = null, float[] max = null, bool normalized = false)
             {
                 int idx = accList.Count;
                 string s = $"    {{ \"bufferView\": {bv}, \"componentType\": {compType}, \"count\": {count}, \"type\": \"{type}\"";
+                if (normalized) s += ", \"normalized\": true";
                 if (min != null && max != null)
                 {
                     s += ", \"min\": [" + string.Join(", ", Array.ConvertAll(min, v => F(v))) + "]";
@@ -536,6 +567,7 @@ namespace HZExporter
                 var tangents = mesh.tangents;
                 var uvs = mesh.uv;
                 var uvs1 = mesh.uv2;   // UV1 / glTF TEXCOORD_1 / engine uvs1
+                var colors = mesh.colors32;  // glTF COLOR_0
                 int submeshCount = Math.Max(1, mesh.subMeshCount);
                 bool useU16 = vertexCount <= 65535;
 
@@ -647,6 +679,19 @@ namespace HZExporter
                     }
                 int uv1Size = (int)bin.Position - uv1Off;
 
+                // Vertex colors (RGBA u8 normalized) — only emit when authored.
+                int colorOff = (int)bin.Position;
+                bool hasColors = colors != null && colors.Length == vertexCount;
+                if (hasColors)
+                    for (int i = 0; i < vertexCount; i++)
+                    {
+                        bin.WriteByte(colors[i].r);
+                        bin.WriteByte(colors[i].g);
+                        bin.WriteByte(colors[i].b);
+                        bin.WriteByte(colors[i].a);
+                    }
+                int colorSize = (int)bin.Position - colorOff;
+
                 // Joint indices: u8 when skeleton has ≤256 joints, else u16 (glTF spec allows both).
                 // Unity meshes with many bones (e.g. characters with dynamic bone chains) blow past 255
                 // and a (byte) cast silently wraps, mis-skinning every vertex weighted to a high-index bone.
@@ -689,6 +734,7 @@ namespace HZExporter
                 int tanBV = hasTan ? AddBV(tanOff, tanSize, 16) : -1;
                 int uvBV = hasUV ? AddBV(uvOff, uvSize, 8) : -1;
                 int uv1BV = hasUV1 ? AddBV(uv1Off, uv1Size, 8) : -1;
+                int colorBV = hasColors ? AddBV(colorOff, colorSize, 4) : -1;
                 int jiBV = AddBV(jiOff, jiSize, jointsU16 ? 8 : 4);
                 int jwBV = AddBV(jwOff, jwSize, 16);
 
@@ -697,6 +743,7 @@ namespace HZExporter
                 int tanAcc = hasTan ? AddAcc(tanBV, FLOAT, vertexCount, "VEC4") : -1;
                 int uvAcc = hasUV ? AddAcc(uvBV, FLOAT, vertexCount, "VEC2") : -1;
                 int uv1Acc = hasUV1 ? AddAcc(uv1BV, FLOAT, vertexCount, "VEC2") : -1;
+                int colorAcc = hasColors ? AddAcc(colorBV, UNSIGNED_BYTE, vertexCount, "VEC4", null, null, normalized: true) : -1;
                 int jiAcc = AddAcc(jiBV, jointsU16 ? UNSIGNED_SHORT : UNSIGNED_BYTE, vertexCount, "VEC4");
                 int jwAcc = AddAcc(jwBV, FLOAT, vertexCount, "VEC4");
 
@@ -707,7 +754,7 @@ namespace HZExporter
                     subAccs[s] = AddAcc(subBV, useU16 ? UNSIGNED_SHORT : UNSIGNED_INT, smrSubmeshInfo[s].count, "SCALAR");
                 }
 
-                sharedAccs[mi] = new int[] { posAcc, normAcc, tanAcc, uvAcc, jiAcc, jwAcc, uv1Acc };
+                sharedAccs[mi] = new int[] { posAcc, normAcc, tanAcc, uvAcc, jiAcc, jwAcc, uv1Acc, colorAcc };
                 submeshIndicesAccs[mi] = subAccs;
             }
 
@@ -1034,7 +1081,7 @@ namespace HZExporter
             for (int mi = 0; mi < meshCount; mi++)
             {
                 if (mi > 0) json.Append(",\n");
-                var acc = sharedAccs[mi];           // [posAcc, normAcc, tanAcc, uvAcc, jointsAcc, weightsAcc, uv1Acc]
+                var acc = sharedAccs[mi];           // [posAcc, normAcc, tanAcc, uvAcc, jointsAcc, weightsAcc, uv1Acc, colorAcc]
                 int[] subAccs = submeshIndicesAccs[mi];
                 int[] matRow = matIndexPerSmr[mi];
                 string meshName = smrs[mi].sharedMesh.name ?? $"mesh_{mi}";
@@ -1046,6 +1093,7 @@ namespace HZExporter
                     if (acc[2] >= 0) json.Append($", \"TANGENT\": {acc[2]}");
                     if (acc[3] >= 0) json.Append($", \"TEXCOORD_0\": {acc[3]}");
                     if (acc[6] >= 0) json.Append($", \"TEXCOORD_1\": {acc[6]}");
+                    if (acc[7] >= 0) json.Append($", \"COLOR_0\": {acc[7]}");
                     json.Append($", \"JOINTS_0\": {acc[4]}, \"WEIGHTS_0\": {acc[5]}");
                     int matIdx = matRow[Math.Min(s, matRow.Length - 1)];
                     json.Append($" }}, \"material\": {matIdx} }}");
@@ -1206,11 +1254,28 @@ namespace HZExporter
             json.Append("      \"extras\": {\n        \"hz_material\": {\n");
             json.Append($"          \"material_shader\": \"{EscapeJson(cm.shaderPath ?? "")}\",\n");
             json.Append("          \"depth_test\": true,\n");
-            json.Append("          \"depth_write\": true,\n");
+            json.Append($"          \"depth_write\": {(cm.isTransparent ? "false" : "true")},\n");
             json.Append("          \"depth_compare\": \"GPU_COMPARE_GREATER_EQUAL\",\n");
             json.Append("          \"cull_mode\": \"GPU_CULL_BACK\",\n");
-            json.Append("          \"is_transparent\": false,\n");
+            json.Append($"          \"is_transparent\": {(cm.isTransparent ? "true" : "false")},\n");
             json.Append("          \"alpha_cutoff\": false,\n");
+            // Emit explicit blend block when shader_mapping.json specifies one;
+            // otherwise the cooker defaults from is_transparent (alpha-blend
+            // for true, disabled for false). Emitting only when set keeps the
+            // door open for the cooker default and avoids hardcoding policy
+            // here.
+            if (cm.blend != null)
+            {
+                json.Append("          \"blend\": {\n");
+                json.Append($"            \"enabled\": {(cm.blend.enabled ? "true" : "false")},\n");
+                json.Append($"            \"src_factor\": \"GPU_BLEND_{cm.blend.src_factor ?? "SRC_ALPHA"}\",\n");
+                json.Append($"            \"dst_factor\": \"GPU_BLEND_{cm.blend.dst_factor ?? "ONE_MINUS_SRC_ALPHA"}\",\n");
+                json.Append($"            \"op\": \"GPU_BLEND_OP_{cm.blend.op ?? "ADD"}\",\n");
+                json.Append($"            \"src_factor_alpha\": \"GPU_BLEND_{cm.blend.src_factor_alpha ?? "ONE"}\",\n");
+                json.Append($"            \"dst_factor_alpha\": \"GPU_BLEND_{cm.blend.dst_factor_alpha ?? "ONE_MINUS_SRC_ALPHA"}\",\n");
+                json.Append($"            \"op_alpha\": \"GPU_BLEND_OP_{cm.blend.op_alpha ?? "ADD"}\"\n");
+                json.Append("          },\n");
+            }
             json.Append("          \"properties\": [\n");
             for (int i = 0; i < cm.properties.Count; i++)
             {
@@ -1221,6 +1286,12 @@ namespace HZExporter
                 {
                     case "float":
                         json.Append("\"type\": \"MAT_PROP_FLOAT\", \"f\": " + F(p.f) + " }");
+                        break;
+                    case "vec2":
+                        json.Append("\"type\": \"MAT_PROP_VEC2\", \"v2\": [" + F(p.v2.x) + ", " + F(p.v2.y) + "] }");
+                        break;
+                    case "vec3":
+                        json.Append("\"type\": \"MAT_PROP_VEC3\", \"v3\": [" + F(p.v3.x) + ", " + F(p.v3.y) + ", " + F(p.v3.z) + "] }");
                         break;
                     case "color4":
                         json.Append("\"type\": \"MAT_PROP_COLOR4\", \"c4\": [" + F(p.c4.r) + ", " + F(p.c4.g) + ", " + F(p.c4.b) + ", " + F(p.c4.a) + "] }");

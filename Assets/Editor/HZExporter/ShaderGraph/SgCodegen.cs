@@ -105,6 +105,17 @@ namespace HZExporter.ShaderGraph
             var functions = new StringBuilder();
             foreach (var fn in allFunctions) functions.Append(FormatFunction(fn)).Append('\n');
 
+            // Helper functions (e.g. _hz_gradient_noise) — emit per-stage so
+            // each compilation unit (`@vs` and `@fs` are independent SPIR-V
+            // units) gets the definitions it actually needs. Vegetation's
+            // wind sway calls _hz_gradient_noise from the vertex stage; a
+            // fragment-only declaration there would error with "no matching
+            // overloaded function" on every vertex call site.
+            var fsHelpers = new StringBuilder();
+            foreach (var h in ctx.HelperFunctions) fsHelpers.Append(h.body).Append("\n\n");
+            var vsHelpers = new StringBuilder();
+            foreach (var h in vsCtx.HelperFunctions) vsHelpers.Append(h.body).Append("\n\n");
+
             // ----- format bodies -------------------------------------------
             var vsBody = new StringBuilder();
             EmitStatementsWithGroupHeaders(vsBody, vsCtx.Statements, g);
@@ -118,10 +129,38 @@ namespace HZExporter.ShaderGraph
                 body.Append("    if (alpha < alpha_clip_threshold) discard;\n");
             string bodyStr = body.ToString().TrimEnd('\n');
 
+            // Only emit the vertex-stage material mirror when something in
+            // the vertex stage actually reads material data. Detect via the
+            // `mat.` substring in the rendered vsBody (the optimizer leaves
+            // those references intact since `mat` is an opaque struct ref).
+            string vsBodyStr = vsBody.ToString();
+            bool vsNeedsMaterial = vsBodyStr.Contains("mat.");
+            string vsMaterial = vsNeedsMaterial ? FormatVertexMaterialMirror(g) : "";
+            string vsMatUnpack = vsNeedsMaterial
+                ? "    MaterialFS mat = MaterialFS_unpack(v.material_offset);\n"
+                : "";
+
+            // Engine feature defines that gate `hz_scene_color` /
+            // `hz_scene_depth_linear` (and the underlying *_sample macros)
+            // inside renderer_shaders.glsl. Only emit them when the fragment
+            // body OR any emitted subgraph/helper function calls them;
+            // otherwise we'd force the renderer to bind a scene-color copy /
+            // depth SRV unnecessarily. Subgraphs (e.g. DepthFade) inline the
+            // helper inside the function body, so we must scan that string too.
+            string fsScan = bodyStr + functions.ToString() + fsHelpers.ToString();
+            var fsDefines = new StringBuilder();
+            if (fsScan.Contains("hz_scene_color"))        fsDefines.AppendLine("#define HZ_RENDERER_SCENE_COLOR");
+            if (fsScan.Contains("hz_scene_depth_linear")) fsDefines.AppendLine("#define HZ_RENDERER_SCENE_DEPTH");
+
             return template
                 .Replace("${MATERIAL_STRUCT}", FormatMaterialStruct(g))
+                .Replace("${VS_MATERIAL}",    vsMaterial)
+                .Replace("${VS_MAT_UNPACK}",  vsMatUnpack)
+                .Replace("${VS_HELPERS}",   vsHelpers.ToString())
+                .Replace("${HELPERS}",      fsHelpers.ToString())
+                .Replace("${FS_FEATURE_DEFINES}", fsDefines.ToString())
                 .Replace("${FUNCTIONS}", functions.ToString())
-                .Replace("${VERTEX_BODY}", vsBody.ToString())
+                .Replace("${VERTEX_BODY}", vsBodyStr)
                 .Replace("${VS_POS}",      vsPos)
                 .Replace("${VS_NORMAL}",   vsNormal)
                 .Replace("${VS_TANGENT}",  vsTangent)
@@ -204,6 +243,80 @@ namespace HZExporter.ShaderGraph
         // order. Texture properties get the @texture2D annotation. Graphs
         // with no exposed properties still get a single placeholder field
         // (the engine compiler requires at least one).
+        // The engine's preprocessor expands the @material block in @fs only —
+        // it emits the MaterialFS struct, DECLARE_TEXTURE() calls, and the
+        // MaterialFS_unpack() helper. When a graph reads material uniforms in
+        // its vertex stage (wind/bend displacement, etc.) we have to mirror
+        // the struct + unpack as plain GLSL since hz_materials.data[] is
+        // bound in both stages but MaterialFS isn't. We use the same struct
+        // name so `mat.X` references emit identically across stages.
+        //
+        // Texture fields stay as `uint` (just storage indices); the actual
+        // sampler bindings are fragment-only and the vertex stage shouldn't
+        // sample anyway. Bool fields are stored as `float` to match the
+        // fragment-side rewrite in FormatMaterialStruct.
+        static string FormatVertexMaterialMirror(SgGraph g)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine();
+            sb.AppendLine("// vertex-stage material accessors (mirrors the @fs MaterialFS that the");
+            sb.AppendLine("// engine preprocessor generates — needed when the graph's vertex stage");
+            sb.AppendLine("// reads material uniforms, e.g. wind/bend displacement).");
+            sb.AppendLine("struct MaterialFS {");
+            if (g.Properties.Count == 0)
+            {
+                sb.AppendLine("    vec4 _placeholder;");
+            }
+            else
+            {
+                foreach (var p in g.Properties)
+                {
+                    if (p.Type == SgType.SamplerState) continue;
+                    string ty = p.Type == SgType.Texture2D ? "uint"
+                              : p.Type == SgType.Bool      ? "float"
+                                                            : SgTypes.Glsl(p.Type);
+                    sb.Append("    ").Append(ty).Append(' ').Append(p.FieldName).AppendLine(";");
+                }
+            }
+            sb.AppendLine("};");
+            sb.AppendLine("MaterialFS MaterialFS_unpack(uint material_offset) {");
+            sb.AppendLine("    uint mbase = material_offset;");
+            sb.AppendLine("    MaterialFS m;");
+            foreach (var p in g.Properties)
+            {
+                if (p.Type == SgType.SamplerState) continue;
+                string field = "m." + p.FieldName;
+                if (p.Type == SgType.Texture2D)
+                {
+                    sb.AppendLine($"    {field} = hz_materials.data[mbase++];");
+                }
+                else if (p.Type == SgType.Float || p.Type == SgType.Bool)
+                {
+                    sb.AppendLine($"    {field} = uintBitsToFloat(hz_materials.data[mbase++]);");
+                }
+                else if (p.Type == SgType.Vec2)
+                {
+                    sb.AppendLine($"    {field} = vec2(uintBitsToFloat(hz_materials.data[mbase++]), uintBitsToFloat(hz_materials.data[mbase++]));");
+                }
+                else if (p.Type == SgType.Vec3)
+                {
+                    sb.AppendLine($"    {field} = vec3(uintBitsToFloat(hz_materials.data[mbase++]), uintBitsToFloat(hz_materials.data[mbase++]), uintBitsToFloat(hz_materials.data[mbase++]));");
+                }
+                else if (p.Type == SgType.Vec4)
+                {
+                    sb.AppendLine($"    {field} = vec4(uintBitsToFloat(hz_materials.data[mbase++]), uintBitsToFloat(hz_materials.data[mbase++]), uintBitsToFloat(hz_materials.data[mbase++]), uintBitsToFloat(hz_materials.data[mbase++]));");
+                }
+                else
+                {
+                    // Fall-through: emit a comment so the gap is visible.
+                    sb.AppendLine($"    // TODO: vs material unpack for type {p.Type} on field '{p.FieldName}'");
+                }
+            }
+            sb.AppendLine("    return m;");
+            sb.AppendLine("}");
+            return sb.ToString();
+        }
+
         static string FormatMaterialStruct(SgGraph g)
         {
             var sb = new StringBuilder();
@@ -340,15 +453,18 @@ namespace HZExporter.ShaderGraph
 @"@vs
 out vec2 v_uv;
 out vec2 v_uv1;
+out vec4 v_color;
 flat out uint v_material_offset;
 out vec3 v_normal;
-
+${VS_MATERIAL}
+${VS_HELPERS}
 void main() {
     VertexInstanceData v = unpack_instance_data();
-${VERTEX_BODY}    vec4 world_pos = v.model * vec4(${VS_POS}, 1.0);
+${VS_MAT_UNPACK}${VERTEX_BODY}    vec4 world_pos = v.model * vec4(${VS_POS}, 1.0);
     gl_Position = hz_scene.view_proj * world_pos;
     v_uv = v.uv;
     v_uv1 = vec2(v.uv1.x, 1.0 - v.uv1.y);
+    v_color = v.color;
     v_material_offset = v.material_offset;
     v_normal = normalize((v.model * vec4(${VS_NORMAL}, 0.0)).xyz);
 }
@@ -356,14 +472,15 @@ ${VERTEX_BODY}    vec4 world_pos = v.model * vec4(${VS_POS}, 1.0);
 
 @fs
 #define HZ_RENDERER_LIGHTING_BASIC
-in vec2 v_uv;
+${FS_FEATURE_DEFINES}in vec2 v_uv;
 in vec2 v_uv1;
+in vec4 v_color;
 flat in uint v_material_offset;
 in vec3 v_normal;
 out vec4 frag_color;
 
 ${MATERIAL_STRUCT}
-${FUNCTIONS}void main() {
+${HELPERS}${FUNCTIONS}void main() {
     MaterialFS mat = MaterialFS_unpack(v_material_offset);
 ${MAIN_BODY}
     frag_color = vec4(base_color, 1.0);
@@ -378,14 +495,16 @@ out vec3 v_world_pos;
 out vec3 v_normal;
 out vec2 v_uv;
 out vec2 v_uv1;
+out vec4 v_color;
 flat out uint v_material_offset;
 out vec3 v_tangent;
 out float v_bitangent_sign;
 out float v_view_depth;
-
+${VS_MATERIAL}
+${VS_HELPERS}
 void main() {
     VertexInstanceData v = unpack_instance_data();
-${VERTEX_BODY}    vec4 world_pos = v.model * vec4(${VS_POS}, 1.0);
+${VS_MAT_UNPACK}${VERTEX_BODY}    vec4 world_pos = v.model * vec4(${VS_POS}, 1.0);
     gl_Position = hz_scene.view_proj * world_pos;
     v_world_pos = world_pos.xyz;
     v_normal = normalize((v.model * vec4(${VS_NORMAL}, 0.0)).xyz);
@@ -393,6 +512,7 @@ ${VERTEX_BODY}    vec4 world_pos = v.model * vec4(${VS_POS}, 1.0);
     v_bitangent_sign = v.bitangent_sign;
     v_uv = v.uv;
     v_uv1 = vec2(v.uv1.x, 1.0 - v.uv1.y);
+    v_color = v.color;
     v_material_offset = v.material_offset;
     v_view_depth = -(hz_scene.view * world_pos).z;
 }
@@ -402,10 +522,11 @@ ${VERTEX_BODY}    vec4 world_pos = v.model * vec4(${VS_POS}, 1.0);
 #define HZ_RENDERER_SHADOWS
 #define HZ_RENDERER_IBL
 #define HZ_RENDERER_LIGHTING_CLUSTERS
-in vec3 v_world_pos;
+${FS_FEATURE_DEFINES}in vec3 v_world_pos;
 in vec3 v_normal;
 in vec2 v_uv;
 in vec2 v_uv1;
+in vec4 v_color;
 flat in uint v_material_offset;
 in vec3 v_tangent;
 in float v_bitangent_sign;
@@ -413,7 +534,7 @@ in float v_view_depth;
 out vec4 frag_color;
 
 ${MATERIAL_STRUCT}
-${FUNCTIONS}void main() {
+${HELPERS}${FUNCTIONS}void main() {
     MaterialFS mat = MaterialFS_unpack(v_material_offset);
 ${MAIN_BODY}
     vec3 N = apply_normal_map(v_normal, v_tangent, v_bitangent_sign, normal_ts);

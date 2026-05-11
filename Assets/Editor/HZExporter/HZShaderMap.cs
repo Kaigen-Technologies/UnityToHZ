@@ -33,7 +33,52 @@ namespace HZExporter
             // uniform names, not glTF PBR roles). The exporter routes these to a separate
             // material .hzt instead of the GLB-embedded PBR path.
             public bool customShader;
+            // Set on shaders whose Lit Master Node has SurfaceType=Transparent.
+            // Drives MaterialBlobAsset.is_transparent (routes the draw into the
+            // transparent batch after scene_color copy + depth read-only). Blend
+            // mode is separate — see `blend` below.
+            public bool isTransparent;
+            // Optional explicit pipeline blend state. When omitted (null), the
+            // cooker defaults isTransparent=true → standard alpha blend
+            // (SRC_ALPHA/ONE_MINUS_SRC_ALPHA), isTransparent=false → disabled.
+            // Set explicitly for manual-composite shaders (ONE/ZERO) or
+            // additive (ONE/ONE).
+            public BlendState blend;
             public List<PropertyMap> properties;
+        }
+
+        /// <summary>Per-shader override for MaterialBlobAsset.blend (GpuBlendState).
+        /// Field names match the engine struct exactly so they round-trip through
+        /// the cooker. Factor/op enums use the engine token names without the
+        /// `GPU_BLEND_` prefix (e.g. "SRC_ALPHA", "ONE_MINUS_SRC_ALPHA", "ADD").</summary>
+        [System.Serializable]
+        public class BlendState
+        {
+            public bool enabled;
+            public string src_factor;
+            public string dst_factor;
+            public string op;
+            public string src_factor_alpha;
+            public string dst_factor_alpha;
+            public string op_alpha;
+        }
+
+        /// <summary>
+        /// Maps a Unity ShaderGraph CustomFunctionNode (identified by its
+        /// m_FunctionName, e.g. "MainLight") onto an engine-side helper that
+        /// returns a struct. The exporter emits
+        ///   <structType> _tN = <engineCall>(args…);
+        /// and projects each of the node's output slots onto the struct's
+        /// fields. `structFields` lists the field names in slot-OutputName
+        /// (snake-cased) form, used only for validation.
+        /// </summary>
+        [System.Serializable]
+        public class CustomFunctionMap
+        {
+            public string name;            // Unity function name (m_FunctionName)
+            public string engineCall;      // GLSL function the engine provides
+            public string structType;      // GLSL struct returned by engineCall
+            public List<string> structFields;  // snake_case field names
         }
 
         [System.Serializable]
@@ -41,10 +86,12 @@ namespace HZExporter
         {
             public string @default;
             public List<ShaderEntry> shaders;
+            public List<CustomFunctionMap> customFunctions;
         }
 
         // ---- Loader (reloads automatically when the JSON's mtime changes) ----
         static Dictionary<string, ShaderEntry> s_byShader;
+        static Dictionary<string, CustomFunctionMap> s_customFunctions;
         static ShaderEntry s_default;
         static System.DateTime s_mtime;
 
@@ -56,6 +103,7 @@ namespace HZExporter
             if (s_byShader != null && mtime == s_mtime) return;
 
             s_byShader = new Dictionary<string, ShaderEntry>();
+            s_customFunctions = new Dictionary<string, CustomFunctionMap>();
             s_mtime = mtime;
             if (!exists)
             {
@@ -73,14 +121,29 @@ namespace HZExporter
                         s_byShader[e.unityShader] = e;
                 }
             }
+            if (raw?.customFunctions != null)
+            {
+                foreach (var f in raw.customFunctions)
+                {
+                    if (!string.IsNullOrEmpty(f.name)) s_customFunctions[f.name] = f;
+                }
+            }
             if (!string.IsNullOrEmpty(raw?.@default) && s_byShader.TryGetValue(raw.@default, out var def))
                 s_default = def;
             else
                 s_default = new ShaderEntry { properties = new List<PropertyMap>() };
         }
 
+        /// <summary>Lookup an engine helper mapping for a Unity custom-function name. Null if unmapped.</summary>
+        public static CustomFunctionMap LookupCustomFunction(string functionName)
+        {
+            EnsureLoaded();
+            if (string.IsNullOrEmpty(functionName)) return null;
+            return s_customFunctions.TryGetValue(functionName, out var m) ? m : null;
+        }
+
         /// <summary>Force a reload on the next lookup.</summary>
-        public static void Reload() { s_byShader = null; s_default = null; s_mtime = System.DateTime.MinValue; }
+        public static void Reload() { s_byShader = null; s_customFunctions = null; s_default = null; s_mtime = System.DateTime.MinValue; }
 
         /// <summary>Lookup the mapping entry for a material's shader, falling back to the default.</summary>
         public static ShaderEntry Lookup(Material mat)
@@ -114,8 +177,10 @@ namespace HZExporter
         public struct CustomProperty
         {
             public string slot;        // engine uniform name (snake_case)
-            public string kind;        // "float" | "color4" | "texture"
+            public string kind;        // "float" | "vec2" | "vec3" | "color4" | "texture"
             public float f;
+            public Vector2 v2;
+            public Vector3 v3;
             public Color c4;
             public int textureIndex;   // index into glTF textures[] (= imageEntries index)
         }
@@ -125,6 +190,8 @@ namespace HZExporter
         public class CustomMaterial
         {
             public string shaderPath;                  // engine shader path (e.g. shaders/lofi_basic_material.hza)
+            public bool isTransparent;                 // mirrors MaterialBlobAsset.is_transparent
+            public BlendState blend;                   // optional, null → cooker default from isTransparent
             public List<CustomProperty> properties = new List<CustomProperty>();
         }
 
@@ -275,6 +342,8 @@ namespace HZExporter
             {
                 shaderPath = (skinned && !string.IsNullOrEmpty(entry.engineSkinnedShader))
                              ? entry.engineSkinnedShader : entry.engineShader,
+                isTransparent = entry.isTransparent,
+                blend = entry.blend,
                 properties = new List<CustomProperty>(),
             };
 
@@ -287,6 +356,18 @@ namespace HZExporter
                     case "float":
                         cm.properties.Add(new CustomProperty { slot = p.slot, kind = "float", f = mat.GetFloat(p.unity) });
                         break;
+                    case "vec2":
+                    {
+                        var v = mat.GetVector(p.unity);
+                        cm.properties.Add(new CustomProperty { slot = p.slot, kind = "vec2", v2 = new Vector2(v.x, v.y) });
+                        break;
+                    }
+                    case "vec3":
+                    {
+                        var v = mat.GetVector(p.unity);
+                        cm.properties.Add(new CustomProperty { slot = p.slot, kind = "vec3", v3 = new Vector3(v.x, v.y, v.z) });
+                        break;
+                    }
                     case "color4":
                         cm.properties.Add(new CustomProperty { slot = p.slot, kind = "color4", c4 = mat.GetColor(p.unity) });
                         break;
@@ -320,6 +401,9 @@ namespace HZExporter
                         cm.properties.Add(new CustomProperty { slot = p.slot, kind = "texture", textureIndex = idx });
                         break;
                     }
+                    default:
+                        Debug.LogWarning($"[HZShaderMap] '{mat.name}' / slot '{p.slot}': unrecognized kind '{p.kind}' — property skipped. Add a handler in EmbedCustomMaterial or fix shader_mapping.json.");
+                        break;
                 }
             }
             return cm;

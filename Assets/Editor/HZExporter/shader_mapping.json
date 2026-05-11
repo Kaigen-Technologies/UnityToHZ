@@ -129,6 +129,61 @@
         { "unity": "_EyeballColorMask",     "slot": "eyeball_color_mask",   "kind": "texture" },
         { "unity": "_EyeballShadow",        "slot": "eyeball_shadow",       "kind": "texture" }
       ]
+    },
+    {
+      "unityShader": "Idyllic Fantasy Nature/Vegetation",
+      "engineShader": "shaders/vegetation_material.hza",
+      "engineSkinnedShader": "shaders/vegetation_material.hza",
+      "customShader": true,
+      "properties": [
+        { "unity": "_Top_Color",            "slot": "top_color",            "kind": "color4" },
+        { "unity": "_Bottom_Color",         "slot": "bottom_color",         "kind": "color4" },
+        { "unity": "_Custom_Color",         "slot": "custom_color",         "kind": "float" },
+        { "unity": "_Enable_Top_Color",     "slot": "enable_top_color",     "kind": "float" },
+        { "unity": "_Blend_Height",         "slot": "blend_height",         "kind": "float" },
+        { "unity": "_Alpha_Cutoff",         "slot": "alpha_cutoff",         "kind": "float" },
+        { "unity": "_Bend_Strength",        "slot": "bend_strength",        "kind": "float" },
+        { "unity": "_Start_Bend_Range",     "slot": "start_bend_range",     "kind": "float" },
+        { "unity": "_Player_Position",      "slot": "player_position",      "kind": "vec3" },
+        { "unity": "_Wind_Direction",       "slot": "wind_direction",       "kind": "vec2" },
+        { "unity": "_Wind_Strength",        "slot": "wind_strength",        "kind": "float" },
+        { "unity": "_Wind_Speed",           "slot": "wind_speed",           "kind": "float" },
+        { "unity": "_Wind_Variation",       "slot": "wind_variation",       "kind": "float" },
+        { "unity": "_Wave_Scale",           "slot": "wave_scale",           "kind": "float" },
+        { "unity": "_Texture",              "slot": "texture",              "kind": "texture" }
+      ]
+    },
+    {
+      "unityShader": "Idyllic Fantasy Nature/Water",
+      "engineShader": "shaders/water_material.hza",
+      "engineSkinnedShader": "shaders/water_material.hza",
+      "customShader": true,
+      "isTransparent": true,
+      "properties": [
+        { "unity": "_Deep_Color",            "slot": "deep_color",            "kind": "color4" },
+        { "unity": "_Shallow_Color",         "slot": "shallow_color",         "kind": "color4" },
+        { "unity": "_Foam_Color",            "slot": "foam_color",            "kind": "color4" },
+        { "unity": "_Smoothness",            "slot": "smoothness",            "kind": "float" },
+        { "unity": "_Foam_Density",          "slot": "foam_density",          "kind": "float" },
+        { "unity": "_Foam_Amount",           "slot": "foam_amount",           "kind": "float" },
+        { "unity": "_Water_Speed",           "slot": "water_speed",           "kind": "float" },
+        { "unity": "_Coast_Opacity",         "slot": "coast_opacity",         "kind": "float" },
+        { "unity": "_Depth_Distance",        "slot": "depth_distance",        "kind": "float" },
+        { "unity": "_Normal_Strength",       "slot": "normal_strength",       "kind": "float" },
+        { "unity": "_Refraction_Strength",   "slot": "refraction_strength",   "kind": "float" },
+        { "unity": "_Foam_Scale",            "slot": "foam_scale",            "kind": "vec2" },
+        { "unity": "_Refraction_Scale",      "slot": "refraction_scale",      "kind": "vec2" },
+        { "unity": "_Refraction_Normal",        "slot": "refraction_normal",        "kind": "texture_normal" },
+        { "unity": "_Second_Refraction_Normal", "slot": "second_refraction_normal", "kind": "texture_normal" }
+      ]
+    }
+  ],
+  "customFunctions": [
+    {
+      "name": "MainLight",
+      "engineCall": "hz_main_light",
+      "structType": "HzMainLight",
+      "structFields": ["direction", "color", "distance_atten", "shadow_atten"]
     }
   ]
 }

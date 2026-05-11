@@ -93,7 +93,7 @@ namespace HZExporter.ShaderGraph
             SgValue v;
             var edge = Graph.FindEdgeIntoSlot(nodeId, inSlotNum);
             if (edge != null) v = Output(edge.OutputNodeId, edge.OutputSlotIdNum);
-            else v = SgLiterals.From(consumerSlot);
+            else v = SgLiterals.From(consumerSlot, IsVertexStage);
 
             // Coerce to the consumer slot's declared type when it's strongly
             // typed (Vector1/2/3/4, ColorRGB/A, Boolean, Texture2D, …) and
@@ -158,6 +158,19 @@ namespace HZExporter.ShaderGraph
         // (struct-return) or use the temp directly (single-output).
         public readonly Dictionary<string, (SgValue temp, SgFunctionDef fn)> SubGraphCallTemps =
             new Dictionary<string, (SgValue, SgFunctionDef)>();
+
+        // CombineNode caches its 4-input vec4 packing temp so each requested
+        // output slot (RGBA/RGB/RG) reuses the same emit instead of repacking.
+        public readonly Dictionary<string, SgValue> CombineTemps = new Dictionary<string, SgValue>();
+
+        // CustomFunctionNode caches its struct-return call temp so each output
+        // slot of a single node hits the same `<EngineStruct> _tN = hz_fn(…);`.
+        public readonly Dictionary<string, SgValue> CustomFunctionTemps = new Dictionary<string, SgValue>();
+
+        // Helper functions (name, body) emitted once per stage at the top of
+        // the body. Set used to dedupe across multiple node lowerings.
+        public readonly HashSet<(string name, string body)> HelperFunctions =
+            new HashSet<(string, string)>();
     }
 
     // ===== slot-default literals ==============================================
@@ -167,7 +180,7 @@ namespace HZExporter.ShaderGraph
     // string form so codegen still works but the optimizer skips them.
     static class SgLiterals
     {
-        public static SgValue From(SgSlot slot)
+        public static SgValue From(SgSlot slot, bool isVertexStage = false)
         {
             var t = slot.StaticType();
             if (t == SgType.Texture2D || t == SgType.SamplerState)
@@ -175,10 +188,67 @@ namespace HZExporter.ShaderGraph
                     $"slot '{slot.DisplayName}' of type {slot.Type} cannot have a literal default — must be wired");
             // UVMaterialSlot's m_Value is (0,0) which literally means "no
             // input" in Unity — the runtime substitutes mesh UV0 (or UVn per
-            // m_Channel). Emit `v_uv` here so downstream texture samples and
-            // TilingAndOffsetNode chains see per-vertex UVs instead of origin.
+            // m_Channel). Source differs by stage: vertex reads `v.uv` (raw
+            // mesh attribute), fragment reads `v_uv` (interpolated varying).
             if (slot.Type == "UVMaterialSlot")
-                return SgValue.Inline(Sg.Raw("v_uv"), SgType.Vec2);
+                return SgValue.Inline(Sg.Raw(isVertexStage ? "v.uv" : "v_uv"), SgType.Vec2);
+            // ScreenPositionMaterialSlot unwired → same as Unity's
+            // ScreenPositionNode in Default mode: (screen_uv.x, screen_uv.y, 0, 0).
+            // SceneColor/SceneDepth take .xy directly (no perspective divide),
+            // matching Unity HLSL which samples with UV.xy. Fragment stage only.
+            // Divide by dpr first: gl_FragCoord is in framebuffer pixels but
+            // cluster.screen_width/height are logical (pre-dpr) — without the
+            // dpr divide the UV exceeds 1 and the sampler wraps the texture,
+            // producing quincunx-style ghost copies in scene_color samples.
+            if (slot.Type == "ScreenPositionMaterialSlot")
+                return SgValue.Inline(Sg.Raw(
+                    "vec4((gl_FragCoord.xy / hz_scene.cluster.dpr) / vec2(float(hz_scene.cluster.screen_width), float(hz_scene.cluster.screen_height)), 0.0, 0.0)"),
+                    SgType.Vec4);
+            // GradientInputMaterialSlot's m_Value is an inline gradient.
+            // Serialized layout (matches UnityEngine.Gradient):
+            //   keyN  : Color  — RGB is the stop's color, `a` is the stop's
+            //                    ALPHA (not the position).
+            //   ctimeN: u16    — color-stop position, normalized to [0,1]
+            //                    via x/65535. THIS is the time, not `key.a`.
+            //   atimeN: u16    — alpha-stop position (unused here; the engine
+            //                    macro doesn't carry alpha).
+            //   m_NumColorKeys: how many of the 8 slots are actually used.
+            // The engine ships GRADIENT_4 taking 4 (rgb, t) pairs — pack the
+            // first four real color keys, padding by repeating the last.
+            if (slot.Type == "GradientInputMaterialSlot")
+            {
+                if (slot.Value is Dictionary<string, object> gv)
+                {
+                    int numKeys = 0;
+                    if (gv.TryGetValue("m_NumColorKeys", out var nko) && nko is double nkd) numKeys = (int)nkd;
+                    if (numKeys <= 0) numKeys = 1;
+                    if (numKeys > 8) numKeys = 8;
+                    if (numKeys > 4)
+                        UnityEngine.Debug.LogWarning($"[SgLiterals] gradient on slot '{slot.DisplayName}' has {numKeys} color stops — engine GRADIENT_4 only carries 4; extra stops truncated.");
+
+                    var keys = new List<(double r, double g, double b, double t)>();
+                    for (int i = 0; i < numKeys; i++)
+                    {
+                        if (!gv.TryGetValue($"key{i}", out var ko) || !(ko is Dictionary<string, object> kd))
+                            continue;
+                        double r = kd.TryGetValue("r", out var rv) && rv is double rd ? rd : 0;
+                        double g = kd.TryGetValue("g", out var gv2) && gv2 is double gd ? gd : 0;
+                        double b = kd.TryGetValue("b", out var bv) && bv is double bd ? bd : 0;
+                        double tval = 0;
+                        if (gv.TryGetValue($"ctime{i}", out var to) && to is double td) tval = td / 65535.0;
+                        keys.Add((r, g, b, tval));
+                    }
+                    if (keys.Count == 0) keys.Add((1, 1, 1, 1));
+                    var parts = new List<string>();
+                    for (int i = 0; i < 4; i++)
+                    {
+                        var k = keys[System.Math.Min(i, keys.Count - 1)];
+                        parts.Add($"vec3({SgTypes.FormatFloat(k.r)}, {SgTypes.FormatFloat(k.g)}, {SgTypes.FormatFloat(k.b)})");
+                        parts.Add(SgTypes.FormatFloat(k.t));
+                    }
+                    return SgValue.Inline(Sg.Raw($"GRADIENT_4({string.Join(", ", parts)})"), SgType.Unknown);
+                }
+            }
             if (t == SgType.Unknown)
             {
                 // DynamicValue/DynamicVector default to scalar — see SgRhs.cs
@@ -329,16 +399,28 @@ namespace HZExporter.ShaderGraph
         {
             int channel = 0;
             if (node.Raw.TryGetValue("m_OutputChannel", out var ch) && ch is double d) channel = (int)d;
-            string varying;
+            string source;
+            // In vertex stage we read raw mesh attributes (`v.uv`); in fragment
+            // stage we read the interpolated varyings (`v_uv`). UV1 has a
+            // y-flip applied in the vertex shader's varying assignment for the
+            // fragment side — the raw `v.uv1` matches Unity's V convention.
+            string uv0 = ctx.IsVertexStage ? "v.uv" : "v_uv";
+            string uv1 = ctx.IsVertexStage ? "vec2(v.uv1.x, 1.0 - v.uv1.y)" : "v_uv1";
             switch (channel)
             {
-                case 0: varying = "v_uv"; break;
-                case 1: varying = "v_uv1"; break;
+                case 0: source = uv0; break;
+                case 1: source = uv1; break;
+                // UV2/UV3 fall back to UV0 — the engine doesn't carry those
+                // varyings today. Mostly hits BakedGI's static/dynamic UV
+                // inputs (we ignore them anyway) and the occasional
+                // mesh-color-mask use; the latter degrades visually but the
+                // shader still compiles and renders.
+                case 2: case 3: source = $"{uv0} /* TODO: UV channel {channel} not plumbed; falling back to UV0 */"; break;
                 default: throw new NotImplementedException($"UV channel {channel} not wired");
             }
             // Varyings aren't constants — wrap as Raw so the optimizer leaves
             // them alone but DCE still sees no inbound refs.
-            return ctx.EmitTemp(SgType.Vec4, Sg.Raw($"vec4({varying}, 0.0, 0.0)"));
+            return ctx.EmitTemp(SgType.Vec4, Sg.Raw($"vec4({source}, 0.0, 0.0)"));
         }
     }
 
@@ -348,6 +430,24 @@ namespace HZExporter.ShaderGraph
         public override SgValue Lower(SgNode node, int outSlotNum, LowerCtx ctx)
         {
             return ctx.InputByName(node, "X");
+        }
+    }
+
+    // Vector2/3/4 nodes pack scalar inputs into a vector temp. Unity defaults
+    // unwired inputs to their stored m_Value via slot literals — same mechanism
+    // as MultiplyNode operands, no special handling needed beyond Input().
+    class VectorPackNodeHandler : NodeHandler
+    {
+        readonly int _rank;
+        public VectorPackNodeHandler(int rank) { _rank = rank; }
+        public override SgValue Lower(SgNode node, int outSlotNum, LowerCtx ctx)
+        {
+            var args = new List<SgRhs>(_rank);
+            string[] names = { "X", "Y", "Z", "W" };
+            for (int i = 0; i < _rank; i++) args.Add(ctx.InputByName(node, names[i]).Rhs);
+            string ctor = _rank == 2 ? "vec2" : _rank == 3 ? "vec3" : "vec4";
+            SgType t = _rank == 2 ? SgType.Vec2 : _rank == 3 ? SgType.Vec3 : SgType.Vec4;
+            return ctx.EmitTemp(t, new SgRhsCall { Func = ctor, Args = args });
         }
     }
 
@@ -496,16 +596,31 @@ namespace HZExporter.ShaderGraph
             var args = new List<SgRhs>();
             foreach (var prop in sg.Properties)
             {
-                int slotNum = -1;
+                // Unity's m_Id can be any 32-bit signed integer (often a hash
+                // — negative is common for subgraph property slots). Use a
+                // separate `found` flag instead of a sentinel value so a
+                // legitimate slot with id < 0 doesn't trip the "not found"
+                // branch.
+                int slotNum = 0;
+                bool found = false;
                 foreach (var kv in node.SlotByNum)
                 {
                     if (!ctx.Graph.Slots.TryGetValue(kv.Value, out var s)) continue;
                     if (s.IsOutput) continue;
-                    if (s.OutputName == prop.ReferenceName) { slotNum = kv.Key; break; }
+                    if (s.OutputName == prop.ReferenceName) { slotNum = kv.Key; found = true; break; }
                 }
-                if (slotNum < 0)
+                if (!found)
+                {
+                    var available = new List<string>();
+                    foreach (var kv in node.SlotByNum)
+                    {
+                        if (!ctx.Graph.Slots.TryGetValue(kv.Value, out var s)) continue;
+                        available.Add($"[{kv.Key}] '{s.OutputName}' IsOutput={s.IsOutput}");
+                    }
                     throw new System.Exception(
-                        $"SubGraphNode missing input slot for subgraph property '{prop.ReferenceName}'");
+                        $"SubGraphNode '{node.Id}' missing input slot for subgraph property '{prop.ReferenceName}' (type={prop.Type}). " +
+                        $"Available slots: {string.Join(", ", available)}");
+                }
 
                 var v = ctx.Input(node.Id, slotNum);
                 args.Add(SgCodegen.CoerceRhsForReturn(v.Rhs, v.Type, prop.Type));
@@ -573,7 +688,13 @@ namespace HZExporter.ShaderGraph
             if (node.Raw.TryGetValue("m_Space", out var s) && s is double d) space = (int)d;
             switch (space)
             {
+                case 0: // Object — raw mesh normal in vertex stage; not available in @fs without an extra varying
+                    if (ctx.IsVertexStage)
+                        return new SgValue { Rhs = Sg.Raw("v.normal"), Type = SgType.Vec3, IsTemp = false };
+                    throw new System.NotImplementedException("NormalVectorNode space=Object in fragment stage needs an object-space varying");
                 case 2: // World
+                    if (ctx.IsVertexStage)
+                        return new SgValue { Rhs = Sg.Raw("normalize((v.model * vec4(v.normal, 0.0)).xyz)"), Type = SgType.Vec3, IsTemp = false };
                     return new SgValue { Rhs = Sg.Raw("v_normal"), Type = SgType.Vec3, IsTemp = false };
                 default:
                     throw new System.NotImplementedException($"NormalVectorNode space {space} not supported");
@@ -754,6 +875,11 @@ namespace HZExporter.ShaderGraph
             parentCtx.Functions.AddRange(branchCtx.Functions);
             // Propagate keyword usage too.
             foreach (var kw in branchCtx.UsedKeywords) parentCtx.UsedKeywords.Add(kw);
+            // Helper functions (e.g. _hz_gradient_noise) bubble up so they're
+            // emitted once at the top of the stage instead of inside the
+            // branch's `{ }` block (which would shadow same-named helpers in
+            // sibling branches).
+            foreach (var h in branchCtx.HelperFunctions) parentCtx.HelperFunctions.Add(h);
             return new SgConditionalBranch
             {
                 Define = define,
@@ -808,6 +934,20 @@ namespace HZExporter.ShaderGraph
             {
                 string w = (kind == 0) ? "1.0" : "0.0";
                 var rhs = Sg.RawTemplate("(v.model * vec4({0}, " + w + ")).xyz", input.Rhs);
+                return ctx.EmitTemp(SgType.Vec3, rhs);
+            }
+
+            // World → Object: inverse model matrix. Used by vegetation shaders
+            // to convert a world-space wind direction into object space so the
+            // bend math runs on local vertex positions. For directions/normals
+            // (kind 1 or 2) inverse-transpose would be technically correct, but
+            // for uniformly-scaled objects (the common case) inverse is fine.
+            if (from == 2 && to == 0)
+            {
+                if (!ctx.IsVertexStage)
+                    throw new System.NotImplementedException("World→Object transform supported in vertex stage only");
+                string w = (kind == 0) ? "1.0" : "0.0";
+                var rhs = Sg.RawTemplate("(inverse(v.model) * vec4({0}, " + w + ")).xyz", input.Rhs);
                 return ctx.EmitTemp(SgType.Vec3, rhs);
             }
 
@@ -946,9 +1086,11 @@ namespace HZExporter.ShaderGraph
             // varying (`v_world_pos` — Lit template only). Object/View/etc.
             // would need additional varyings; fall back to v_world_pos with
             // a comment so the user can spot it if the visual is off.
+            // AbsoluteWorld (4) matches World (2) in URP without camera-relative
+            // rendering, which is the engine's setup.
             if (!ctx.IsVertexStage)
             {
-                if (space == 2)
+                if (space == 2 || space == 4)
                     return new SgValue { Rhs = Sg.Raw("v_world_pos"), Type = SgType.Vec3, IsTemp = false };
                 return new SgValue
                 {
@@ -963,10 +1105,64 @@ namespace HZExporter.ShaderGraph
                 case 0: // Object
                     return new SgValue { Rhs = Sg.Raw("v.pos"), Type = SgType.Vec3, IsTemp = false };
                 case 2: // World
+                case 4: // AbsoluteWorld — same as World w/o camera-relative rendering
                     return new SgValue { Rhs = Sg.Raw("(v.model * vec4(v.pos, 1.0)).xyz"), Type = SgType.Vec3, IsTemp = false };
                 default:
                     throw new System.NotImplementedException($"PositionNode space {space} not supported");
             }
+        }
+    }
+
+    // ScreenPositionNode: returns a homogeneous-form screen position so
+    // downstream `.xy / .w` recovers the same UV/NDC Unity's shader would
+    // produce. We reconstruct from gl_FragCoord (post-rasterizer) since the
+    // engine doesn't carry clip-space position as a varying.
+    //
+    // m_ScreenSpaceType values (Unity ScreenSpaceType enum):
+    //   0 Default — UV in [0,1] across the screen after perspective divide
+    //   1 Raw     — NDC in [-1,1] after perspective divide
+    //   2 Center  — same as Raw (Unity's "Center" maps clip.xy/clip.w to [-1,1])
+    //   3 Tiled, 4 Pixel — not used by anything we ship; throw if hit.
+    //
+    // The engine's fragment-stage hz_scene UBO carries cluster.screen_width/
+    // height (declared whenever HZ_RENDERER_LIGHTING_CLUSTERS is set, which
+    // the LIT template does).
+    class ScreenPositionNodeHandler : NodeHandler
+    {
+        public override SgValue Lower(SgNode node, int outSlotNum, LowerCtx ctx)
+        {
+            if (ctx.IsVertexStage)
+                throw new NotImplementedException("ScreenPositionNode only supported in fragment stage");
+
+            int mode = 0;
+            if (node.Raw.TryGetValue("m_ScreenSpaceType", out var m) && m is double d) mode = (int)d;
+
+            // Default matches Unity's HLSL output `(screen_uv.x, screen_uv.y,
+            // 0, 0)` — already post-perspective-divide. Downstream SceneColor/
+            // SceneDepth sample `.xy` directly. Raw/Center emit the homogeneous
+            // (pre-divide) form so `.w = w_clip = view_distance` is usable
+            // (DepthFade uses ScreenPos.w as view distance for the depth-gap
+            // subtract).
+            // gl_FragCoord is in framebuffer (dpr-scaled) pixels, but
+            // cluster.screen_width/height are logical pixels — must divide by
+            // dpr to land UVs in [0,1] (otherwise sampler wraps).
+            string template;
+            switch (mode)
+            {
+                case 0: // Default
+                    template =
+                        "vec4((gl_FragCoord.xy / hz_scene.cluster.dpr) / vec2(float(hz_scene.cluster.screen_width), float(hz_scene.cluster.screen_height)), 0.0, 0.0)";
+                    break;
+                case 1: // Raw
+                case 2: // Center (same homogeneous form as Raw)
+                    template =
+                        "vec4((((gl_FragCoord.xy / hz_scene.cluster.dpr) / vec2(float(hz_scene.cluster.screen_width), float(hz_scene.cluster.screen_height))) * 2.0 - 1.0) / gl_FragCoord.w, " +
+                        "gl_FragCoord.z / gl_FragCoord.w, 1.0 / gl_FragCoord.w)";
+                    break;
+                default:
+                    throw new NotImplementedException($"ScreenPositionNode mode {mode} not supported");
+            }
+            return ctx.EmitTemp(SgType.Vec4, Sg.Raw(template));
         }
     }
 
@@ -1123,6 +1319,172 @@ namespace HZExporter.ShaderGraph
         }
     }
 
+    // VertexColorNode: per-vertex color attribute. Single Vector4 output (RGBA).
+    // The engine exposes `v_color` (vec4) as a fragment-stage varying — vertex
+    // unpack fills (1,1,1,1) when the cooked mesh has no COLOR_0 attribute,
+    // matching Unity's default for unauthored vertex colors.
+    class VertexColorNodeHandler : NodeHandler
+    {
+        public override SgValue Lower(SgNode node, int outSlotNum, LowerCtx ctx)
+            => new SgValue { Rhs = Sg.Raw(ctx.IsVertexStage ? "v.color" : "v_color"), Type = SgType.Vec4, IsTemp = false };
+    }
+
+    // BakedGINode: diffuse indirect irradiance. Maps to the engine's
+    // `hz_baked_gi(world_pos, world_normal)` helper which samples the diffuse
+    // probe (skybox cubemap @ max mip). Raw irradiance — NOT premultiplied by
+    // albedo — matching Unity's BakedGINode contract.
+    //
+    // Slot layout per Unity's BakedGINode.cs:
+    //   0=NormalWS (input), 1=Out (output), 2=PositionWS (input),
+    //   3=StaticUV (input, ignored — no lightmap path), 4=DynamicUV (input, ignored).
+    class BakedGINodeHandler : NodeHandler
+    {
+        public override SgValue Lower(SgNode node, int outSlotNum, LowerCtx ctx)
+        {
+            // Inputs default to v_world_pos / v_normal when unconnected. Pull
+            // them through ctx.Input so wired overrides flow correctly.
+            SgRhs pos = HasEdge(node, 2, ctx) ? ctx.Input(node.Id, 2).Rhs : Sg.Raw("v_world_pos");
+            SgRhs nrm = HasEdge(node, 0, ctx) ? ctx.Input(node.Id, 0).Rhs : Sg.Raw("v_normal");
+            return ctx.EmitTemp(SgType.Vec3,
+                Sg.RawTemplate("hz_baked_gi({0}, {1})", pos, nrm));
+        }
+
+        static bool HasEdge(SgNode node, int slotNum, LowerCtx ctx)
+            => ctx.Graph.FindEdgeIntoSlot(node.Id, slotNum) != null;
+    }
+
+    // CombineNode: 4 scalar inputs (R/G/B/A) → 3 outputs (RGBA vec4, RGB vec3,
+    // RG vec2). We emit a single vec4 temp once per CombineNode and route
+    // each requested output slot to a swizzle into it. Cached on `ctx` keyed
+    // by node id so repeated output reads share the temp.
+    //
+    // Slot ids per Unity: 0=R, 1=G, 2=B, 3=A, 4=RGBA, 5=RGB, 6=RG.
+    class CombineNodeHandler : NodeHandler
+    {
+        public override SgValue Lower(SgNode node, int outSlotNum, LowerCtx ctx)
+        {
+            if (!ctx.CombineTemps.TryGetValue(node.Id, out var rgba))
+            {
+                var r = ctx.Input(node.Id, 0);
+                var g = ctx.Input(node.Id, 1);
+                var b = ctx.Input(node.Id, 2);
+                var a = ctx.Input(node.Id, 3);
+                rgba = ctx.EmitTemp(SgType.Vec4,
+                    new SgRhsCall { Func = "vec4", Args = new List<SgRhs> { r.Rhs, g.Rhs, b.Rhs, a.Rhs } });
+                ctx.CombineTemps[node.Id] = rgba;
+            }
+            switch (outSlotNum)
+            {
+                case 4: return new SgValue { Rhs = rgba.Rhs,                       Type = SgType.Vec4, IsTemp = false };
+                case 5: return new SgValue { Rhs = Sg.Swizzle(rgba.Rhs, "xyz"),   Type = SgType.Vec3, IsTemp = false };
+                case 6: return new SgValue { Rhs = Sg.Swizzle(rgba.Rhs, "xy"),    Type = SgType.Vec2, IsTemp = false };
+                default: throw new Exception($"CombineNode: invalid output slot {outSlotNum}");
+            }
+        }
+    }
+
+    // GradientNoiseNode: 2D Perlin-style gradient noise. Single scalar output.
+    // Unity provides two hash variants (Deterministic, LegacyMod) but the
+    // visual difference is minor — we use a single implementation matching
+    // Unity's "Deterministic" form, emitting a one-shot helper function the
+    // first time this node is lowered in a stage.
+    //
+    // Slot ids: 0=UV (vec2, default v_uv), 1=Scale (float, default 10), 2=Out (float).
+    class GradientNoiseNodeHandler : NodeHandler
+    {
+        const string HelperName = "_hz_gradient_noise";
+        const string HelperBody =
+@"vec2 _hz_gnoise_dir(vec2 p) {
+    p = mod(p, vec2(289.0));
+    float x = mod((34.0 * p.x + 1.0) * p.x, 289.0) + p.y;
+    x = mod((34.0 * x + 1.0) * x, 289.0);
+    x = fract(x / 41.0) * 2.0 - 1.0;
+    return normalize(vec2(x - floor(x + 0.5), abs(x) - 0.5));
+}
+float _hz_gradient_noise(vec2 uv, float scale) {
+    vec2 p = uv * scale;
+    vec2 ip = floor(p);
+    vec2 fp = fract(p);
+    float d00 = dot(_hz_gnoise_dir(ip),                 fp);
+    float d01 = dot(_hz_gnoise_dir(ip + vec2(0.0, 1.0)), fp - vec2(0.0, 1.0));
+    float d10 = dot(_hz_gnoise_dir(ip + vec2(1.0, 0.0)), fp - vec2(1.0, 0.0));
+    float d11 = dot(_hz_gnoise_dir(ip + vec2(1.0, 1.0)), fp - vec2(1.0, 1.0));
+    fp = fp * fp * fp * (fp * (fp * 6.0 - 15.0) + 10.0);
+    return mix(mix(d00, d01, fp.y), mix(d10, d11, fp.y), fp.x) + 0.5;
+}";
+
+        public override SgValue Lower(SgNode node, int outSlotNum, LowerCtx ctx)
+        {
+            ctx.HelperFunctions.Add((HelperName, HelperBody));
+            var uv = ctx.Input(node.Id, 0);
+            var scale = ctx.Input(node.Id, 1);
+            return ctx.EmitTemp(SgType.Float,
+                Sg.RawTemplate($"{HelperName}({{0}}, {{1}})", uv.Rhs, scale.Rhs));
+        }
+    }
+
+    // CustomFunctionNode: Unity HLSL plug-in node (e.g. `MainLight(WorldPos)`).
+    // We can't translate arbitrary HLSL, so the export is gated by a
+    // per-function-name mapping in shader_mapping.json `customFunctions` →
+    // engine struct-returning helper. The struct's field names match the
+    // node's output slot DisplayNames (snake-cased).
+    //
+    // First touch emits `<EngineStruct> _tN = hz_xxx(args…);`. Subsequent
+    // touches for other output slots swizzle into the cached temp.
+    class CustomFunctionNodeHandler : NodeHandler
+    {
+        public override SgValue Lower(SgNode node, int outSlotNum, LowerCtx ctx)
+        {
+            string fnName = node.Raw.TryGetValue("m_FunctionName", out var fnObj) ? fnObj as string : null;
+            if (string.IsNullOrEmpty(fnName))
+                throw new Exception("CustomFunctionNode has no m_FunctionName");
+
+            var map = HZShaderMap.LookupCustomFunction(fnName);
+            if (map == null)
+                throw new NotImplementedException(
+                    $"CustomFunctionNode '{fnName}' has no entry in shader_mapping.json `customFunctions` — add an `engineCall`/`structType`/`structFields` mapping or the function name will go through as-is is not supported");
+
+            // Lookup or emit the call site once for this node.
+            if (!ctx.CustomFunctionTemps.TryGetValue(node.Id, out var temp))
+            {
+                // Build the input argument list in slot-id order. Each "input"
+                // slot in the node corresponds to an HLSL function parameter
+                // (the node's output slots are out-params that we project as
+                // struct fields).
+                var inputSlots = new List<int>();
+                foreach (var kv in node.SlotByNum)
+                {
+                    if (!ctx.Graph.Slots.TryGetValue(kv.Value, out var slot)) continue;
+                    if (!slot.IsOutput) inputSlots.Add(kv.Key);
+                }
+                inputSlots.Sort();
+
+                var args = new List<SgRhs>();
+                foreach (var slotNum in inputSlots) args.Add(ctx.Input(node.Id, slotNum).Rhs);
+
+                var callRhs = Sg.Call(map.engineCall, args.ToArray());
+                temp = ctx.EmitStructTemp(map.structType, callRhs);
+                ctx.CustomFunctionTemps[node.Id] = temp;
+            }
+
+            // Project the requested output slot via the mapped field name.
+            if (!node.SlotByNum.TryGetValue(outSlotNum, out var slotId))
+                throw new Exception($"CustomFunctionNode: slot {outSlotNum} not in node");
+            var outSlot = ctx.Graph.Slots[slotId];
+            string fieldName = SgNames.ToSnakeCase(outSlot.OutputName);
+            if (map.structFields != null && !map.structFields.Contains(fieldName))
+                throw new Exception(
+                    $"CustomFunctionNode '{fnName}': slot '{outSlot.OutputName}' (-> '{fieldName}') not in mapping.structFields=[{string.Join(",", map.structFields)}]");
+
+            return new SgValue
+            {
+                Rhs = Sg.Swizzle(temp.Rhs, fieldName),
+                Type = outSlot.StaticType(),
+                IsTemp = false,
+            };
+        }
+    }
+
     // ===== registry ===========================================================
 
     static class SgNodes
@@ -1173,6 +1535,9 @@ namespace HZExporter.ShaderGraph
             _handlers["UVNode"]              = new UVNodeHandler();
             _handlers["SplitNode"]           = new SplitNodeHandler();
             _handlers["Vector1Node"]         = new Vector1NodeHandler();
+            _handlers["Vector2Node"]         = new VectorPackNodeHandler(2);
+            _handlers["Vector3Node"]         = new VectorPackNodeHandler(3);
+            _handlers["Vector4Node"]         = new VectorPackNodeHandler(4);
             _handlers["SubGraphNode"]        = new SubGraphNodeHandler();
             _handlers["PropertyNode"]            = new PropertyNodeHandler();
             _handlers["SampleTexture2DNode"]     = new SampleTexture2DNodeHandler();
@@ -1187,6 +1552,26 @@ namespace HZExporter.ShaderGraph
             _handlers["TransformNode"]           = new TransformNodeHandler();
             _handlers["KeywordNode"]             = new KeywordNodeHandler();
             _handlers["BlendNode"]               = new BlendNodeHandler();
+            _handlers["VertexColorNode"]         = new VertexColorNodeHandler();
+            _handlers["BakedGINode"]             = new BakedGINodeHandler();
+            _handlers["CombineNode"]             = new CombineNodeHandler();
+            _handlers["GradientNoiseNode"]       = new GradientNoiseNodeHandler();
+            _handlers["CustomFunctionNode"]      = new CustomFunctionNodeHandler();
+            _handlers["ScreenPositionNode"]      = new ScreenPositionNodeHandler();
+
+            // Override SgGeneratedNodes' SceneColor / SceneDepth patterns that
+            // emit Unity URP HLSL helpers (SHADERGRAPH_SAMPLE_SCENE_COLOR /
+            // SHADERGRAPH_SAMPLE_SCENE_DEPTH / Linear01Depth) with engine-side
+            // helpers. The UV input is expected to be the .xy of a
+            // ScreenPosition output that's already been divided by .w (the
+            // canonical Unity wiring); we just forward whatever vec2 was
+            // wired in.
+            Pattern("SceneColorNode",
+                v => Sg.RawTemplate("hz_scene_color({0}.xy)", v[0].Rhs),
+                _ => SgType.Vec3, "UV");
+            Pattern("SceneDepthNode",
+                v => Sg.RawTemplate("hz_scene_depth_linear({0}.xy)", v[0].Rhs),
+                _ => SgType.Float, "UV");
         }
 
         public static NodeHandler Lookup(string nodeType)

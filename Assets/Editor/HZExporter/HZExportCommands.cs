@@ -41,28 +41,60 @@ public static class HZExportCommands
         catch (System.Exception e) { Debug.LogError($"[HZ-SG] Surface: {e.Message}\n{e.StackTrace}"); }
     }
 
-    /// <summary>Translate every .shadergraph under Assets/ShaderGraphExport/ into a
-    /// .hz.glsl file under ExportedAssets/shaders/. Built up in steps — see
-    /// HZShaderGraphExporter for current scope.</summary>
+    public static void ExportVegetationShader()
+    {
+        const string src = "Assets/Idyllic Fantasy Nature/Shader/Vegetation.shadergraph";
+        string outDir = OutputDir + "/shaders";
+        try { HZShaderGraphExporter.ExportFile(src, outDir); }
+        catch (System.Exception e) { Debug.LogError($"[HZ-SG] Vegetation: {e.Message}\n{e.StackTrace}"); }
+    }
+
+    public static void ExportWaterShader()
+    {
+        const string src = "Assets/Idyllic Fantasy Nature/Shader/Water.shadergraph";
+        string outDir = OutputDir + "/shaders";
+        try { HZShaderGraphExporter.ExportFile(src, outDir); }
+        catch (System.Exception e) { Debug.LogError($"[HZ-SG] Water: {e.Message}\n{e.StackTrace}"); }
+    }
+
+    // Folders the "Export Shader Graphs" menu walks. Add more here as new
+    // production shaders show up; tests under Assets/ShaderGraphExport/ keep
+    // working alongside them. Per-shader exec entry points (ExportSurfaceShader
+    // etc.) are still exposed below for the CLI flow.
+    static readonly string[] ShaderGraphSourceDirs = new[]
+    {
+        "Assets/ShaderGraphExport",
+        "Assets/Idyllic Fantasy Nature/Shader",
+        "Assets/yyyrjis/ModularAnimeCharacter1/Shaders",
+    };
+
+    /// <summary>Translate every .shadergraph under the configured source
+    /// folders into a .hz.glsl file under ExportedAssets/shaders/. Skips
+    /// folders that don't exist so the project can drop in/out of shader
+    /// packs without breaking the menu.</summary>
     [MenuItem("HZ Engine/Export Shader Graphs")]
     public static void ExportShaderGraphs()
     {
-        const string srcDir = "Assets/ShaderGraphExport";
         string outDir = OutputDir + "/shaders";
-        if (!System.IO.Directory.Exists(srcDir))
+        int ok = 0, fail = 0, skipped = 0;
+        var files = new System.Collections.Generic.List<string>();
+        foreach (var dir in ShaderGraphSourceDirs)
         {
-            Debug.LogError($"[HZ-SG] source folder not found: {srcDir}");
-            return;
+            if (!System.IO.Directory.Exists(dir))
+            {
+                Debug.Log($"[HZ-SG] skipping (not present): {dir}");
+                skipped++;
+                continue;
+            }
+            files.AddRange(System.IO.Directory.GetFiles(dir, "*.shadergraph", System.IO.SearchOption.TopDirectoryOnly));
         }
-        var files = System.IO.Directory.GetFiles(srcDir, "*.shadergraph", System.IO.SearchOption.TopDirectoryOnly);
-        System.Array.Sort(files);
-        int ok = 0, fail = 0;
+        files.Sort();
         foreach (var f in files)
         {
             try { HZShaderGraphExporter.ExportFile(f, outDir); ok++; }
             catch (System.Exception e) { Debug.LogError($"[HZ-SG] {System.IO.Path.GetFileName(f)}: {e.Message}\n{e.StackTrace}"); fail++; }
         }
-        Debug.Log($"[HZ-SG] done — {ok} ok, {fail} failed");
+        Debug.Log($"[HZ-SG] done — {ok} ok, {fail} failed, {skipped} folder(s) skipped");
     }
 
     /// <summary>Test-export a cube using the FloorTriplanar shader-graph material so we can
