@@ -1090,14 +1090,14 @@ namespace HZExporter.ShaderGraph
             // Use RawTemplate so the UV's structural ref survives optimizer
             // renumbering — Sg.Raw bakes the temp name into a string and goes
             // stale. For tangent-space normal-map properties (detected at
-            // parse time, see SgProperty.IsNormalMap), apply the [0,1]→[-1,1]
-            // decode that Unity does transparently at the texture importer
-            // level — without it, downstream world-space normal reconstructions
-            // would see flat sampler values (0.5, 0.5, 1.0) instead of zero
-            // perturbation, and any `normal.y > 0` style branching would also
-            // be wrong.
+            // parse time, see SgProperty.IsNormalMap), route through the
+            // engine's unpack_normal_bc5 helper. The engine cooks normal-map
+            // textures as BC5 (RG-only, linear) so the B channel reads as 0 —
+            // a naïve `.xyz * 2 - 1` would produce z = -1 (normals pointing
+            // INTO the surface) and break every downstream TBN multiply.
+            // unpack_normal_bc5 reads .rg, decodes, and reconstructs Z.
             string template = texRef.IsNormalMap
-                ? $"vec4(texture_sample({texRef.FieldName}, mat.{texRef.FieldName}, {{0}}).xyz * 2.0 - 1.0, 1.0)"
+                ? $"vec4(unpack_normal_bc5(texture_sample({texRef.FieldName}, mat.{texRef.FieldName}, {{0}}).rg), 1.0)"
                 : $"texture_sample({texRef.FieldName}, mat.{texRef.FieldName}, {{0}})";
             return ctx.EmitTemp(SgType.Vec4, Sg.RawTemplate(template, uvRhs));
         }
