@@ -282,13 +282,11 @@ namespace HZExporter
                         int role = SlotToRole(p.slot);
                         if (role < 0) break;
                         bool isNormal = p.kind == "texture_normal";
-                        var readable = HZGlbWriter.MakeReadable(tex, isNormal);
+                        byte[] png = HZGlbWriter.EncodeAndCachePng(tex, isNormal);
                         HZGlbWriter.PadTo4(bin);
                         int off = (int)bin.Position;
-                        byte[] png = readable.EncodeToPNG();
                         bin.Write(png, 0, png.Length);
                         HZGlbWriter.PadTo4(bin);
-                        if (readable != tex) Object.DestroyImmediate(readable);
                         onImage(new ImageRecord { off = off, size = png.Length, name = HZGlbWriter.SanitizeName(tex.name ?? $"tex_role{role}"), role = role });
                         filled.Add(p.slot);
                         break;
@@ -309,16 +307,14 @@ namespace HZExporter
             // ORM combining — only if at least one input texture was found.
             if (!filled.Contains("ormTex") && (ormMetalSmooth != null || ormOcclusion != null))
             {
-                var orm = HZGlbWriter.MakeORM(ormMetalSmooth, ormOcclusion);
-                if (orm != null)
+                byte[] png = HZGlbWriter.EncodeAndCacheOrmPng(ormMetalSmooth, ormOcclusion);
+                if (png != null)
                 {
                     string ormName = HZGlbWriter.SanitizeName((mat.name ?? "material") + "_ORM");
                     HZGlbWriter.PadTo4(bin);
                     int off = (int)bin.Position;
-                    byte[] png = orm.EncodeToPNG();
                     bin.Write(png, 0, png.Length);
                     HZGlbWriter.PadTo4(bin);
-                    Object.DestroyImmediate(orm);
                     onImage(new ImageRecord { off = off, size = png.Length, name = ormName, role = 2 });
                     filled.Add("ormTex");
                 }
@@ -392,13 +388,11 @@ namespace HZExporter
                         // the shader's [0,1]→[-1,1] decode produces meaningless
                         // perturbations. Plain textures stay sRGB.
                         bool isNormal = p.kind == "texture_normal";
-                        var readable = HZGlbWriter.MakeReadable(tex, isNormal);
+                        byte[] png = HZGlbWriter.EncodeAndCachePng(tex, isNormal);
                         HZGlbWriter.PadTo4(bin);
                         int off = (int)bin.Position;
-                        byte[] png = readable.EncodeToPNG();
                         bin.Write(png, 0, png.Length);
                         HZGlbWriter.PadTo4(bin);
-                        if (readable != tex) Object.DestroyImmediate(readable);
                         int idx = onImage(new ImageRecord {
                             off = off, size = png.Length,
                             name = HZGlbWriter.SanitizeName(tex.name ?? p.slot),

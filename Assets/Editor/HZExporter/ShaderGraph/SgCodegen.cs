@@ -30,6 +30,13 @@ namespace HZExporter.ShaderGraph
                     sb.AppendLine($"// @keyword {kw.ReferenceName} Enum entries={entries} default={def}");
                 }
             }
+            // Alpha-clipped materials get a HZ_SHADOW_PASS variant so the
+            // shadow caster can alpha-test the leaf texture instead of
+            // rendering the full bounding quad as a solid occluder. Opaque
+            // materials skip this and fall back to the engine's global
+            // standard_shadow pipeline.
+            if (g.AlphaClip)
+                sb.AppendLine("// @keyword HZ_SHADOW_PASS Boolean default=Off");
 
             sb.AppendLine("#include \"renderer.glsl\"");
             sb.AppendLine();
@@ -88,6 +95,23 @@ namespace HZExporter.ShaderGraph
             }
             SgOptimize.Run(ctx.Statements, assigns);
 
+            // ----- shadow-pass body (alpha clip only) ----------------------
+            // Lower Alpha + AlphaClipThreshold in a fresh ctx with NO other
+            // surface roots, so DCE prunes everything except what feeds the
+            // alpha test. The HZ_SHADOW_PASS keyword variant in the emitted
+            // shader picks this body; the rest of the fragment work (lighting,
+            // ibl, cluster lights, compositing) is excluded.
+            LowerCtx shadowCtx = null;
+            List<Assign> shadowAssigns = null;
+            if (g.AlphaClip)
+            {
+                shadowCtx = new LowerCtx(g);
+                shadowAssigns = new List<Assign>();
+                shadowAssigns.Add(LowerSurface(g, shadowCtx, "Alpha",              "alpha",                SgType.Float, Sg.Lit(1.0)));
+                shadowAssigns.Add(LowerSurface(g, shadowCtx, "AlphaClipThreshold", "alpha_clip_threshold", SgType.Float, Sg.Lit(0.5)));
+                SgOptimize.Run(shadowCtx.Statements, shadowAssigns);
+            }
+
             // ----- functions (subgraphs from either stage, deduped) --------
             var allFunctions = new List<SgFunctionDef>();
             var seenFnNames = new HashSet<string>();
@@ -129,6 +153,19 @@ namespace HZExporter.ShaderGraph
                 body.Append("    if (alpha < alpha_clip_threshold) discard;\n");
             string bodyStr = body.ToString().TrimEnd('\n');
 
+            // Shadow-pass body: same shape but only the alpha-clip slice.
+            // Empty string when the material isn't alpha-clipped (the @fs
+            // template falls through to a no-op shadow body in that case).
+            string shadowBodyStr = "";
+            if (shadowCtx != null)
+            {
+                var shadowBody = new StringBuilder();
+                EmitStatementsWithGroupHeaders(shadowBody, shadowCtx.Statements, g);
+                foreach (var a in shadowAssigns) shadowBody.Append("    ").Append(a.Format()).Append('\n');
+                shadowBody.Append("    if (alpha < alpha_clip_threshold) discard;\n");
+                shadowBodyStr = shadowBody.ToString().TrimEnd('\n');
+            }
+
             // Only emit the vertex-stage material mirror when something in
             // the vertex stage actually reads material data. Detect via the
             // `mat.` substring in the rendered vsBody (the optimizer leaves
@@ -164,7 +201,8 @@ namespace HZExporter.ShaderGraph
                 .Replace("${VS_POS}",      vsPos)
                 .Replace("${VS_NORMAL}",   vsNormal)
                 .Replace("${VS_TANGENT}",  vsTangent)
-                .Replace("${MAIN_BODY}",   bodyStr);
+                .Replace("${MAIN_BODY}",   bodyStr)
+                .Replace("${SHADOW_BODY}", shadowBodyStr);
         }
 
         // Emit statements with `// === <group title> ===` headers injected
@@ -477,13 +515,19 @@ in vec2 v_uv1;
 in vec4 v_color;
 flat in uint v_material_offset;
 in vec3 v_normal;
+#ifndef HZ_SHADOW_PASS
 out vec4 frag_color;
+#endif
 
 ${MATERIAL_STRUCT}
 ${HELPERS}${FUNCTIONS}void main() {
     MaterialFS mat = MaterialFS_unpack(v_material_offset);
+#ifdef HZ_SHADOW_PASS
+${SHADOW_BODY}
+#else
 ${MAIN_BODY}
     frag_color = vec4(base_color, 1.0);
+#endif
 }
 @end
 ";
@@ -531,11 +575,16 @@ flat in uint v_material_offset;
 in vec3 v_tangent;
 in float v_bitangent_sign;
 in float v_view_depth;
+#ifndef HZ_SHADOW_PASS
 out vec4 frag_color;
+#endif
 
 ${MATERIAL_STRUCT}
 ${HELPERS}${FUNCTIONS}void main() {
     MaterialFS mat = MaterialFS_unpack(v_material_offset);
+#ifdef HZ_SHADOW_PASS
+${SHADOW_BODY}
+#else
 ${MAIN_BODY}
     vec3 N = apply_normal_map(v_normal, v_tangent, v_bitangent_sign, normal_ts);
 
@@ -559,6 +608,7 @@ ${MAIN_BODY}
     lit *= occlusion;
     lit += emission;
     frag_color = vec4(lit, 1.0);
+#endif
 }
 @end
 ";

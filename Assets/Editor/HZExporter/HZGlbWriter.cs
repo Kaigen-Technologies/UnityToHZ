@@ -1343,6 +1343,72 @@ namespace HZExporter
             if (r != 0) for (int i = 0; i < 4 - r; i++) s.WriteByte(0);
         }
 
+        // ============= Per-export-session PNG cache =============
+        //
+        // Texture2D → encoded PNG bytes. Hot on scenes with many GLBs (each LOD
+        // re-exports the same source texture), where re-running MakeReadable +
+        // EncodeToPNG per GLB dominated the export wall time.
+        //
+        // Owned by ExportScene: call ResetTextureCache() at the start of each
+        // export so the cache doesn't outlive the run. Keyed by the source
+        // texture's instanceID + an isNormal flag (DXT5nm vs straight blit
+        // produce different bytes for the same texture asset).
+
+        struct TexCacheKey : IEquatable<TexCacheKey>
+        {
+            public int instanceId;
+            public bool isNormal;
+            public bool Equals(TexCacheKey o) => instanceId == o.instanceId && isNormal == o.isNormal;
+            public override bool Equals(object o) => o is TexCacheKey k && Equals(k);
+            public override int GetHashCode() => instanceId ^ (isNormal ? 1 : 0);
+        }
+        static readonly Dictionary<TexCacheKey, byte[]> s_pngCache = new Dictionary<TexCacheKey, byte[]>();
+
+        struct OrmCacheKey : IEquatable<OrmCacheKey>
+        {
+            public int metalSmoothId; // 0 when null
+            public int occlusionId;   // 0 when null
+            public bool Equals(OrmCacheKey o) => metalSmoothId == o.metalSmoothId && occlusionId == o.occlusionId;
+            public override bool Equals(object o) => o is OrmCacheKey k && Equals(k);
+            public override int GetHashCode() => metalSmoothId * 31 + occlusionId;
+        }
+        static readonly Dictionary<OrmCacheKey, byte[]> s_ormPngCache = new Dictionary<OrmCacheKey, byte[]>();
+
+        public static void ResetTextureCache()
+        {
+            s_pngCache.Clear();
+            s_ormPngCache.Clear();
+        }
+
+        // Returns PNG bytes for the given texture asset, computing+caching on first touch.
+        internal static byte[] EncodeAndCachePng(Texture2D src, bool isNormal)
+        {
+            var key = new TexCacheKey { instanceId = src.GetInstanceID(), isNormal = isNormal };
+            if (s_pngCache.TryGetValue(key, out var cached)) return cached;
+
+            var readable = MakeReadable(src, isNormal);
+            byte[] png = readable.EncodeToPNG();
+            if (readable != src) UnityEngine.Object.DestroyImmediate(readable);
+            s_pngCache[key] = png;
+            return png;
+        }
+
+        internal static byte[] EncodeAndCacheOrmPng(Texture2D metallicGloss, Texture2D occlusion)
+        {
+            var key = new OrmCacheKey {
+                metalSmoothId = metallicGloss != null ? metallicGloss.GetInstanceID() : 0,
+                occlusionId = occlusion != null ? occlusion.GetInstanceID() : 0,
+            };
+            if (s_ormPngCache.TryGetValue(key, out var cached)) return cached;
+
+            var orm = MakeORM(metallicGloss, occlusion);
+            if (orm == null) return null;
+            byte[] png = orm.EncodeToPNG();
+            UnityEngine.Object.DestroyImmediate(orm);
+            s_ormPngCache[key] = png;
+            return png;
+        }
+
         internal static Texture2D MakeReadable(Texture2D src, bool isNormalMap = false)
         {
             if (isNormalMap)

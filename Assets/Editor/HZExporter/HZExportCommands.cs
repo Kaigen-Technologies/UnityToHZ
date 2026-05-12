@@ -411,6 +411,9 @@ public static class HZExportCommands
     [MenuItem("HZ Engine/Export Active Scene")]
     public static void ExportScene()
     {
+        // Clear the per-export PNG cache so we don't leak texture bytes across runs.
+        HZGlbWriter.ResetTextureCache();
+
         var scene = SceneManager.GetActiveScene();
         var roots = scene.GetRootGameObjects();
         var entities = new List<HZSceneExporter.EntityExportInfo>();
@@ -439,32 +442,71 @@ public static class HZExportCommands
             }
         }
 
-        // LODGroup: skip every renderer that belongs only to a non-last LOD. The last LOD's
-        // renderers stay exportable; the others get added to skipGOs so they're excluded
-        // from entity emission like bones. Overlap-safe: if a renderer is referenced by both
-        // the last LOD and an earlier LOD, it stays exportable.
+        // LODGroup: keep LOD0's renderer(s) as base entities; skip every renderer that
+        // belongs only to LOD1+. Build lodExtrasByBaseGO so the entity-emission pass can
+        // attach extra_lods to the base. Overlap-safe: if a renderer is referenced by
+        // both LOD0 and a deeper LOD, it stays exportable.
+        //
+        // Unity's lods[i].screenRelativeTransitionHeight is the screen-fraction threshold
+        // BELOW which lods[i] becomes inactive. That maps to lods[i+1].switch_coverage
+        // in engine units (engine LOD0 stays active down to FLT_MAX; LOD1+ each carry
+        // their own threshold). We drop the last LOD's threshold — it's the cull point,
+        // which v1 doesn't support.
+        //
+        // lodExtrasByBaseGO: key = LOD0 renderer's GameObject instanceID,
+        //                   value = ordered list of {Renderer rdr, float switch_coverage}.
+        var lodExtrasByBaseGO = new Dictionary<int, List<(Renderer rdr, float switchCoverage)>>();
         foreach (var root in roots)
         {
             foreach (var lodGroup in root.GetComponentsInChildren<LODGroup>(true))
             {
                 var lods = lodGroup.GetLODs();
                 if (lods == null || lods.Length == 0) continue;
-                int lastIdx = lods.Length - 1;
-                var keepIds = new HashSet<int>();
-                if (lods[lastIdx].renderers != null)
+
+                // Find LOD0's base renderer. Skip empty/null entries entirely.
+                Renderer baseRdr = null;
+                if (lods[0].renderers != null)
                 {
-                    foreach (var r in lods[lastIdx].renderers)
-                        if (r != null) keepIds.Add(r.gameObject.GetInstanceID());
+                    foreach (var r in lods[0].renderers)
+                        if (r != null) { baseRdr = r; break; }
                 }
-                for (int li = 0; li < lastIdx; li++)
+                if (baseRdr == null)
                 {
-                    if (lods[li].renderers == null) continue;
+                    Debug.LogWarning($"[HZ] LODGroup '{lodGroup.name}': LOD0 has no renderer; skipping group");
+                    continue;
+                }
+
+                var baseKeepIds = new HashSet<int>();
+                foreach (var r in lods[0].renderers)
+                    if (r != null) baseKeepIds.Add(r.gameObject.GetInstanceID());
+
+                var extras = new List<(Renderer, float)>();
+                for (int li = 1; li < lods.Length; li++)
+                {
+                    if (lods[li].renderers == null || lods[li].renderers.Length == 0)
+                        continue; // null/empty LOD slot — treat as absent
+                    Renderer lodRdr = null;
+                    foreach (var r in lods[li].renderers)
+                        if (r != null) { lodRdr = r; break; }
+                    if (lodRdr == null) continue;
+
+                    // Threshold to switch INTO this LOD = the previous LOD's transition height.
+                    float switchCoverage = lods[li - 1].screenRelativeTransitionHeight;
+                    extras.Add((lodRdr, switchCoverage));
+
+                    // Skip every non-base LOD renderer that isn't also a base.
                     foreach (var r in lods[li].renderers)
                     {
                         if (r == null) continue;
                         int id = r.gameObject.GetInstanceID();
-                        if (!keepIds.Contains(id)) skipGOs.Add(id);
+                        if (!baseKeepIds.Contains(id)) skipGOs.Add(id);
                     }
+                }
+
+                if (extras.Count > 0)
+                {
+                    int baseId = baseRdr.gameObject.GetInstanceID();
+                    lodExtrasByBaseGO[baseId] = extras;
                 }
             }
         }
@@ -696,7 +738,6 @@ public static class HZExportCommands
                         }
                     }
 
-                    Debug.Log($"[HZ] Entity: {go.name} (skinned, model={glbAssetPath})");
                 }
                 // Terrain — skipped for now. Engine-side EcsTerrainRef + scene serialization
                 // aren't wired up, and even when they are the heightmap/splatmap/layer-texture
@@ -704,38 +745,36 @@ public static class HZExportCommands
                 // export. The Terrain GameObject still emits as an empty-transform anchor.
                 else if (go.TryGetComponent<Terrain>(out var terrain) && terrain.terrainData != null)
                 {
-                    Debug.Log($"[HZ] Entity: {go.name} (terrain — skipped, no asset emitted)");
                 }
                 // Static mesh — export as .glb, dedup by (mesh, material combo).
                 else if (go.TryGetComponent<MeshFilter>(out var mf) && mf.sharedMesh != null
                          && go.TryGetComponent<MeshRenderer>(out var mr))
                 {
-                    Mesh mesh = mf.sharedMesh;
-                    Material[] mats = mr.sharedMaterials;
-                    // Dedup by mesh only. Multiple entities sharing the same mesh with different
-                    // materials reuse one GLB — the engine extracts material/textures from the
-                    // GLB once into assets/unity/{materials,textures}/, and entity material
-                    // overrides (when needed) come from external EcsMaterialRef. Splitting GLBs
-                    // by material assignment causes the engine's GLB cooker to write the same
-                    // texture filename from multiple sources → asset collision.
-                    string meshKey = GetMeshKey(mesh);
-
-                    if (!exportedGlbs.TryGetValue(meshKey, out string glbAssetPath))
-                    {
-                        string glbName = GetMeshSourceName(mesh);
-                        string glbPath = $"{OutputDir}/glb/{glbName}.glb";
-                        glbAssetPath = $"{AssetPrefix}/glb/{glbName}.glb";
-
-                        HZGlbWriter.ExportStaticMesh(mesh, mats, glbPath);
-                        exportedGlbs[meshKey] = glbAssetPath;
-                        Debug.Log($"[HZ] Exported GLB: {glbName}.glb (static, from {meshKey})");
-                    }
-
-                    info.modelAssetPath = glbAssetPath;
+                    info.modelAssetPath = ExportStaticGlbForRenderer(mr, mf.sharedMesh, exportedGlbs);
                     info.bounds = mr.bounds;
                     info.castsShadow = mr.shadowCastingMode != UnityEngine.Rendering.ShadowCastingMode.Off;
 
-                    Debug.Log($"[HZ] Entity: {go.name} (static, model={info.modelAssetPath})");
+                    // If this renderer is the base (LOD0) of a LODGroup, export each
+                    // extra LOD's mesh as a model asset and attach as extra_lods.
+                    if (lodExtrasByBaseGO.TryGetValue(go.GetInstanceID(), out var extras))
+                    {
+                        info.extraLods = new List<(string, float)>(extras.Count);
+                        foreach (var (lodRdr, switchCov) in extras)
+                        {
+                            // Only static MeshRenderer LODs supported in v1; warn and skip otherwise.
+                            if (lodRdr is MeshRenderer lodMr
+                                && lodRdr.TryGetComponent<MeshFilter>(out var lodMf)
+                                && lodMf.sharedMesh != null)
+                            {
+                                string lodPath = ExportStaticGlbForRenderer(lodMr, lodMf.sharedMesh, exportedGlbs);
+                                info.extraLods.Add((lodPath, switchCov));
+                            }
+                            else
+                            {
+                                Debug.LogWarning($"[HZ] LOD '{lodRdr.gameObject.name}' is not a static MeshRenderer; skipping (v1 limitation)");
+                            }
+                        }
+                    }
                 }
                 // Camera
                 else if (go.TryGetComponent<Camera>(out var cam))
@@ -762,7 +801,7 @@ public static class HZExportCommands
                         info.lightIntensity = light.intensity;
                         info.castShadow = light.shadows != LightShadows.None;
                         info.shadowDistance = QualitySettings.shadowDistance;
-                        Debug.Log($"[HZ] Entity: {go.name} (directional light, shadows={info.castShadow}) fwd_unity={fwd} dir_exported={info.lightDirection}");
+                        Debug.Log($"[HZ] Entity: {go.name} (directional light, shadows={info.castShadow})");
                     }
                     else if (light.type == LightType.Point)
                     {
@@ -770,17 +809,7 @@ public static class HZExportCommands
                         info.lightColor = new Vector3(c.r, c.g, c.b);
                         info.pointLightRadius = light.range;
                         info.lightIntensity = light.intensity;
-                        Debug.Log($"[HZ] Entity: {go.name} (point light)");
                     }
-                    else
-                    {
-                        Debug.Log($"[HZ] Entity: {go.name} (empty)");
-                    }
-                }
-                else
-                {
-                    // Empty / container object
-                    Debug.Log($"[HZ] Entity: {go.name} (empty)");
                 }
 
                 entities.Add(info);
@@ -793,8 +822,6 @@ public static class HZExportCommands
             var d = kvp.Value;
             var animArray = d.animClips.Count > 0 ? d.animClips.ToArray() : null;
             HZGlbWriter.ExportSkinnedMesh(d.smrs, d.materials, d.primarySmr, d.entityRoot, d.glbPath, animArray);
-            int animCount = animArray?.Length ?? 0;
-            Debug.Log($"[HZ] Exported GLB: {kvp.Key}.glb (skinned, {animCount} animations)");
         }
 
         string sceneName = SanitizeName(scene.name);
@@ -904,6 +931,32 @@ public static class HZExportCommands
         int n = 2;
         while (used.Contains(candidate)) { candidate = $"{baseName}_{matSuffix}_{n++}"; }
         return candidate;
+    }
+
+    // Export a static MeshRenderer's mesh+materials as a deduped GLB. Returns the
+    // asset-relative path used by EcsModelRef.model. Shared by the entity static-mesh
+    // path and the LOD entries on a LODGroup base.
+    //
+    // Dedup is by mesh only (not by material combo). Multiple entities sharing the
+    // same mesh with different material overrides reuse one GLB; the engine extracts
+    // material/textures from the GLB once and entity-level material overrides come
+    // from external EcsMaterialRef. Splitting GLBs by material would cause the engine
+    // GLB cooker to write the same texture filename from multiple sources → asset
+    // collision.
+    static string ExportStaticGlbForRenderer(MeshRenderer mr, Mesh mesh,
+        Dictionary<string, string> exportedGlbs)
+    {
+        string meshKey = GetMeshKey(mesh);
+        if (exportedGlbs.TryGetValue(meshKey, out string cached))
+            return cached;
+
+        string glbName = GetMeshSourceName(mesh);
+        string glbPath = $"{OutputDir}/glb/{glbName}.glb";
+        string glbAssetPath = $"{AssetPrefix}/glb/{glbName}.glb";
+
+        HZGlbWriter.ExportStaticMesh(mesh, mr.sharedMaterials, glbPath);
+        exportedGlbs[meshKey] = glbAssetPath;
+        return glbAssetPath;
     }
 
     static string GetMeshKey(Mesh mesh)

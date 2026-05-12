@@ -121,6 +121,10 @@ namespace HZExporter
             public string terrainAssetPath; // asset-relative path to terrain .hzt/.hza (TerrainBlobAsset)
             public uint terrainGridDim;
             public uint terrainLodLevels;
+            // Extra LODs (LOD1+). Each entry: (model asset path, switch_coverage in
+            // screen-height-fraction units). Strictly descending switch_coverage.
+            // Emitted as EcsModelRef.extra_lods.
+            public System.Collections.Generic.List<(string modelAssetPath, float switchCoverage)> extraLods;
         }
 
         /// <summary>
@@ -300,6 +304,16 @@ namespace HZExporter
                 sb.AppendLine();
                 sb.AppendLine("component EcsModelRef");
                 sb.AppendLine($"  model {info.modelAssetPath} ModelBlobAsset");
+                int lodCount = info.extraLods != null ? info.extraLods.Count : 0;
+                if (lodCount > 0)
+                {
+                    sb.AppendLine($"  extra_lods {lodCount}");
+                    foreach (var (lodPath, switchCov) in info.extraLods)
+                    {
+                        sb.AppendLine($"    model {lodPath} ModelBlobAsset");
+                        sb.AppendLine($"    switch_coverage {F(switchCov)}");
+                    }
+                }
             }
 
             // EcsMaterialRef
