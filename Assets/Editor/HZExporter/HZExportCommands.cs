@@ -397,15 +397,17 @@ public static class HZExportCommands
         Debug.Log("[HZ] Body Block animation export done!");
     }
 
-    static System.Random s_stableIdRng;
-
-    static ulong NextStableId()
+    static ulong StableIdFor(GameObject go)
     {
-        byte[] buf = new byte[8];
-        s_stableIdRng.NextBytes(buf);
-        ulong id = System.BitConverter.ToUInt64(buf, 0);
-        if (id == 0) id = 1;
-        return id;
+        string gid = UnityEditor.GlobalObjectId.GetGlobalObjectIdSlow(go).ToString();
+        ulong h = HZBlobWriter.FNV1a(gid);
+        return h == 0 ? 1 : h;
+    }
+
+    static ulong StableIdForString(string key)
+    {
+        ulong h = HZBlobWriter.FNV1a(key);
+        return h == 0 ? 1 : h;
     }
 
     [MenuItem("HZ Engine/Export Active Scene")]
@@ -418,15 +420,13 @@ public static class HZExportCommands
         var roots = scene.GetRootGameObjects();
         var entities = new List<HZSceneExporter.EntityExportInfo>();
 
-        s_stableIdRng = new System.Random();
-
         // Map from GameObject instance ID to stable ID for parent references
         var goToStableId = new Dictionary<int, ulong>();
 
-        // First pass: assign stable IDs to all GameObjects
+        // First pass: assign stable IDs to all GameObjects via GlobalObjectId hash
         foreach (var root in roots)
             foreach (var t in root.GetComponentsInChildren<Transform>(true))
-                goToStableId[t.gameObject.GetInstanceID()] = NextStableId();
+                goToStableId[t.gameObject.GetInstanceID()] = StableIdFor(t.gameObject);
 
         // Collect GameObjects to skip: skeleton bones owned by each Animator. A nested Animator
         // (e.g. an attached separate skinned model) is its OWN character — its GO stays exportable
@@ -859,7 +859,7 @@ public static class HZExportCommands
                 rotation = Quaternion.identity,
                 scale = Vector3.one,
                 visible = true,
-                stableId = NextStableId(),
+                stableId = StableIdForString(scene.path + "::scene_settings"),
                 isSceneSettings = true,
                 ambientColor = new Vector3(ambient.r, ambient.g, ambient.b),
                 ambientIntensity = RenderSettings.ambientIntensity,
