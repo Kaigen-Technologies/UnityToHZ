@@ -48,7 +48,7 @@ namespace HZExporter
         // Camera: 4x mat4(256) + Frustum(96) + quat(16) + vec3(12) + 4x f32(16) = 396
         const int SIZE_Camera = 396;
         const int SIZE_EcsSceneSettings = 36;    // ColorF32(16) + f32(4) + ColorF32(16)
-        const int SIZE_EcsDirectionalLight = 48; // v3 direction(12) + v3 color(12) + f32 intensity(4) + b32 cast_shadow(4) + f32 shadow_distance(4) + 3*f32 shadow_strength/bias/normal_bias(12)
+        const int SIZE_EcsDirectionalLight = 36; // v3 color(12) + f32 intensity(4) + b32 cast_shadow(4) + f32 shadow_distance(4) + 3*f32 shadow_strength/bias/normal_bias(12)
         const int SIZE_EcsPointLight = 20;       // v3 color(12) + f32 radius(4) + f32 intensity(4)
         const int SIZE_EcsAnimationRef = 24;     // BlobAssetRef(AnimationBlobAsset)
         const int SIZE_EcsParent = 8;            // EcsEntity (u64)
@@ -394,10 +394,6 @@ namespace HZExporter
             {
                 sb.AppendLine();
                 sb.AppendLine("component EcsDirectionalLight");
-                sb.AppendLine("  direction");
-                sb.AppendLine($"    x {F(info.lightDirection.x)}");
-                sb.AppendLine($"    y {F(info.lightDirection.y)}");
-                sb.AppendLine($"    z {F(info.lightDirection.z)}");
                 sb.AppendLine("  color");
                 sb.AppendLine($"    x {F(info.lightColor.x)}");
                 sb.AppendLine($"    y {F(info.lightColor.y)}");
@@ -631,7 +627,6 @@ namespace HZExporter
             if (info.isDirectionalLight)
             {
                 ReserveComponent(HASH_EcsDirectionalLight, SIZE_EcsDirectionalLight, wr => {
-                    wr.WriteVec3(info.lightDirection.x, info.lightDirection.y, info.lightDirection.z);
                     wr.WriteVec3(info.lightColor.x, info.lightColor.y, info.lightColor.z);
                     wr.WriteF32(info.lightIntensity);
                     wr.WriteU32(info.castShadow ? 1u : 0u);
