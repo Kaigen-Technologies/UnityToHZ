@@ -48,7 +48,7 @@ namespace HZExporter
         // Camera: 4x mat4(256) + Frustum(96) + quat(16) + vec3(12) + 4x f32(16) = 396
         const int SIZE_Camera = 396;
         const int SIZE_EcsSceneSettings = 36;    // ColorF32(16) + f32(4) + ColorF32(16)
-        const int SIZE_EcsDirectionalLight = 36; // v3 direction(12) + v3 color(12) + f32 intensity(4) + b32 cast_shadow(4) + f32 shadow_distance(4)
+        const int SIZE_EcsDirectionalLight = 48; // v3 direction(12) + v3 color(12) + f32 intensity(4) + b32 cast_shadow(4) + f32 shadow_distance(4) + 3*f32 shadow_strength/bias/normal_bias(12)
         const int SIZE_EcsPointLight = 20;       // v3 color(12) + f32 radius(4) + f32 intensity(4)
         const int SIZE_EcsAnimationRef = 24;     // BlobAssetRef(AnimationBlobAsset)
         const int SIZE_EcsParent = 8;            // EcsEntity (u64)
@@ -93,6 +93,9 @@ namespace HZExporter
             public float lightIntensity;
             public bool castShadow;
             public float shadowDistance;
+            public float shadowStrength;
+            public float shadowBias;
+            public float shadowNormalBias;
             // Hierarchy
             public ulong parentStableId; // 0 = root (no parent)
             public ulong stableId;       // assigned by caller
@@ -402,6 +405,9 @@ namespace HZExporter
                 sb.AppendLine($"  intensity {F(info.lightIntensity)}");
                 sb.AppendLine($"  cast_shadow {(info.castShadow ? "true" : "false")}");
                 sb.AppendLine($"  shadow_distance {F(info.shadowDistance)}");
+                sb.AppendLine($"  shadow_strength {F(info.shadowStrength)}");
+                sb.AppendLine($"  shadow_bias {F(info.shadowBias)}");
+                sb.AppendLine($"  shadow_normal_bias {F(info.shadowNormalBias)}");
             }
 
             // EcsPointLight
@@ -630,6 +636,9 @@ namespace HZExporter
                     wr.WriteF32(info.lightIntensity);
                     wr.WriteU32(info.castShadow ? 1u : 0u);
                     wr.WriteF32(info.shadowDistance);
+                    wr.WriteF32(info.shadowStrength);
+                    wr.WriteF32(info.shadowBias);
+                    wr.WriteF32(info.shadowNormalBias);
                 });
             }
 

@@ -135,6 +135,9 @@
       "engineShader": "shaders/vegetation_material.hza",
       "engineSkinnedShader": "shaders/vegetation_material.hza",
       "customShader": true,
+      "cullMode": "GPU_CULL_NONE",
+      "shadowShader": "shaders/vegetation_shadow_material.hza",
+      "shadowKeywords": [],
       "properties": [
         { "unity": "_Top_Color",            "slot": "top_color",            "kind": "color4" },
         { "unity": "_Bottom_Color",         "slot": "bottom_color",         "kind": "color4" },

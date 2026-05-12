@@ -45,6 +45,15 @@ namespace HZExporter
             // additive (ONE/ONE).
             public BlendState blend;
             public List<PropertyMap> properties;
+            // Optional per-material shadow caster. When set, the cooked
+            // material gets a shadow_shader + shadow_keywords block so the
+            // engine builds a dedicated shadow pipeline (e.g. alpha-clipped
+            // foliage). Omit entirely to fall back to the engine's global
+            // standard_shadow pipeline.
+            public string shadowShader;
+            public List<string> shadowKeywords;
+            // Shader-level cull default; per-material `_Cull` wins if present.
+            public string cullMode;
         }
 
         /// <summary>Per-shader override for MaterialBlobAsset.blend (GpuBlendState).
@@ -198,6 +207,29 @@ namespace HZExporter
             // appear only when ON; enum keywords always appear with their
             // currently-selected entry.
             public List<HZKeywordReader.KeywordKV> keywords = new List<HZKeywordReader.KeywordKV>();
+            // Optional per-material shadow caster. When shadowShaderPath is
+            // null/empty the engine falls back to the global standard_shadow
+            // pipeline. Most often shadowShaderPath == shaderPath with a
+            // different keyword set (e.g. ["HZ_SHADOW_PASS"]).
+            public string shadowShaderPath;
+            public List<HZKeywordReader.KeywordKV> shadowKeywords;
+            // Resolved GpuCullMode token (e.g. "GPU_CULL_BACK"). Always populated.
+            public string cullMode;
+        }
+
+        // Unity URP `_Cull` (0=Off, 1=Front, 2=Back) → engine GpuCullMode token.
+        // Material `_Cull` wins when present; else shader_mapping `cullMode`; else GPU_CULL_BACK.
+        static string ResolveCullMode(Material mat, ShaderEntry entry)
+        {
+            if (mat != null && mat.HasProperty("_Cull"))
+            {
+                int v = (int)mat.GetFloat("_Cull");
+                if (v == 0) return "GPU_CULL_NONE";
+                if (v == 1) return "GPU_CULL_FRONT";
+                if (v == 2) return "GPU_CULL_BACK";
+            }
+            if (entry != null && !string.IsNullOrEmpty(entry.cullMode)) return entry.cullMode;
+            return "GPU_CULL_BACK";
         }
 
         // Slot → PBR role. Expanded later when custom engine shaders need non-PBR routing.
@@ -347,7 +379,20 @@ namespace HZExporter
                 blend = entry.blend,
                 properties = new List<CustomProperty>(),
                 keywords = HZKeywordReader.ReadEnabled(mat),
+                cullMode = ResolveCullMode(mat, entry),
             };
+
+            // Optional shadow caster — copy declaratively from shader_mapping.json.
+            // When the entry omits shadowShader, the cooked material gets no
+            // shadow_shader block and the engine uses standard_shadow.
+            if (!string.IsNullOrEmpty(entry.shadowShader))
+            {
+                cm.shadowShaderPath = entry.shadowShader;
+                cm.shadowKeywords = new List<HZKeywordReader.KeywordKV>();
+                if (entry.shadowKeywords != null)
+                    foreach (var name in entry.shadowKeywords)
+                        cm.shadowKeywords.Add(new HZKeywordReader.KeywordKV { name = name, value = "" });
+            }
 
             foreach (var p in entry.properties ?? new List<PropertyMap>())
             {

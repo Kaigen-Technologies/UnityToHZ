@@ -32,12 +32,22 @@ namespace HZExporter
             // consistent — `1_UnlitTest.shadergraph` → `1_unlit_test.hz.glsl`.
             string name = Path.GetFileNameWithoutExtension(shadergraphPath);
             string fileStem = SgNames.ToSnakeCase(name);
-            string glsl = SgCodegen.Emit(graph, name);
+            var emitted = SgCodegen.Emit(graph, name);
 
             Directory.CreateDirectory(outDir);
             string outPath = Path.Combine(outDir, fileStem + ".hz.glsl");
-            File.WriteAllText(outPath, glsl);
+            File.WriteAllText(outPath, emitted.Forward);
             Debug.Log($"[HZ-SG] {name} -> {outPath} (variant={graph.Variant})");
+
+            // Alpha-clipped graphs also produce a sibling shadow caster
+            // shader so the material's shadow_shader ref has somewhere to
+            // point. Same vertex displacement body; alpha-clip-only fs.
+            if (emitted.Shadow != null)
+            {
+                string shadowPath = Path.Combine(outDir, fileStem + "_shadow.hz.glsl");
+                File.WriteAllText(shadowPath, emitted.Shadow);
+                Debug.Log($"[HZ-SG] {name} -> {shadowPath} (shadow caster)");
+            }
         }
     }
 }

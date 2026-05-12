@@ -1256,7 +1256,7 @@ namespace HZExporter
             json.Append("          \"depth_test\": true,\n");
             json.Append($"          \"depth_write\": {(cm.isTransparent ? "false" : "true")},\n");
             json.Append("          \"depth_compare\": \"GPU_COMPARE_GREATER_EQUAL\",\n");
-            json.Append("          \"cull_mode\": \"GPU_CULL_BACK\",\n");
+            json.Append($"          \"cull_mode\": \"{cm.cullMode ?? "GPU_CULL_BACK"}\",\n");
             json.Append($"          \"is_transparent\": {(cm.isTransparent ? "true" : "false")},\n");
             json.Append("          \"alpha_cutoff\": false,\n");
             // Emit explicit blend block when shader_mapping.json specifies one;
@@ -1322,7 +1322,29 @@ namespace HZExporter
                 }
                 json.Append("\n          ");
             }
-            json.Append("]\n");
+            json.Append("]");
+            // Optional per-material shadow caster. Only emit when the
+            // shader_mapping.json entry declared a shadowShader; absence is
+            // the signal to the engine to use its global standard_shadow.
+            if (!string.IsNullOrEmpty(cm.shadowShaderPath))
+            {
+                json.Append(",\n          \"shadow_shader\": \"" + EscapeJson(cm.shadowShaderPath) + "\"");
+                json.Append(",\n          \"shadow_keywords\": [");
+                if (cm.shadowKeywords != null && cm.shadowKeywords.Count > 0)
+                {
+                    json.Append("\n");
+                    for (int i = 0; i < cm.shadowKeywords.Count; i++)
+                    {
+                        var k = cm.shadowKeywords[i];
+                        if (i > 0) json.Append(",\n");
+                        json.Append("            { \"name\": \"" + EscapeJson(k.name ?? "") +
+                                    "\", \"value\": \"" + EscapeJson(k.value ?? "") + "\" }");
+                    }
+                    json.Append("\n          ");
+                }
+                json.Append("]");
+            }
+            json.Append("\n");
             json.Append("        }\n      }\n    }");
         }
 

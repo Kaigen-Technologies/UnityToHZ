@@ -8,10 +8,18 @@ namespace HZExporter.ShaderGraph
     // skeleton lives in one place and isn't smeared across the orchestrator.
     static class SgCodegen
     {
-        public static string Emit(SgGraph g, string sourceName)
+        // Output of Emit. `Forward` is always populated; `Shadow` is non-null
+        // only when the graph has alpha clip (so its shadow caster needs the
+        // alpha test). Each is a full .hz.glsl source ready to write.
+        public struct EmittedShaders {
+            public string Forward;
+            public string Shadow; // null when no separate shadow caster needed
+        }
+
+        public static EmittedShaders Emit(SgGraph g, string sourceName)
         {
-            var sb = new StringBuilder();
-            sb.AppendLine($"// Generated from {sourceName}.shadergraph by HZShaderGraphExporter");
+            var fwd = new StringBuilder();
+            fwd.AppendLine($"// Generated from {sourceName}.shadergraph by HZShaderGraphExporter");
 
             // Keyword manifest. Engine compiler reads these to generate the
             // `#define` permutations / variant matrix. We list every keyword
@@ -21,34 +29,62 @@ namespace HZExporter.ShaderGraph
             foreach (var kw in g.Keywords)
             {
                 if (kw.IsBoolean)
-                    sb.AppendLine($"// @keyword {kw.ReferenceName} Boolean default={(kw.DefaultValue == 0 ? "Off" : "On")}");
+                    fwd.AppendLine($"// @keyword {kw.ReferenceName} Boolean default={(kw.DefaultValue == 0 ? "Off" : "On")}");
                 else
                 {
                     var entries = string.Join(",", kw.Entries.ConvertAll(e => e.ReferenceName));
                     string def = kw.DefaultValue >= 0 && kw.DefaultValue < kw.Entries.Count
                         ? kw.Entries[kw.DefaultValue].ReferenceName : "?";
-                    sb.AppendLine($"// @keyword {kw.ReferenceName} Enum entries={entries} default={def}");
+                    fwd.AppendLine($"// @keyword {kw.ReferenceName} Enum entries={entries} default={def}");
                 }
             }
-            // Alpha-clipped materials get a HZ_SHADOW_PASS variant so the
-            // shadow caster can alpha-test the leaf texture instead of
-            // rendering the full bounding quad as a solid occluder. Opaque
-            // materials skip this and fall back to the engine's global
-            // standard_shadow pipeline.
-            if (g.AlphaClip)
-                sb.AppendLine("// @keyword HZ_SHADOW_PASS Boolean default=Off");
 
-            sb.AppendLine("#include \"renderer.glsl\"");
-            sb.AppendLine();
+            fwd.AppendLine("#include \"renderer.glsl\"");
+            fwd.AppendLine();
 
             switch (g.Variant)
             {
-                case SgVariant.Unlit: sb.Append(EmitFromTemplate(g, UNLIT_TEMPLATE, isLit: false)); break;
-                case SgVariant.Lit:   sb.Append(EmitFromTemplate(g, LIT_TEMPLATE,   isLit: true));  break;
+                case SgVariant.Unlit: fwd.Append(EmitFromTemplate(g, UNLIT_TEMPLATE, isLit: false)); break;
+                case SgVariant.Lit:   fwd.Append(EmitFromTemplate(g, LIT_TEMPLATE,   isLit: true));  break;
                 default:
                     throw new System.NotImplementedException($"variant '{g.Variant}' not supported");
             }
-            return sb.ToString();
+
+            // Sibling shadow caster — only when the material is alpha-clipped.
+            // Opaque materials use the engine's global standard_shadow pipeline
+            // and don't need a per-material file.
+            string shadow = null;
+            if (g.AlphaClip)
+            {
+                var sh = new StringBuilder();
+                sh.AppendLine($"// Generated from {sourceName}.shadergraph by HZShaderGraphExporter (shadow caster)");
+                // Forward the graph's keyword manifest so the shadow shader's
+                // variant matrix matches the forward shader's. Keywords that
+                // don't affect the shadow body just compile to identical
+                // bytecode in every variant — the cooker dedups by hash.
+                foreach (var kw in g.Keywords)
+                {
+                    if (kw.IsBoolean)
+                        sh.AppendLine($"// @keyword {kw.ReferenceName} Boolean default={(kw.DefaultValue == 0 ? "Off" : "On")}");
+                    else
+                    {
+                        var entries = string.Join(",", kw.Entries.ConvertAll(e => e.ReferenceName));
+                        string def = kw.DefaultValue >= 0 && kw.DefaultValue < kw.Entries.Count
+                            ? kw.Entries[kw.DefaultValue].ReferenceName : "?";
+                        sh.AppendLine($"// @keyword {kw.ReferenceName} Enum entries={entries} default={def}");
+                    }
+                }
+                // HZ_RENDERER_SHADOW_PASS must be defined BEFORE the include
+                // so renderer_shaders.glsl exposes hz_shadow_indices and
+                // unpack_shadow_pass_instance_data() under that gate.
+                sh.AppendLine("#define HZ_RENDERER_SHADOW_PASS");
+                sh.AppendLine("#include \"renderer.glsl\"");
+                sh.AppendLine();
+                sh.Append(EmitShadowFromTemplate(g));
+                shadow = sh.ToString();
+            }
+
+            return new EmittedShaders { Forward = fwd.ToString(), Shadow = shadow };
         }
 
         // A surface assignment we'll emit at the end of main() — base_color =
@@ -95,23 +131,6 @@ namespace HZExporter.ShaderGraph
             }
             SgOptimize.Run(ctx.Statements, assigns);
 
-            // ----- shadow-pass body (alpha clip only) ----------------------
-            // Lower Alpha + AlphaClipThreshold in a fresh ctx with NO other
-            // surface roots, so DCE prunes everything except what feeds the
-            // alpha test. The HZ_SHADOW_PASS keyword variant in the emitted
-            // shader picks this body; the rest of the fragment work (lighting,
-            // ibl, cluster lights, compositing) is excluded.
-            LowerCtx shadowCtx = null;
-            List<Assign> shadowAssigns = null;
-            if (g.AlphaClip)
-            {
-                shadowCtx = new LowerCtx(g);
-                shadowAssigns = new List<Assign>();
-                shadowAssigns.Add(LowerSurface(g, shadowCtx, "Alpha",              "alpha",                SgType.Float, Sg.Lit(1.0)));
-                shadowAssigns.Add(LowerSurface(g, shadowCtx, "AlphaClipThreshold", "alpha_clip_threshold", SgType.Float, Sg.Lit(0.5)));
-                SgOptimize.Run(shadowCtx.Statements, shadowAssigns);
-            }
-
             // ----- functions (subgraphs from either stage, deduped) --------
             var allFunctions = new List<SgFunctionDef>();
             var seenFnNames = new HashSet<string>();
@@ -153,19 +172,6 @@ namespace HZExporter.ShaderGraph
                 body.Append("    if (alpha < alpha_clip_threshold) discard;\n");
             string bodyStr = body.ToString().TrimEnd('\n');
 
-            // Shadow-pass body: same shape but only the alpha-clip slice.
-            // Empty string when the material isn't alpha-clipped (the @fs
-            // template falls through to a no-op shadow body in that case).
-            string shadowBodyStr = "";
-            if (shadowCtx != null)
-            {
-                var shadowBody = new StringBuilder();
-                EmitStatementsWithGroupHeaders(shadowBody, shadowCtx.Statements, g);
-                foreach (var a in shadowAssigns) shadowBody.Append("    ").Append(a.Format()).Append('\n');
-                shadowBody.Append("    if (alpha < alpha_clip_threshold) discard;\n");
-                shadowBodyStr = shadowBody.ToString().TrimEnd('\n');
-            }
-
             // Only emit the vertex-stage material mirror when something in
             // the vertex stage actually reads material data. Detect via the
             // `mat.` substring in the rendered vsBody (the optimizer leaves
@@ -201,8 +207,84 @@ namespace HZExporter.ShaderGraph
                 .Replace("${VS_POS}",      vsPos)
                 .Replace("${VS_NORMAL}",   vsNormal)
                 .Replace("${VS_TANGENT}",  vsTangent)
-                .Replace("${MAIN_BODY}",   bodyStr)
-                .Replace("${SHADOW_BODY}", shadowBodyStr);
+                .Replace("${MAIN_BODY}",   bodyStr);
+        }
+
+        // Emit the sibling shadow caster source. Same vertex displacement
+        // body as the forward shader (substituted from the same lowered
+        // ${VERTEX_BODY} so wind/bend stays in sync), and a fragment stage
+        // that runs only the alpha-clip slice + discard. Only called when
+        // g.AlphaClip is true.
+        static string EmitShadowFromTemplate(SgGraph g)
+        {
+            // Reuse the same vertex lowering as the forward shader so the
+            // shadow geometry follows the same wind/bend computation.
+            var vsCtx = new LowerCtx(g) { IsVertexStage = true };
+            var vsAssigns = new List<Assign>();
+            string vsPos = LowerVertexBlock(g, vsCtx, vsAssigns, "Position", "vertex_position", "v.pos");
+            // Normal/Tangent aren't sampled by the shadow @fs, but the
+            // vertex lowering shares one ctx — we just don't substitute
+            // them. Running the lowering keeps the temp numbering and
+            // optimizer pass identical to the forward path.
+            LowerVertexBlock(g, vsCtx, vsAssigns, "Normal",  "vertex_normal",  "v.normal");
+            LowerVertexBlock(g, vsCtx, vsAssigns, "Tangent", "vertex_tangent", "v.tangent");
+            SgOptimize.Run(vsCtx.Statements, vsAssigns);
+
+            // Shadow fragment lowering: only Alpha + AlphaClipThreshold as
+            // DCE roots — everything else (base_color, emission, lighting)
+            // is pruned out.
+            var ctx = new LowerCtx(g);
+            var assigns = new List<Assign>();
+            assigns.Add(LowerSurface(g, ctx, "Alpha",              "alpha",                SgType.Float, Sg.Lit(1.0)));
+            assigns.Add(LowerSurface(g, ctx, "AlphaClipThreshold", "alpha_clip_threshold", SgType.Float, Sg.Lit(0.5)));
+            SgOptimize.Run(ctx.Statements, assigns);
+
+            // Functions + helpers — alpha lowering rarely uses subgraphs, but
+            // if it does, emit only what its DCE kept.
+            var allFunctions = new List<SgFunctionDef>();
+            var seenFnNames = new HashSet<string>();
+            foreach (var fn in vsCtx.Functions) if (seenFnNames.Add(fn.Name)) allFunctions.Add(fn);
+            foreach (var fn in ctx.Functions)   if (seenFnNames.Add(fn.Name)) allFunctions.Add(fn);
+            foreach (var fn in allFunctions)
+            {
+                var roots = new List<SgOptimize.IAssignView>(fn.Outputs.Count);
+                foreach (var o in fn.Outputs) roots.Add(new FunctionOutputView(o));
+                SgOptimize.Run(fn.Body, roots);
+            }
+            var functions = new StringBuilder();
+            foreach (var fn in allFunctions) functions.Append(FormatFunction(fn)).Append('\n');
+
+            var fsHelpers = new StringBuilder();
+            foreach (var h in ctx.HelperFunctions) fsHelpers.Append(h.body).Append("\n\n");
+            var vsHelpers = new StringBuilder();
+            foreach (var h in vsCtx.HelperFunctions) vsHelpers.Append(h.body).Append("\n\n");
+
+            var vsBody = new StringBuilder();
+            EmitStatementsWithGroupHeaders(vsBody, vsCtx.Statements, g);
+            foreach (var a in vsAssigns) vsBody.Append("    ").Append(a.Format()).Append('\n');
+
+            var body = new StringBuilder();
+            EmitStatementsWithGroupHeaders(body, ctx.Statements, g);
+            foreach (var a in assigns) body.Append("    ").Append(a.Format()).Append('\n');
+            body.Append("    if (alpha < alpha_clip_threshold) discard;\n");
+
+            string vsBodyStr = vsBody.ToString();
+            bool vsNeedsMaterial = vsBodyStr.Contains("mat.");
+            string vsMaterial = vsNeedsMaterial ? FormatVertexMaterialMirror(g) : "";
+            string vsMatUnpack = vsNeedsMaterial
+                ? "    MaterialFS mat = MaterialFS_unpack(v.material_offset);\n"
+                : "";
+
+            return SHADOW_TEMPLATE
+                .Replace("${MATERIAL_STRUCT}", FormatMaterialStruct(g))
+                .Replace("${VS_MATERIAL}",     vsMaterial)
+                .Replace("${VS_MAT_UNPACK}",   vsMatUnpack)
+                .Replace("${VS_HELPERS}",      vsHelpers.ToString())
+                .Replace("${SHADOW_HELPERS}",  fsHelpers.ToString())
+                .Replace("${SHADOW_FUNCTIONS}", functions.ToString())
+                .Replace("${VERTEX_BODY}",     vsBodyStr)
+                .Replace("${VS_POS}",          vsPos)
+                .Replace("${SHADOW_BODY}",     body.ToString().TrimEnd('\n'));
         }
 
         // Emit statements with `// === <group title> ===` headers injected
@@ -515,19 +597,13 @@ in vec2 v_uv1;
 in vec4 v_color;
 flat in uint v_material_offset;
 in vec3 v_normal;
-#ifndef HZ_SHADOW_PASS
 out vec4 frag_color;
-#endif
 
 ${MATERIAL_STRUCT}
 ${HELPERS}${FUNCTIONS}void main() {
     MaterialFS mat = MaterialFS_unpack(v_material_offset);
-#ifdef HZ_SHADOW_PASS
-${SHADOW_BODY}
-#else
 ${MAIN_BODY}
     frag_color = vec4(base_color, 1.0);
-#endif
 }
 @end
 ";
@@ -575,16 +651,11 @@ flat in uint v_material_offset;
 in vec3 v_tangent;
 in float v_bitangent_sign;
 in float v_view_depth;
-#ifndef HZ_SHADOW_PASS
 out vec4 frag_color;
-#endif
 
 ${MATERIAL_STRUCT}
 ${HELPERS}${FUNCTIONS}void main() {
     MaterialFS mat = MaterialFS_unpack(v_material_offset);
-#ifdef HZ_SHADOW_PASS
-${SHADOW_BODY}
-#else
 ${MAIN_BODY}
     vec3 N = apply_normal_map(v_normal, v_tangent, v_bitangent_sign, normal_ts);
 
@@ -608,7 +679,54 @@ ${MAIN_BODY}
     lit *= occlusion;
     lit += emission;
     frag_color = vec4(lit, 1.0);
+}
+@end
+";
+
+        // Sibling shadow caster shader, emitted next to the forward LIT/UNLIT
+        // shader when the graph has alpha clip. Same vertex displacement body
+        // (substituted via ${VERTEX_BODY}) so the shadow geometry stays in
+        // lockstep with the visible mesh under wind / bend. Fragment is just
+        // the alpha-clip slice + discard. Modeled on standard_shadow.hz.glsl.
+        const string SHADOW_TEMPLATE =
+@"@vs
+// HZ_RENDERER_SHADOW_PASS is defined at the file top (before the
+// renderer.glsl include) so the engine exposes hz_shadow_indices and
+// unpack_shadow_pass_instance_data() under that gate. The cooker
+// (renderer_shader_preprocess) also reads this define to emit
+// MAT_UB_SHADOW_PASS at UBO slot 1 + MAT_SRV_SHADOW_INDICES at the next
+// SRV slot. Re-defining inside @vs is redundant but keeps the intent
+// readable at the stage boundary.
+#define HZ_RENDERER_SHADOW_PASS
+out vec2 v_uv;
+flat out uint v_material_offset;
+${VS_MATERIAL}
+${VS_HELPERS}
+void main() {
+    ShadowPassInstance _s = unpack_shadow_pass_instance_data();
+    VertexInstanceData v = _s.v;
+    uint cascade = _s.cascade;
+${VS_MAT_UNPACK}${VERTEX_BODY}    vec3 world_pos    = (v.model * vec4(${VS_POS}, 1.0)).xyz;
+    vec3 world_normal = normalize(mat3(v.model) * v.normal);
+    world_pos = apply_shadow_bias(world_pos, world_normal, cascade);
+    gl_Position = apply_shadow_clamping(hz_shadow_pass.light_view_proj[cascade] * vec4(world_pos, 1.0));
+#ifndef SHADER_BACKEND_WGSL
+    gl_ViewportIndex = int(cascade);
 #endif
+    v_uv = v.uv;
+    v_material_offset = v.material_offset;
+}
+@end
+
+@fs
+#define HZ_RENDERER_SHADOW_PASS
+in vec2 v_uv;
+flat in uint v_material_offset;
+
+${MATERIAL_STRUCT}
+${SHADOW_HELPERS}${SHADOW_FUNCTIONS}void main() {
+    MaterialFS mat = MaterialFS_unpack(v_material_offset);
+${SHADOW_BODY}
 }
 @end
 ";
