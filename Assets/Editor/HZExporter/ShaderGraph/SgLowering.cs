@@ -1106,6 +1106,8 @@ namespace HZExporter.ShaderGraph
             // rendering, which is the engine's setup.
             if (!ctx.IsVertexStage)
             {
+                if (space == 0)
+                    return new SgValue { Rhs = Sg.Raw("v_object_pos"), Type = SgType.Vec3, IsTemp = false };
                 if (space == 2 || space == 4)
                     return new SgValue { Rhs = Sg.Raw("v_world_pos"), Type = SgType.Vec3, IsTemp = false };
                 return new SgValue

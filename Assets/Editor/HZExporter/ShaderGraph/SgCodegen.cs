@@ -612,6 +612,7 @@ ${MAIN_BODY}
 @"@vs
 #define HZ_RENDERER_LIGHTING_CLUSTERS
 out vec3 v_world_pos;
+out vec3 v_object_pos;
 out vec3 v_normal;
 out vec2 v_uv;
 out vec2 v_uv1;
@@ -627,6 +628,7 @@ void main() {
 ${VS_MAT_UNPACK}${VERTEX_BODY}    vec4 world_pos = v.model * vec4(${VS_POS}, 1.0);
     gl_Position = hz_scene.view_proj * world_pos;
     v_world_pos = world_pos.xyz;
+    v_object_pos = ${VS_POS};
     v_normal = normalize((v.model * vec4(${VS_NORMAL}, 0.0)).xyz);
     v_tangent = normalize((v.model * vec4(${VS_TANGENT}, 0.0)).xyz);
     v_bitangent_sign = v.bitangent_sign;
@@ -644,6 +646,7 @@ ${VS_MAT_UNPACK}${VERTEX_BODY}    vec4 world_pos = v.model * vec4(${VS_POS}, 1.0
 #define HZ_RENDERER_LIGHTING_CLUSTERS
 #define HZ_RENDERER_FOG
 ${FS_FEATURE_DEFINES}in vec3 v_world_pos;
+in vec3 v_object_pos;
 in vec3 v_normal;
 in vec2 v_uv;
 in vec2 v_uv1;

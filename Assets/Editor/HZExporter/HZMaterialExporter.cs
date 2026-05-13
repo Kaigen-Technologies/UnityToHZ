@@ -165,7 +165,7 @@ namespace HZExporter
             sb.AppendLine("type MaterialBlobAsset");
             sb.AppendLine("version 3");
             sb.AppendLine("---");
-            sb.AppendLine($"material_shader {shaderPath} MaterialShaderBlobAsset");
+            sb.AppendLine($"shader_source {shaderPath} ShaderBlobAsset");
             sb.AppendLine("depth_test true");
             sb.AppendLine("depth_write true");
             sb.AppendLine("depth_compare GPU_COMPARE_GREATER_EQUAL");
@@ -246,7 +246,7 @@ namespace HZExporter
             sb.AppendLine("type MaterialBlobAsset");
             sb.AppendLine("version 3");
             sb.AppendLine("---");
-            sb.AppendLine($"material_shader {shaderPath} MaterialShaderBlobAsset");
+            sb.AppendLine($"shader_source {shaderPath} ShaderBlobAsset");
             sb.AppendLine("depth_test true");
             sb.AppendLine("depth_write true");
             sb.AppendLine("depth_compare GPU_COMPARE_GREATER_EQUAL");

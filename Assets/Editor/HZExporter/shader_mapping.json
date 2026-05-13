@@ -3,8 +3,8 @@
   "shaders": [
     {
       "unityShader": "Universal Render Pipeline/Lit",
-      "engineShader": "shaders/standard_static_material.hza",
-      "engineSkinnedShader": "shaders/standard_skinned_material.hza",
+      "engineShader": "/shaders/renderer/standard_static.hz.glsl",
+      "engineSkinnedShader": "/shaders/renderer/standard_skinned.hz.glsl",
       "properties": [
         { "unity": "_BaseColor",        "slot": "baseColor",   "kind": "color4" },
         { "unity": "_Color",            "slot": "baseColor",   "kind": "color4" },
@@ -21,8 +21,8 @@
     },
     {
       "unityShader": "Shader Graphs/FloorTriplanar",
-      "engineShader": "shaders/standard_static_material.hza",
-      "engineSkinnedShader": "shaders/standard_skinned_material.hza",
+      "engineShader": "/shaders/renderer/standard_static.hz.glsl",
+      "engineSkinnedShader": "/shaders/renderer/standard_skinned.hz.glsl",
       "properties": [
         { "unity": "_Color",           "slot": "baseColor",   "kind": "color4" },
         { "unity": "_MainTexture",     "slot": "albedoTex",   "kind": "texture" },
@@ -33,8 +33,8 @@
     },
     {
       "unityShader": "IL3DN/Branch",
-      "engineShader": "shaders/standard_static_material.hza",
-      "engineSkinnedShader": "shaders/standard_skinned_material.hza",
+      "engineShader": "/shaders/renderer/standard_static.hz.glsl",
+      "engineSkinnedShader": "/shaders/renderer/standard_skinned.hz.glsl",
       "properties": [
         { "unity": "_Color",   "slot": "baseColor", "kind": "color4" },
         { "unity": "_MainTex", "slot": "albedoTex", "kind": "texture" }
@@ -42,8 +42,8 @@
     },
     {
       "unityShader": "IL3DN/Pine",
-      "engineShader": "shaders/standard_static_material.hza",
-      "engineSkinnedShader": "shaders/standard_skinned_material.hza",
+      "engineShader": "/shaders/renderer/standard_static.hz.glsl",
+      "engineSkinnedShader": "/shaders/renderer/standard_skinned.hz.glsl",
       "properties": [
         { "unity": "_Color",   "slot": "baseColor", "kind": "color4" },
         { "unity": "_MainTex", "slot": "albedoTex", "kind": "texture" }
@@ -51,8 +51,8 @@
     },
     {
       "unityShader": "Shader Graphs/BasicShader",
-      "engineShader": "shaders/basic_shader_material.hza",
-      "engineSkinnedShader": "shaders/basic_shader_material.hza",
+      "engineShader": "/shaders/unity/basic_shader.hz.glsl",
+      "engineSkinnedShader": "/shaders/unity/basic_shader.hz.glsl",
       "customShader": true,
       "properties": [
         { "unity": "_Highlight_Intensity", "slot": "highlight_intensity", "kind": "float" },
@@ -71,8 +71,8 @@
     },
     {
       "unityShader": "Idyllic Fantasy Nature/Surface",
-      "engineShader": "shaders/surface_material.hza",
-      "engineSkinnedShader": "shaders/surface_material.hza",
+      "engineShader": "/shaders/unity/surface.hz.glsl",
+      "engineSkinnedShader": "/shaders/unity/surface.hz.glsl",
       "customShader": true,
       "properties": [
         { "unity": "_Color",                     "slot": "color",                     "kind": "color4" },
@@ -99,8 +99,8 @@
     },
     {
       "unityShader": "Shader Graphs/CharacterBaseShader",
-      "engineShader": "shaders/character_base_shader_material.hza",
-      "engineSkinnedShader": "shaders/character_base_shader_material.hza",
+      "engineShader": "/shaders/unity/character_base_shader.hz.glsl",
+      "engineSkinnedShader": "/shaders/unity/character_base_shader.hz.glsl",
       "customShader": true,
       "properties": [
         { "unity": "_Shadow_Sharpness",     "slot": "shadow_sharpness",     "kind": "float" },
@@ -132,11 +132,11 @@
     },
     {
       "unityShader": "Idyllic Fantasy Nature/Vegetation",
-      "engineShader": "shaders/vegetation_material.hza",
-      "engineSkinnedShader": "shaders/vegetation_material.hza",
+      "engineShader": "/shaders/unity/vegetation.hz.glsl",
+      "engineSkinnedShader": "/shaders/unity/vegetation.hz.glsl",
       "customShader": true,
       "cullMode": "GPU_CULL_NONE",
-      "shadowShader": "shaders/vegetation_shadow_material.hza",
+      "shadowShader": "/shaders/unity/vegetation_shadow.hz.glsl",
       "shadowKeywords": [],
       "properties": [
         { "unity": "_Top_Color",            "slot": "top_color",            "kind": "color4" },
@@ -158,8 +158,8 @@
     },
     {
       "unityShader": "Idyllic Fantasy Nature/Water",
-      "engineShader": "shaders/water_material.hza",
-      "engineSkinnedShader": "shaders/water_material.hza",
+      "engineShader": "/shaders/unity/water.hz.glsl",
+      "engineSkinnedShader": "/shaders/unity/water.hz.glsl",
       "customShader": true,
       "isTransparent": true,
       "properties": [
