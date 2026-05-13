@@ -853,6 +853,9 @@ public static class HZExportCommands
             // (raw RenderSettings color, no .linear) so engine recovers what Unity uses.
             Color ambient = LinearToSrgb(RenderSettings.ambientLight);
             Color shadowCol = LinearToSrgb(RenderSettings.subtractiveShadowColor);
+            // Unity FogMode: Linear=1, Exponential=2, ExponentialSquared=3 — same numbers as RendererFogMode.
+            uint fogMode = RenderSettings.fog ? (uint)RenderSettings.fogMode : 0u;
+            Color fogColRaw = LinearToSrgb(RenderSettings.fogColor);
             entities.Add(new HZSceneExporter.EntityExportInfo {
                 name = "SceneSettings",
                 position = Vector3.zero,
@@ -868,6 +871,11 @@ public static class HZExportCommands
                 envAssetPath = envAssetPath,
                 envIntensity = envIntensity,
                 skybox = wantsSkybox,
+                fogMode = fogMode,
+                fogColor = new Vector3(fogColRaw.r, fogColRaw.g, fogColRaw.b),
+                fogDensity = RenderSettings.fogDensity,
+                fogStart = RenderSettings.fogStartDistance,
+                fogEnd = RenderSettings.fogEndDistance,
             });
         }
         string scenePath = $"{OutputDir}/scenes/{sceneName}.hzt";

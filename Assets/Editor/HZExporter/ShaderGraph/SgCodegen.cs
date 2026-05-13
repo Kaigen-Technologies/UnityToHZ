@@ -642,6 +642,7 @@ ${VS_MAT_UNPACK}${VERTEX_BODY}    vec4 world_pos = v.model * vec4(${VS_POS}, 1.0
 #define HZ_RENDERER_SHADOWS
 #define HZ_RENDERER_IBL
 #define HZ_RENDERER_LIGHTING_CLUSTERS
+#define HZ_RENDERER_FOG
 ${FS_FEATURE_DEFINES}in vec3 v_world_pos;
 in vec3 v_normal;
 in vec2 v_uv;
@@ -678,6 +679,7 @@ ${MAIN_BODY}
 
     lit *= occlusion;
     lit += emission;
+    lit = hz_apply_fog(lit, v_view_depth);
     frag_color = vec4(lit, 1.0);
 }
 @end

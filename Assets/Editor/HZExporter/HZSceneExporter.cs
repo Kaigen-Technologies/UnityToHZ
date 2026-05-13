@@ -120,6 +120,12 @@ namespace HZExporter
             public string envAssetPath;   // e.g. "unity/environments/SceneA_skybox.hza"
             public float envIntensity;
             public bool skybox;           // true if Unity has a skybox material assigned
+            // Fog (only meaningful when isSceneSettings == true)
+            public uint fogMode;          // 0=off, 1=linear, 2=exp, 3=exp2 (matches engine RendererFogMode)
+            public Vector3 fogColor;      // sRGB picker value; engine srgb-linears it
+            public float fogDensity;
+            public float fogStart;
+            public float fogEnd;
             // Terrain
             public string terrainAssetPath; // asset-relative path to terrain .hzt/.hza (TerrainBlobAsset)
             public uint terrainGridDim;
@@ -441,6 +447,15 @@ namespace HZExporter
                     sb.AppendLine($"  env_intensity {F(info.envIntensity)}");
                 }
                 sb.AppendLine($"  skybox {(info.skybox ? "true" : "false")}");
+                sb.AppendLine($"  fog_mode {info.fogMode}");
+                sb.AppendLine("  fog_color");
+                sb.AppendLine($"    r {F(info.fogColor.x)}");
+                sb.AppendLine($"    g {F(info.fogColor.y)}");
+                sb.AppendLine($"    b {F(info.fogColor.z)}");
+                sb.AppendLine($"    a 1.000000");
+                sb.AppendLine($"  fog_density {F(info.fogDensity)}");
+                sb.AppendLine($"  fog_start {F(info.fogStart)}");
+                sb.AppendLine($"  fog_end {F(info.fogEnd)}");
             }
 
             Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
