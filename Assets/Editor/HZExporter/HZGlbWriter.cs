@@ -26,6 +26,27 @@ namespace HZExporter
         const int UNSIGNED_INT = 5125;
         const int FLOAT = 5126;
 
+        // session-scoped dedup: warn once per mesh per editor domain reload so
+        // re-exports don't drown the console in identical messages. clears on
+        // domain reload (which is when new content would have been imported).
+        static readonly HashSet<string> _uvWarnedMeshes = new HashSet<string>();
+        public static void WarnExtraUVs(Mesh mesh)
+        {
+            if (mesh == null || !_uvWarnedMeshes.Add(mesh.name)) return;
+            if (mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.TexCoord2))
+                Debug.LogError($"[HZGlbWriter] Mesh '{mesh.name}' has UV2 (Unity mesh.uv3) data — dropping; engine vertex layout only carries UV0/UV1.");
+            if (mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.TexCoord3))
+                Debug.LogError($"[HZGlbWriter] Mesh '{mesh.name}' has UV3 (Unity mesh.uv4) data — dropping; engine vertex layout only carries UV0/UV1.");
+            if (mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.TexCoord4))
+                Debug.LogError($"[HZGlbWriter] Mesh '{mesh.name}' has UV4 (Unity mesh.uv5) data — dropping; engine vertex layout only carries UV0/UV1.");
+            if (mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.TexCoord5))
+                Debug.LogError($"[HZGlbWriter] Mesh '{mesh.name}' has UV5 (Unity mesh.uv6) data — dropping; engine vertex layout only carries UV0/UV1.");
+            if (mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.TexCoord6))
+                Debug.LogError($"[HZGlbWriter] Mesh '{mesh.name}' has UV6 (Unity mesh.uv7) data — dropping; engine vertex layout only carries UV0/UV1.");
+            if (mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.TexCoord7))
+                Debug.LogError($"[HZGlbWriter] Mesh '{mesh.name}' has UV7 (Unity mesh.uv8) data — dropping; engine vertex layout only carries UV0/UV1.");
+        }
+
         /// <summary>Export a single static mesh as .glb. Overload for single-material callers.</summary>
         public static void ExportStaticMesh(Mesh mesh, Material material, string outputPath)
         {
@@ -50,6 +71,7 @@ namespace HZExporter
             var tangents = mesh.tangents;
             var uvs = mesh.uv;
             var uvs1 = mesh.uv2;   // Unity's mesh.uv2 == UV1 / glTF TEXCOORD_1 / engine uvs1
+            WarnExtraUVs(mesh);
             var colors = mesh.colors32;  // glTF COLOR_0 — engine fills (1,1,1,1) when absent
             int vertexCount = mesh.vertexCount;
             bool useU16 = vertexCount <= 65535;
@@ -567,6 +589,7 @@ namespace HZExporter
                 var tangents = mesh.tangents;
                 var uvs = mesh.uv;
                 var uvs1 = mesh.uv2;   // UV1 / glTF TEXCOORD_1 / engine uvs1
+                WarnExtraUVs(mesh);
                 var colors = mesh.colors32;  // glTF COLOR_0
                 int submeshCount = Math.Max(1, mesh.subMeshCount);
                 bool useU16 = vertexCount <= 65535;

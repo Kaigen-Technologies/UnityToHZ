@@ -416,12 +416,17 @@ namespace HZExporter.ShaderGraph
             {
                 case 0: source = uv0; break;
                 case 1: source = uv1; break;
-                // UV2/UV3 fall back to UV0 — the engine doesn't carry those
-                // varyings today. Mostly hits BakedGI's static/dynamic UV
-                // inputs (we ignore them anyway) and the occasional
-                // mesh-color-mask use; the latter degrades visually but the
-                // shader still compiles and renders.
-                case 2: case 3: source = $"{uv0} /* TODO: UV channel {channel} not plumbed; falling back to UV0 */"; break;
+                // UV2/UV3 emit (0, 0). The engine vertex layout doesn't carry
+                // them; Unity's IA returns zeros for any TEXCOORD semantic the
+                // mesh doesn't actually bind, so this matches Unity's behavior
+                // for meshes WITHOUT the channel. LogError stays loud so we
+                // notice when a shader references one of these — if a mesh
+                // ever carries real UV2/UV3 data, the engine will read zero
+                // here (HZGlbWriter logs the dropped data separately).
+                case 2: case 3:
+                    UnityEngine.Debug.LogError($"[SgLowering] UV channel {channel} not plumbed in engine vertex layout — emitting vec2(0.0) in UVNode '{node.Id}' (stage={(ctx.IsVertexStage ? "vs" : "fs")}). Matches Unity behavior for meshes without UV{channel}; if a mesh does carry UV{channel}, that data is lost.");
+                    source = $"vec2(0.0) /* TODO: UV channel {channel} not plumbed; emitting zero */";
+                    break;
                 default: throw new NotImplementedException($"UV channel {channel} not wired");
             }
             // Varyings aren't constants — wrap as Raw so the optimizer leaves

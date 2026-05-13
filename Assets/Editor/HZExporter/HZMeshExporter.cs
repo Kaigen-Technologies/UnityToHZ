@@ -225,6 +225,7 @@ namespace HZExporter
                 var normals = mesh.normals;
                 var tangents = mesh.tangents;
                 var uvs = mesh.uv;
+                HZGlbWriter.WarnExtraUVs(mesh);
                 var triangles = mesh.triangles;
                 int indexCount = triangles.Length;
                 bool useU16 = vertexCount <= 65535;
@@ -344,6 +345,7 @@ namespace HZExporter
             var normals = mesh.normals;
             var tangents = mesh.tangents;
             var uvs = mesh.uv;
+            HZGlbWriter.WarnExtraUVs(mesh);
             var triangles = mesh.triangles;
             int vertexCount = mesh.vertexCount;
             int indexCount = triangles.Length;
