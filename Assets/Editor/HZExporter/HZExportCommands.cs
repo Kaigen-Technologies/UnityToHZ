@@ -856,6 +856,11 @@ public static class HZExportCommands
             // Unity FogMode: Linear=1, Exponential=2, ExponentialSquared=3 — same numbers as RendererFogMode.
             uint fogMode = RenderSettings.fog ? (uint)RenderSettings.fogMode : 0u;
             Color fogColRaw = LinearToSrgb(RenderSettings.fogColor);
+            // URP packs unity_FogParams.x = density/sqrt(ln2) and the shader uses exp2(...).
+            // Engine uses exp(-d*z) for EXP and exp(-(d*z)^2) for EXP2. EXP2 round-trips
+            // (the squared factor cancels ln2); EXP needs *sqrt(ln2) to match URP visually.
+            float fogDensity = RenderSettings.fogDensity;
+            if (fogMode == 2u) fogDensity *= Mathf.Sqrt(Mathf.Log(2.0f)); // ~0.8326
             entities.Add(new HZSceneExporter.EntityExportInfo {
                 name = "SceneSettings",
                 position = Vector3.zero,
@@ -873,7 +878,7 @@ public static class HZExportCommands
                 skybox = wantsSkybox,
                 fogMode = fogMode,
                 fogColor = new Vector3(fogColRaw.r, fogColRaw.g, fogColRaw.b),
-                fogDensity = RenderSettings.fogDensity,
+                fogDensity = fogDensity,
                 fogStart = RenderSettings.fogStartDistance,
                 fogEnd = RenderSettings.fogEndDistance,
             });
