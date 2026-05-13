@@ -13,6 +13,8 @@ namespace HZExporter.ShaderGraph
         public SgRhs Rhs;
         public SgType Type;
         public bool IsTemp;
+        // unity gradient mode tag: 0=blend, 1=fixed, 2=perceptual. null for non-gradient values.
+        public int? GradientMode;
         public string Glsl => Rhs.ToGlsl();   // convenience for callers that want the rendered form
 
         public static SgValue Temp(string name, SgType t) =>
@@ -246,7 +248,11 @@ namespace HZExporter.ShaderGraph
                         parts.Add($"vec3({SgTypes.FormatFloat(k.r)}, {SgTypes.FormatFloat(k.g)}, {SgTypes.FormatFloat(k.b)})");
                         parts.Add(SgTypes.FormatFloat(k.t));
                     }
-                    return SgValue.Inline(Sg.Raw($"GRADIENT_4({string.Join(", ", parts)})"), SgType.Unknown);
+                    int mode = 0;
+                    if (gv.TryGetValue("m_Mode", out var mo) && mo is double mdv) mode = (int)mdv;
+                    var litVal = SgValue.Inline(Sg.Raw($"GRADIENT_4({string.Join(", ", parts)})"), SgType.Unknown);
+                    litVal.GradientMode = mode;
+                    return litVal;
                 }
             }
             if (t == SgType.Unknown)
@@ -740,9 +746,15 @@ namespace HZExporter.ShaderGraph
             }
             string macro = $"GRADIENT_4({string.Join(", ", parts)})";
 
+            // gradient mode lives at the GradientNode root, not inside the keys.
+            int mode = 0;
+            if (node.Raw.TryGetValue("m_SerializableMode", out var mo) && mo is double mdv) mode = (int)mdv;
+
             // Type is "Gradient" (engine struct). Emit a temp with TypeName
             // override so subsequent SampleGradient consumers can read it.
-            return ctx.EmitStructTemp("Gradient", Sg.Raw(macro));
+            var tmp = ctx.EmitStructTemp("Gradient", Sg.Raw(macro));
+            tmp.GradientMode = mode;
+            return tmp;
         }
     }
 
@@ -757,7 +769,11 @@ namespace HZExporter.ShaderGraph
             // Inputs typically named "Gradient" and "Time"; output "Out".
             var grad = ctx.InputByName(node, "Gradient");
             var t    = ctx.InputByName(node, "Time");
-            return ctx.EmitTemp(SgType.Vec4, Sg.RawTemplate("gradient_sample_classic({0}, {1})", grad.Rhs, t.Rhs));
+            // dispatch by Unity Gradient mode: 0=Blend, 1=Fixed (step), 2=PerceptualBlend (OkLab).
+            string fn = "gradient_sample_classic";
+            if (grad.GradientMode == 1) fn = "gradient_sample_fixed";
+            else if (grad.GradientMode == 2) fn = "gradient_sample_perceptual";
+            return ctx.EmitTemp(SgType.Vec4, Sg.RawTemplate(fn + "({0}, {1})", grad.Rhs, t.Rhs));
         }
     }
 
