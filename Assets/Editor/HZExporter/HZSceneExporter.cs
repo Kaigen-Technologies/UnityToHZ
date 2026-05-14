@@ -8,7 +8,9 @@ using UnityEngine.SceneManagement;
 namespace HZExporter
 {
     /// <summary>
-    /// Exports a Unity scene as a SceneBlobAsset manifest + per-entity EntityBlobAsset files.
+    /// Exports a Unity scene as a SceneBlobAsset manifest + one EntityChunkBlobAsset
+    /// file holding every entity inline. The engine scene system is chunk-based; we
+    /// emit a single chunk for now (chunk_0.hzt).
     /// </summary>
     public static class HZSceneExporter
     {
@@ -137,83 +139,86 @@ namespace HZExporter
         }
 
         /// <summary>
-        /// Export a scene as .hzt text files (manifest + per-entity).
+        /// Export a scene: SceneBlobAsset manifest + one EntityChunkBlobAsset (chunk_0.hzt).
         /// </summary>
         public static void Export(EntityExportInfo[] entities, string scenePath,
             string sceneDir, string sceneDirAssetPath)
         {
-            // Clean old entity files
+            // Clean the scene dir (also clears stale per-entity files from the old format).
             if (Directory.Exists(sceneDir))
                 Directory.Delete(sceneDir, true);
             Directory.CreateDirectory(sceneDir);
 
-            string[] entityFilePaths = new string[entities.Length];
+            string chunkFsPath = Path.Combine(sceneDir, "chunk_0.hzt");
+            string chunkAssetPath = $"{sceneDirAssetPath}/chunk_0.hzt";
 
-            for (int i = 0; i < entities.Length; i++)
+            WriteChunkHzt(entities, chunkFsPath);
+
+            // Chunk bounds: point-AABB over entity world positions (export space — X negated).
+            // Streaming hint only; single-chunk loads ignore it.
+            Vector3 bmin = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+            Vector3 bmax = new Vector3(float.MinValue, float.MinValue, float.MinValue);
+            foreach (var e in entities)
             {
-                ulong stableId = entities[i].stableId;
-                string safeName = SanitizeFsName(entities[i].name);
-                string entityFileName = $"{safeName}_{stableId}.hzt";
-                string entityFilePath = Path.Combine(sceneDir, entityFileName);
-                entityFilePaths[i] = $"{sceneDirAssetPath}/{entityFileName}";
-
-                WriteEntityHzt(entities[i], entityFilePath);
+                Vector3 p = new Vector3(-e.worldPosition.x, e.worldPosition.y, e.worldPosition.z);
+                bmin = Vector3.Min(bmin, p);
+                bmax = Vector3.Max(bmax, p);
             }
+            if (entities.Length == 0) { bmin = Vector3.zero; bmax = Vector3.zero; }
 
-            WriteManifestHzt(entityFilePaths, sceneDirAssetPath, scenePath);
+            WriteManifestHzt(sceneDirAssetPath, chunkAssetPath, bmin, bmax, scenePath);
 
-            Debug.Log($"[HZSceneExporter] Exported scene → {scenePath} ({entities.Length} entities)");
+            Debug.Log($"[HZSceneExporter] Exported scene → {scenePath} (1 chunk, {entities.Length} entities)");
         }
 
         // ============= .hzt text format writers =============
 
         static string F(float v) => v.ToString("F6", System.Globalization.CultureInfo.InvariantCulture);
 
-        // Filesystem-safe entity-file name component. Replaces space and path separators with
-        // underscores; trims to a reasonable length so filenames stay manageable.
-        static string SanitizeFsName(string n)
+        static void WriteManifestHzt(string sceneDirAssetPath, string chunkAssetPath,
+            Vector3 boundsMin, Vector3 boundsMax, string outputPath)
         {
-            if (string.IsNullOrEmpty(n)) return "Entity";
-            var safe = n.Replace(' ', '_').Replace('/', '_').Replace('\\', '_')
-                        .Replace(':', '_').Replace('?', '_').Replace('*', '_')
-                        .Replace('"', '_').Replace('<', '_').Replace('>', '_').Replace('|', '_');
-            if (safe.Length > 48) safe = safe.Substring(0, 48);
-            return safe;
-        }
-
-        static void WriteManifestHzt(string[] entityPaths, string sceneDirAssetPath, string outputPath)
-        {
-            uint entityTypeSize = (uint)SIZEOF_ENTITY_BLOB_ASSET_REF;
-            uint entityTypehash = (uint)HZBlobWriter.TypeHash("EntityBlobAsset", SIZEOF_ENTITY_BLOB_ASSET_REF);
-
             var sb = new StringBuilder();
             sb.AppendLine("type SceneBlobAsset");
             sb.AppendLine("version 3");
             sb.AppendLine("---");
             sb.AppendLine($"scene_dir {sceneDirAssetPath}");
-            sb.AppendLine($"entities {entityPaths.Length}");
-            foreach (var path in entityPaths)
+            sb.AppendLine("chunks 1");
+            sb.AppendLine($"  chunk {chunkAssetPath} EntityChunkBlobAsset");
+            sb.AppendLine($"  bounds_min {F(boundsMin.x)} {F(boundsMin.y)} {F(boundsMin.z)}");
+            sb.AppendLine($"  bounds_max {F(boundsMax.x)} {F(boundsMax.y)} {F(boundsMax.z)}");
+
+            Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
+            File.WriteAllText(outputPath, sb.ToString());
+        }
+
+        // One EntityChunkBlobAsset file: header + every entity inline, blank line between.
+        static void WriteChunkHzt(EntityExportInfo[] entities, string outputPath)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("type EntityChunkBlobAsset");
+            sb.AppendLine("version 3");
+            sb.AppendLine("---");
+
+            for (int i = 0; i < entities.Length; i++)
             {
-                sb.AppendLine($"  {path} EntityBlobAsset");
-                sb.AppendLine();
+                if (i > 0) sb.AppendLine();
+                AppendEntityBody(sb, entities[i]);
             }
 
             Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
             File.WriteAllText(outputPath, sb.ToString());
         }
 
-        static void WriteEntityHzt(EntityExportInfo info, string outputPath)
+        // Appends one `entity <stable_id>` block (followed by its components) to sb.
+        static void AppendEntityBody(StringBuilder sb, EntityExportInfo info)
         {
             bool hasModel = !string.IsNullOrEmpty(info.modelAssetPath);
             bool hasMaterial = !string.IsNullOrEmpty(info.materialAssetPath);
             bool hasAnimation = !string.IsNullOrEmpty(info.animationAssetPath);
             bool hasParent = info.parentStableId != 0;
 
-            var sb = new StringBuilder();
-            sb.AppendLine("type EntityBlobAsset");
-            sb.AppendLine("version 3");
-            sb.AppendLine("---");
-            sb.AppendLine($"stable_id {info.stableId}");
+            sb.AppendLine($"entity {info.stableId}");
 
             // SceneEntityTag
             sb.AppendLine();
@@ -457,9 +462,6 @@ namespace HZExporter
                 sb.AppendLine($"  fog_start {F(info.fogStart)}");
                 sb.AppendLine($"  fog_end {F(info.fogEnd)}");
             }
-
-            Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
-            File.WriteAllText(outputPath, sb.ToString());
         }
 
         // ============= Legacy .hza binary writers (kept for non-scene assets) =============
