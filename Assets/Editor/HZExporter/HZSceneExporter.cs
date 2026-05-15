@@ -144,9 +144,9 @@ namespace HZExporter
         public static void Export(EntityExportInfo[] entities, string scenePath,
             string sceneDir, string sceneDirAssetPath)
         {
-            // Clean the scene dir (also clears stale per-entity files from the old format).
-            if (Directory.Exists(sceneDir))
-                Directory.Delete(sceneDir, true);
+            // Scene dir is cleaned once up front by the caller (ExportScene) so
+            // terrain assets written during entity collection survive. Just ensure
+            // it exists.
             Directory.CreateDirectory(sceneDir);
 
             string chunkFsPath = Path.Combine(sceneDir, "chunk_0.hzt");

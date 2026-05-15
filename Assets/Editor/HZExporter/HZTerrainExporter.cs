@@ -89,13 +89,17 @@ namespace HZExporter
         {
             var heights = td.GetHeights(0, 0, res, res);
             var bytes = new byte[res * res * 2];
+            // Engine convention: X is mirrored scene-wide (negate X), Z is not.
+            // The terrain geometry's world_origin already follows the X-mirror, so
+            // the heightmap must be X-flipped to match — and NOT Z-flipped (Z passes
+            // through unchanged). Unity GetHeights is [z, x], written here as raw
+            // R16 (no implicit flip), so: file[y][x] = heights[y][res-1-x].
             for (int y = 0; y < res; y++)
             {
-                int srcY = res - 1 - y;   // row 0 = +Z in engine convention
                 int row = y * res * 2;
                 for (int x = 0; x < res; x++)
                 {
-                    ushort v = (ushort)Mathf.Clamp(heights[srcY, x] * 65535f, 0f, 65535f);
+                    ushort v = (ushort)Mathf.Clamp(heights[y, res - 1 - x] * 65535f, 0f, 65535f);
                     bytes[row + x * 2]     = (byte)(v & 0xFF);
                     bytes[row + x * 2 + 1] = (byte)(v >> 8);
                 }
@@ -120,22 +124,28 @@ namespace HZExporter
             int alphaLayers = td.alphamapLayers;
 
             var pixels = new Color[res * res];
+            // Must match the heightmap's flip so heights and splat weights line up
+            // under the same sample uv: X-flipped, not Z-flipped. Unity's
+            // Texture2D->EncodeToPNG path applies an implicit Y-flip, so keeping
+            // srcY here (res-1-y) cancels it → net no Z-flip; srcX (res-1-x)
+            // applies the X-flip. See WriteHeightmap.
             for (int y = 0; y < res; y++)
             {
-                int srcY = res - 1 - y;   // match heightmap Y flip
+                int srcY = res - 1 - y;   // cancels Unity's PNG y-flip → net no Z-flip
                 for (int x = 0; x < res; x++)
                 {
+                    int srcX = res - 1 - x;   // X-flip to match engine X-mirror
                     float r = 0f, g = 0f, b = 0f, a = 0f;
-                    if (firstLayer + 0 < lastLayer && firstLayer + 0 < alphaLayers) r = alpha[srcY, x, firstLayer + 0];
-                    if (firstLayer + 1 < lastLayer && firstLayer + 1 < alphaLayers) g = alpha[srcY, x, firstLayer + 1];
-                    if (firstLayer + 2 < lastLayer && firstLayer + 2 < alphaLayers) b = alpha[srcY, x, firstLayer + 2];
-                    if (firstLayer + 3 < lastLayer && firstLayer + 3 < alphaLayers) a = alpha[srcY, x, firstLayer + 3];
+                    if (firstLayer + 0 < lastLayer && firstLayer + 0 < alphaLayers) r = alpha[srcY, srcX, firstLayer + 0];
+                    if (firstLayer + 1 < lastLayer && firstLayer + 1 < alphaLayers) g = alpha[srcY, srcX, firstLayer + 1];
+                    if (firstLayer + 2 < lastLayer && firstLayer + 2 < alphaLayers) b = alpha[srcY, srcX, firstLayer + 2];
+                    if (firstLayer + 3 < lastLayer && firstLayer + 3 < alphaLayers) a = alpha[srcY, srcX, firstLayer + 3];
 
                     // Renormalize against RETAINED layers (what's actually exported). Prevents coverage
                     // gaps when layer count is capped below the terrain's real count.
                     float total = 0f;
                     for (int li = 0; li < retainedLayers && li < alphaLayers; li++)
-                        total += alpha[srcY, x, li];
+                        total += alpha[srcY, srcX, li];
                     if (total > 1e-3f)
                     {
                         float inv = 1f / total;

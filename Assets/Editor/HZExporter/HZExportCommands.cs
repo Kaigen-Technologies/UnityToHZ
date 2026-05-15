@@ -420,6 +420,14 @@ public static class HZExportCommands
         var roots = scene.GetRootGameObjects();
         var entities = new List<HZSceneExporter.EntityExportInfo>();
 
+        // Nuke the scene output dir up front: the terrain export (runs inside the
+        // entity loop) and the chunk/manifest writers both write here, so the
+        // clean-slate must happen once before either touches it.
+        string sceneOutDir = $"{OutputDir}/scenes/{SanitizeName(scene.name)}";
+        if (System.IO.Directory.Exists(sceneOutDir))
+            System.IO.Directory.Delete(sceneOutDir, true);
+        System.IO.Directory.CreateDirectory(sceneOutDir);
+
         // Map from GameObject instance ID to stable ID for parent references
         var goToStableId = new Dictionary<int, ulong>();
 
@@ -739,12 +747,52 @@ public static class HZExportCommands
                     }
 
                 }
-                // Terrain — skipped for now. Engine-side EcsTerrainRef + scene serialization
-                // aren't wired up, and even when they are the heightmap/splatmap/layer-texture
-                // export is heavyweight enough that we don't want it firing on every scene
-                // export. The Terrain GameObject still emits as an empty-transform anchor.
+                // Terrain — export the TerrainData (heightmap + splatmaps + layer textures)
+                // and reference it via EcsTerrainRef. Dedup so a TerrainData shared by
+                // multiple Terrain components only exports once.
                 else if (go.TryGetComponent<Terrain>(out var terrain) && terrain.terrainData != null)
                 {
+                    var td = terrain.terrainData;
+                    string tdPath = AssetDatabase.GetAssetPath(td);
+                    string terrainKey = string.IsNullOrEmpty(tdPath)
+                        ? "tid:" + td.GetInstanceID()
+                        : tdPath;
+                    if (!exportedTerrains.TryGetValue(terrainKey, out string terrainRef))
+                    {
+                        string sceneNm = SanitizeName(scene.name);
+                        string terrainNm = SanitizeName(td.name);
+                        // outDir is the ExportedAssets/scenes/ filesystem layout; assetPrefix
+                        // is the engine asset-path convention (no "scenes/" segment — matches
+                        // sceneDirAssetPath = "unity/<scene>"). cp -r drops scenes/Demo into
+                        // assets/unity/Demo, so the two must agree on "unity/<scene>/terrain/...".
+                        string outDir = $"{OutputDir}/scenes/{sceneNm}/terrain/{terrainNm}";
+                        string assetPrefix = $"{AssetPrefix}/{sceneNm}/terrain/{terrainNm}";
+                        terrainRef = HZTerrainExporter.Export(terrain, outDir, assetPrefix);
+                        exportedTerrains[terrainKey] = terrainRef;
+                    }
+                    info.terrainAssetPath = terrainRef;
+                    // grid_dim / lod_levels: runtime chunk-grid params. Match the engine
+                    // TerrainSystem defaults (see ecs_terrain_init).
+                    info.terrainGridDim = 32;
+                    info.terrainLodLevels = 6;
+
+                    // The engine treats EcsTerrainRef's WorldTransform.position.{x,z} as the
+                    // terrain's MINIMUM CORNER; the chunk extends +world_width/+world_depth
+                    // from there. A Unity terrain's transform.position IS its min corner and
+                    // it extends +X/+Z. But the export mirrors X (negates it downstream) and
+                    // leaves Z alone — and mirroring flips an interval, so Unity's min-X
+                    // corner becomes the engine's MAX-X corner. To recover the engine min
+                    // corner we shift X by the full world_width; Z needs no shift (Unity's
+                    // min-Z corner is already the engine min-Z corner).
+                    // Both Local and World get the same Unity-space delta; the terrain's
+                    // parent has identity rotation/scale (verified: local + parent world sum
+                    // linearly), so the hierarchy recompute stays consistent.
+                    float shiftX = td.size.x;
+                    info.position = new Vector3(info.position.x + shiftX, info.position.y,
+                                                info.position.z);
+                    info.worldPosition = new Vector3(info.worldPosition.x + shiftX,
+                                                     info.worldPosition.y,
+                                                     info.worldPosition.z);
                 }
                 // Static mesh — export as .glb, dedup by (mesh, material combo).
                 else if (go.TryGetComponent<MeshFilter>(out var mf) && mf.sharedMesh != null
