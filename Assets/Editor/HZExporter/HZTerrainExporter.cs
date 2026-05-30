@@ -22,6 +22,52 @@ namespace HZExporter
         const int DEFAULT_TILE_SIZE = 32;
         const int DEFAULT_MAX_LOD = 6;
 
+        // --- grass defaults (engine-authored knobs; Unity has no equivalent) ---
+        const float GRASS_TILE_SIZE = 7.0f;     // engine field-ring tile size
+        const float GRASS_FALLOFF_EXP = 2.0f;   // density falloff toward max_view_distance
+        const float GRASS_FAR_MULTIPLIER = 6.0f; // billboard far band = near * this
+        const float GRASS_FAR_CAP = 1000.0f;    // clamp for the far view distance
+        const int GRASS_INSTANCES_PER_TILE_CAP = 16384; // sanity cap on derived density (engine compacts survivors, so high per-tile is fine)
+        const float GRASS_DEFAULT_ALPHA_CUTOFF = 0.5f;
+
+        /// <summary>Export a grass prototype's mesh as a shared GLB; returns the engine
+        /// asset-relative ref (e.g. "unity/glb/Reeds.glb"). Injected by the scene exporter
+        /// so grass models flow through the same GLB dedup as scene meshes.</summary>
+        public delegate string ExportModelGlbFn(MeshRenderer mr, Mesh mesh);
+
+        /// <summary>Export a grass albedo texture as a standalone TextureBlobAsset; returns
+        /// the engine asset-relative ref (e.g. "unity/glb/textures/Grass_01.hzt").</summary>
+        public delegate string ExportGrassAlbedoFn(Texture2D tex, bool hasAlpha);
+
+        // Resolved grass data, populated from Unity detail prototypes before the manifest write.
+        sealed class GrassLodData
+        {
+            public string modelRef;       // null/empty => billboard LOD (model omitted)
+            public bool generateBillboard;
+            public float billboardWidth;
+            public float billboardHeight;
+            public float minViewDistance;
+            public float maxViewDistance;
+            public uint instancesMax;
+            public uint instancesMin;
+            public float densityFalloffExp;
+        }
+
+        sealed class GrassTypeData
+        {
+            public string albedoRef;
+            public string densityRef;
+            public int densityChannel;
+            public int sourceLayer;       // index into TerrainData detail layers for GetDetailLayer
+            public float scaleXzMin, scaleXzMax;
+            public float scaleYMin, scaleYMax;
+            public float alphaCutoff;
+            public float windResponse;
+            public Vector3 rootColor;
+            public Vector3 tipColor;
+            public List<GrassLodData> lods = new List<GrassLodData>();
+        }
+
         /// <summary>
         /// Export a single <see cref="Terrain"/>.
         /// </summary>
@@ -31,8 +77,13 @@ namespace HZExporter
         /// Asset-relative prefix the engine will see (e.g. "unity/terrain/MyTerrain"). Used inside
         /// the .hzt files to reference sibling assets.
         /// </param>
+        /// <param name="exportModel">Callback to export a grass prototype mesh as a shared GLB.
+        /// When null, mesh-based grass LODs are skipped (billboard-only grass still works).</param>
+        /// <param name="exportAlbedo">Callback to export a grass albedo texture. When null,
+        /// grass types are emitted without an albedo ref.</param>
         /// <returns>Asset-relative path to terrain.hzt, or null on failure.</returns>
-        public static string Export(Terrain terrain, string outDir, string assetPrefix)
+        public static string Export(Terrain terrain, string outDir, string assetPrefix,
+            ExportModelGlbFn exportModel = null, ExportGrassAlbedoFn exportAlbedo = null)
         {
             if (terrain == null) { Debug.LogError("[HZTerrain] null terrain"); return null; }
             var td = terrain.terrainData;
@@ -75,8 +126,12 @@ namespace HZExporter
             for (int i = 0; i < layerCount; i++)
                 WriteLayer(td.terrainLayers[i], i, outDir, assetPrefix);
 
+            // Grass: map Unity detail prototypes → engine grass types. Models/albedo flow
+            // through the injected scene callbacks; density maps are written terrain-local.
+            var grassTypes = BuildGrassTypes(terrain, td, outDir, assetPrefix, exportModel, exportAlbedo);
+
             string terrainHztPath = Path.Combine(outDir, "terrain.hzt");
-            WriteManifest(td, terrainHztPath, assetPrefix, layerCount, splatmapCount, tileSize, maxLod);
+            WriteManifest(td, terrainHztPath, assetPrefix, layerCount, splatmapCount, tileSize, maxLod, grassTypes);
 
             string assetRef = $"{assetPrefix}/terrain.hzt";
             Debug.Log($"[HZTerrain]   → {terrainHztPath}  (engine ref: {assetRef})");
@@ -258,6 +313,272 @@ namespace HZExporter
             }
         }
 
+        // ---- grass (detail prototypes) ----
+
+        /// <summary>
+        /// Map Unity's detail-grass system onto the engine's grass_types. Pulls as much real
+        /// data from Unity as possible (scales, colors, wind, view distance, density) and falls
+        /// back to documented defaults only for concepts Unity lacks (LOD chain, far billboard,
+        /// falloff). Returns the resolved types; density maps are written as a side effect.
+        /// </summary>
+        static List<GrassTypeData> BuildGrassTypes(Terrain terrain, TerrainData td, string outDir,
+            string assetPrefix, ExportModelGlbFn exportModel, ExportGrassAlbedoFn exportAlbedo)
+        {
+            var result = new List<GrassTypeData>();
+            var protos = td.detailPrototypes;
+            if (protos == null || protos.Length == 0) return result;
+
+            // Terrain-wide knobs that drive view distance / density.
+            float detailDistance = terrain.detailObjectDistance;   // Unity's detail render distance
+            if (detailDistance <= 0f) detailDistance = 100f;
+            float detailDensity = terrain.detailObjectDensity;     // 0..1 global density multiplier
+            if (detailDensity <= 0f) detailDensity = 1f;
+            float wind = td.wavingGrassStrength;                   // global waving-grass strength
+
+            int dw = td.detailWidth, dh = td.detailHeight;
+            int maxScatter = Mathf.Max(1, td.maxDetailScatterPerRes);
+
+            // Derive a full-coverage instance count per grass tile from Unity's detail density:
+            // a detail cell is (size/res) m; a grass tile spans (tile/cell)^2 cells; at full
+            // coverage each cell holds maxScatter instances, scaled by the global density mult.
+            // The density map carries normalized [0,1] coverage and the engine multiplies it in.
+            float cellSizeX = dw > 0 ? td.size.x / dw : 1f;
+            float cellSizeZ = dh > 0 ? td.size.z / dh : 1f;
+            float cellArea = Mathf.Max(1e-4f, cellSizeX * cellSizeZ);
+            float cellsPerTile = (GRASS_TILE_SIZE * GRASS_TILE_SIZE) / cellArea;
+            uint instancesMax = (uint)Mathf.Clamp(
+                Mathf.RoundToInt(maxScatter * cellsPerTile * detailDensity),
+                1, GRASS_INSTANCES_PER_TILE_CAP);
+            uint instancesMin = (uint)Mathf.Max(1, Mathf.RoundToInt(instancesMax * 0.15f));
+
+            float near = detailDistance;
+            float far = Mathf.Min(near * GRASS_FAR_MULTIPLIER, GRASS_FAR_CAP);
+
+            for (int i = 0; i < protos.Length; i++)
+            {
+                var dp = protos[i];
+                var gt = new GrassTypeData
+                {
+                    sourceLayer = i,
+                    scaleXzMin = dp.minWidth,
+                    scaleXzMax = dp.maxWidth,
+                    scaleYMin = dp.minHeight,
+                    scaleYMax = dp.maxHeight,
+                    rootColor = new Vector3(dp.dryColor.r, dp.dryColor.g, dp.dryColor.b),
+                    tipColor = new Vector3(dp.healthyColor.r, dp.healthyColor.g, dp.healthyColor.b),
+                    windResponse = wind > 0f ? wind : 1f,
+                    alphaCutoff = GRASS_DEFAULT_ALPHA_CUTOFF,
+                };
+
+                bool isMesh = dp.usePrototypeMesh && dp.prototype != null;
+                if (isMesh)
+                {
+                    var go = dp.prototype;
+                    var mf = go.GetComponentInChildren<MeshFilter>();
+                    var mr = go.GetComponentInChildren<MeshRenderer>();
+                    if (mf == null || mf.sharedMesh == null || mr == null)
+                    {
+                        Debug.LogWarning($"[HZTerrain] grass proto {i} '{go.name}': usePrototypeMesh but no MeshFilter/MeshRenderer; treating as billboard");
+                        isMesh = false;
+                    }
+                    else
+                    {
+                        var mat = mr.sharedMaterial;
+                        gt.alphaCutoff = TryGetAlphaCutoff(mat, GRASS_DEFAULT_ALPHA_CUTOFF);
+                        gt.albedoRef = ExportAlbedoFor(mat, exportAlbedo);
+                        string modelRef = exportModel != null ? exportModel(mr, mf.sharedMesh) : null;
+
+                        // LOD0 = the Unity mesh (near band).
+                        gt.lods.Add(new GrassLodData {
+                            modelRef = modelRef,
+                            generateBillboard = false,
+                            minViewDistance = 0f,
+                            maxViewDistance = near,
+                            instancesMax = instancesMax,
+                            instancesMin = instancesMin,
+                            densityFalloffExp = GRASS_FALLOFF_EXP,
+                        });
+                        // LOD1 = engine-synthesized billboard (far band). Unity gives no far geometry.
+                        gt.lods.Add(new GrassLodData {
+                            generateBillboard = true,
+                            billboardWidth = 0f,   // 0 => engine derives from near-LOD bounds
+                            billboardHeight = 0f,
+                            minViewDistance = near,
+                            maxViewDistance = far,
+                            instancesMax = (uint)Mathf.Max(1, instancesMax / 2),
+                            instancesMin = (uint)Mathf.Max(1, instancesMin / 2),
+                            densityFalloffExp = GRASS_FALLOFF_EXP,
+                        });
+                    }
+                }
+
+                if (!isMesh)
+                {
+                    // Texture billboard prototype (renderMode Grass / GrassBillboard): single
+                    // billboard LOD using the prototype texture as albedo.
+                    var tex = dp.prototypeTexture;
+                    if (tex != null && exportAlbedo != null)
+                        gt.albedoRef = exportAlbedo(tex, true);   // grass textures are alpha-cut
+                    gt.lods.Add(new GrassLodData {
+                        generateBillboard = true,
+                        billboardWidth = 0.5f * (dp.minWidth + dp.maxWidth),
+                        billboardHeight = 0.5f * (dp.minHeight + dp.maxHeight),
+                        minViewDistance = 0f,
+                        maxViewDistance = near,
+                        instancesMax = instancesMax,
+                        instancesMin = instancesMin,
+                        densityFalloffExp = GRASS_FALLOFF_EXP,
+                    });
+                }
+
+                result.Add(gt);
+            }
+
+            WriteDensityMaps(td, result, outDir, assetPrefix);
+
+            Debug.Log($"[HZTerrain] grass: {result.Count} type(s), instances/tile≈{instancesMax} (near={near:F0} far={far:F0})");
+            return result;
+        }
+
+        static string ExportAlbedoFor(Material mat, ExportGrassAlbedoFn exportAlbedo)
+        {
+            if (mat == null || exportAlbedo == null) return null;
+            var tex = FindAlbedoTexture(mat);
+            if (tex == null)
+            {
+                Debug.LogWarning($"[HZTerrain] grass material '{mat.name}' (shader '{mat.shader?.name}'): no albedo texture found; grass will be untextured");
+                return null;
+            }
+            // Grass albedo virtually always has cutout alpha — keep it (BC3).
+            return exportAlbedo(tex, true);
+        }
+
+        // Custom vegetation shaders (e.g. Idyllic Fantasy Nature) name their albedo slot
+        // differently from URP's _BaseMap, so HasProperty("_BaseMap") fails even though the
+        // material serializes one. Enumerate the shader's actual texture properties and pick
+        // the best albedo candidate by name priority, falling back to the first bound texture.
+        static Texture2D FindAlbedoTexture(Material mat)
+        {
+            string[] names = mat.GetTexturePropertyNames();
+            if (names == null || names.Length == 0) return null;
+
+            // Priority: explicit albedo/base/main/diffuse names first.
+            string[] preferred = { "_BaseMap", "_MainTex", "_BaseColorMap", "_Albedo", "_AlbedoMap", "_Texture", "_DiffuseMap", "_MainTexture" };
+            foreach (var p in preferred)
+                foreach (var n in names)
+                    if (n == p && mat.GetTexture(n) is Texture2D t0 && t0 != null)
+                        return t0;
+
+            // Heuristic: any property whose name hints albedo.
+            foreach (var n in names)
+            {
+                string l = n.ToLowerInvariant();
+                bool albedoish = l.Contains("albedo") || l.Contains("basecolor") || l.Contains("diffuse")
+                                 || l.Contains("main") || (l.Contains("base") && l.Contains("map"));
+                bool exclude = l.Contains("normal") || l.Contains("bump") || l.Contains("mask")
+                               || l.Contains("metallic") || l.Contains("specular") || l.Contains("occlusion")
+                               || l.Contains("emission") || l.Contains("detail") || l.Contains("height");
+                if (albedoish && !exclude && mat.GetTexture(n) is Texture2D t1 && t1 != null)
+                    return t1;
+            }
+
+            // Last resort: first bound colour-ish texture that isn't obviously a data map.
+            foreach (var n in names)
+            {
+                string l = n.ToLowerInvariant();
+                bool exclude = l.Contains("normal") || l.Contains("bump") || l.Contains("mask")
+                               || l.Contains("metallic") || l.Contains("specular") || l.Contains("occlusion")
+                               || l.Contains("emission") || l.Contains("detail") || l.Contains("height");
+                if (!exclude && mat.GetTexture(n) is Texture2D t2 && t2 != null)
+                    return t2;
+            }
+            return null;
+        }
+
+        static float TryGetAlphaCutoff(Material mat, float fallback)
+        {
+            if (mat == null) return fallback;
+            if (mat.HasProperty("_Cutoff")) return mat.GetFloat("_Cutoff");
+            if (mat.HasProperty("_AlphaClipThreshold")) return mat.GetFloat("_AlphaClipThreshold");
+            return fallback;
+        }
+
+        /// <summary>
+        /// Pack each group of ≤4 grass types into one RGBA density map (R/G/B/A → density_channel
+        /// 0/1/2/3), normalizing Unity's integer detail counts to [0,1]. Uses the exact splatmap
+        /// flip (X-mirror, no net Z-flip) so coverage lines up with the heightmap/splatmaps.
+        /// Mutates each type's densityRef/densityChannel.
+        /// </summary>
+        static void WriteDensityMaps(TerrainData td, List<GrassTypeData> types,
+            string outDir, string assetPrefix)
+        {
+            if (types.Count == 0) return;
+            int dw = td.detailWidth, dh = td.detailHeight;
+            int maxScatter = Mathf.Max(1, td.maxDetailScatterPerRes);
+            float inv = 1f / maxScatter;
+            int groups = (types.Count + 3) / 4;
+
+            for (int g = 0; g < groups; g++)
+            {
+                // Fetch the up-to-4 detail layers for this group.
+                int[][,] layers = new int[4][,];
+                for (int c = 0; c < 4; c++)
+                {
+                    int ti = g * 4 + c;
+                    if (ti < types.Count)
+                        layers[c] = td.GetDetailLayer(0, 0, dw, dh, types[ti].sourceLayer);
+                }
+
+                var pixels = new Color[dw * dh];
+                for (int y = 0; y < dh; y++)
+                {
+                    int srcY = dh - 1 - y;   // cancels Unity's PNG y-flip → net no Z-flip
+                    for (int x = 0; x < dw; x++)
+                    {
+                        int srcX = dw - 1 - x;   // X-flip to match engine X-mirror
+                        float r = layers[0] != null ? Mathf.Clamp01(layers[0][srcY, srcX] * inv) : 0f;
+                        float gg = layers[1] != null ? Mathf.Clamp01(layers[1][srcY, srcX] * inv) : 0f;
+                        float b = layers[2] != null ? Mathf.Clamp01(layers[2][srcY, srcX] * inv) : 0f;
+                        float a = layers[3] != null ? Mathf.Clamp01(layers[3][srcY, srcX] * inv) : 0f;
+                        pixels[y * dw + x] = new Color(r, gg, b, a);
+                    }
+                }
+
+                Texture2D tex = null;
+                try
+                {
+                    tex = new Texture2D(dw, dh, TextureFormat.RGBA32, false);
+                    tex.SetPixels(pixels);
+                    tex.Apply(false, false);
+                    File.WriteAllBytes(Path.Combine(outDir, $"grass_density{g}.png"), tex.EncodeToPNG());
+                }
+                finally
+                {
+                    if (tex != null) UnityEngine.Object.DestroyImmediate(tex);
+                }
+
+                WriteTextureSidecar(
+                    path:      Path.Combine(outDir, $"grass_density{g}.hzt"),
+                    imagePath: $"/{assetPrefix}/grass_density{g}",
+                    format:    "TEX_FORMAT_RAW",
+                    width:     dw,
+                    height:    dh,
+                    isSrgb:    false,
+                    hasAlpha:  true);   // .a carries the 4th type's coverage; keep it (BC3 not BC1)
+
+                string densityRef = $"{assetPrefix}/grass_density{g}.hzt";
+                for (int c = 0; c < 4; c++)
+                {
+                    int ti = g * 4 + c;
+                    if (ti < types.Count)
+                    {
+                        types[ti].densityRef = densityRef;
+                        types[ti].densityChannel = c;
+                    }
+                }
+            }
+        }
+
         // ---- sidecars ----
 
         static void WriteTextureSidecar(string path, string imagePath, string format,
@@ -277,7 +598,8 @@ namespace HZExporter
         }
 
         static void WriteManifest(TerrainData td, string path, string assetPrefix,
-            int layerCount, int splatmapCount, int tileSize, int maxLod)
+            int layerCount, int splatmapCount, int tileSize, int maxLod,
+            List<GrassTypeData> grassTypes)
         {
             var size = td.size;
             var sb = new StringBuilder();
@@ -308,6 +630,49 @@ namespace HZExporter
                 // mask is always emitted (either the Unity mask or a synthesized default)
                 sb.AppendLine($"  mask {assetPrefix}/layer{i}_mask.hzt TextureBlobAsset");
                 sb.AppendLine($"  uv_scale {F(layer != null ? layer.tileSize.x : 1f)}");
+                sb.AppendLine();
+            }
+
+            // Grass (declaration order: ...layers, grass_tile_size, grass_types). Fields per
+            // type/LOD are emitted in struct order; omitted fields default to zero (e.g. a
+            // billboard LOD omits `model`). See engine terrain.h / terrain.gen.h.
+            sb.AppendLine($"grass_tile_size {F(GRASS_TILE_SIZE)}");
+            int grassCount = grassTypes != null ? grassTypes.Count : 0;
+            sb.AppendLine($"grass_types {grassCount}");
+            for (int t = 0; t < grassCount; t++)
+            {
+                var gt = grassTypes[t];
+                if (!string.IsNullOrEmpty(gt.albedoRef))
+                    sb.AppendLine($"  albedo {gt.albedoRef} TextureBlobAsset");
+                if (!string.IsNullOrEmpty(gt.densityRef))
+                    sb.AppendLine($"  density_map {gt.densityRef} TextureBlobAsset");
+                sb.AppendLine($"  density_channel {gt.densityChannel}");
+                sb.AppendLine($"  scale_xz_min {F(gt.scaleXzMin)}");
+                sb.AppendLine($"  scale_xz_max {F(gt.scaleXzMax)}");
+                sb.AppendLine($"  scale_y_min {F(gt.scaleYMin)}");
+                sb.AppendLine($"  scale_y_max {F(gt.scaleYMax)}");
+                sb.AppendLine($"  alpha_cutoff {F(gt.alphaCutoff)}");
+                sb.AppendLine($"  wind_response {F(gt.windResponse)}");
+                sb.AppendLine($"  root_color {F(gt.rootColor.x)} {F(gt.rootColor.y)} {F(gt.rootColor.z)}");
+                sb.AppendLine($"  tip_color {F(gt.tipColor.x)} {F(gt.tipColor.y)} {F(gt.tipColor.z)}");
+                sb.AppendLine($"  lods {gt.lods.Count}");
+                foreach (var lod in gt.lods)
+                {
+                    // model first (struct order); omit on billboard LODs so it defaults to null.
+                    if (!lod.generateBillboard && !string.IsNullOrEmpty(lod.modelRef))
+                        sb.AppendLine($"    model {lod.modelRef} ModelBlobAsset");
+                    sb.AppendLine($"    generate_billboard {(lod.generateBillboard ? "true" : "false")}");
+                    if (lod.generateBillboard)
+                    {
+                        sb.AppendLine($"    billboard_width {F(lod.billboardWidth)}");
+                        sb.AppendLine($"    billboard_height {F(lod.billboardHeight)}");
+                    }
+                    sb.AppendLine($"    min_view_distance {F(lod.minViewDistance)}");
+                    sb.AppendLine($"    max_view_distance {F(lod.maxViewDistance)}");
+                    sb.AppendLine($"    instances_per_tile_max {lod.instancesMax}");
+                    sb.AppendLine($"    instances_per_tile_min {lod.instancesMin}");
+                    sb.AppendLine($"    density_falloff_exp {F(lod.densityFalloffExp)}");
+                }
                 sb.AppendLine();
             }
 

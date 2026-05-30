@@ -528,6 +528,10 @@ public static class HZExportCommands
         // key = TerrainData asset path (or instance id when not a project asset) → asset-ref path.
         var exportedTerrains = new Dictionary<string, string>();
 
+        // Grass albedo dedup: shared grass texture → one TextureBlobAsset in glb/textures.
+        // key = texture asset path (or instance id) → asset-ref path.
+        var exportedGrassAlbedos = new Dictionary<string, string>();
+
         // Deferred skinned mesh exports: collect animations per character before exporting
         // Key = character name (FBX filename with @... stripped)
         var deferredSkinned = new Dictionary<string, DeferredSkinnedExport>();
@@ -767,7 +771,11 @@ public static class HZExportCommands
                         // assets/unity/Demo, so the two must agree on "unity/<scene>/terrain/...".
                         string outDir = $"{OutputDir}/scenes/{sceneNm}/terrain/{terrainNm}";
                         string assetPrefix = $"{AssetPrefix}/{sceneNm}/terrain/{terrainNm}";
-                        terrainRef = HZTerrainExporter.Export(terrain, outDir, assetPrefix);
+                        // Grass models flow through the same GLB dedup as scene meshes; grass
+                        // albedo textures go to the shared glb/textures tree (deduped).
+                        terrainRef = HZTerrainExporter.Export(terrain, outDir, assetPrefix,
+                            (mr, mesh) => ExportStaticGlbForRenderer(mr, mesh, exportedGlbs),
+                            (tex, hasAlpha) => ExportGrassAlbedo(tex, hasAlpha, exportedGrassAlbedos));
                         exportedTerrains[terrainKey] = terrainRef;
                     }
                     info.terrainAssetPath = terrainRef;
@@ -1021,6 +1029,31 @@ public static class HZExportCommands
         HZGlbWriter.ExportStaticMesh(mesh, mr.sharedMaterials, glbPath);
         exportedGlbs[meshKey] = glbAssetPath;
         return glbAssetPath;
+    }
+
+    // Export a grass albedo texture as a standalone TextureBlobAsset under glb/textures/,
+    // deduped by source texture. Returns the asset-relative .hzt ref the terrain manifest uses.
+    // The grass system loads this texture directly (not via a GLB material), so it must be a
+    // first-class TextureBlobAsset.
+    static string ExportGrassAlbedo(Texture2D tex, bool hasAlpha,
+        Dictionary<string, string> exportedGrassAlbedos)
+    {
+        if (tex == null) return null;
+
+        string srcPath = AssetDatabase.GetAssetPath(tex);
+        string key = !string.IsNullOrEmpty(srcPath) ? srcPath : $"iid:{tex.GetInstanceID()}";
+        if (exportedGrassAlbedos.TryGetValue(key, out string cached))
+            return cached;
+
+        string texName = SanitizeName(tex.name);
+        string texHztPath = $"{OutputDir}/glb/textures/{texName}.hzt";
+        string texPngPath = $"{OutputDir}/glb/textures/{texName}.png";
+        string imageBasePath = $"/{AssetPrefix}/glb/textures/{texName}";
+        string assetRef = $"{AssetPrefix}/glb/textures/{texName}.hzt";
+
+        HZTextureExporter.ExportHzt(tex, imageBasePath, true, hasAlpha, texHztPath, texPngPath);
+        exportedGrassAlbedos[key] = assetRef;
+        return assetRef;
     }
 
     static string GetMeshKey(Mesh mesh)
