@@ -21,8 +21,7 @@ Material:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_Name: Shark
-  m_Shader: {fileID: -6465566751694194690, guid: 98c2c61ba3033b24e9ce5008f3fd50a5,
-    type: 3}
+  m_Shader: {fileID: -6465566751694194690, guid: 98c2c61ba3033b24e9ce5008f3fd50a5, type: 3}
   m_Parent: {fileID: 0}
   m_ModifiedSerializedProperties: 0
   m_ValidKeywords: []
@@ -49,6 +48,10 @@ Material:
         m_Offset: {x: 0, y: 0}
     - Texture2D_fe15ad9678c146b584141fd68467b19c:
         m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _AlbedoTex:
+        m_Texture: {fileID: 2800000, guid: b2247669f47524a42964e87e491cd0fe, type: 3}
         m_Scale: {x: 1, y: 1}
         m_Offset: {x: 0, y: 0}
     - _BumpMap:
@@ -79,6 +82,10 @@ Material:
         m_Texture: {fileID: 2800000, guid: b2247669f47524a42964e87e491cd0fe, type: 3}
         m_Scale: {x: 1, y: 1}
         m_Offset: {x: 0, y: 0}
+    - _MetallicGloss:
+        m_Texture: {fileID: 2800000, guid: 811f9db5e9a332845818d2391156f191, type: 3}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
     - _MetallicGlossMap:
         m_Texture: {fileID: 0}
         m_Scale: {x: 1, y: 1}
@@ -92,7 +99,7 @@ Material:
         m_Scale: {x: 1, y: 1}
         m_Offset: {x: 0, y: 0}
     - _Tints:
-        m_Texture: {fileID: 0}
+        m_Texture: {fileID: 2800000, guid: f05a0a6d9f2f0fa4bb399a8a2ff3e9b1, type: 3}
         m_Scale: {x: 1, y: 1}
         m_Offset: {x: 0, y: 0}
     - unity_Lightmaps:
@@ -127,14 +134,18 @@ Material:
     - _Metallic: 0.063
     - _Mode: 0
     - _OcclusionStrength: 1
+    - _Offset: 0
     - _Parallax: 0.02
     - _QueueControl: 0
     - _QueueOffset: 0
+    - _Smoothness: 0.5
     - _SmoothnessTextureChannel: 0
     - _SpecularHighlights: 1
     - _SrcBlend: 1
     - _TimeScale: 10
     - _UVSec: 0
+    - _Wave1Frequency: 1
+    - _Wave1Speed: 1
     - _ZWrite: 1
     m_Colors:
     - Color_6fad55456a0f4d8e8cbf7e73a8860e75: {r: 1, g: 1, b: 1, a: 0}

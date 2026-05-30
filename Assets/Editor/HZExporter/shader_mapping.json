@@ -20,6 +20,24 @@
       ]
     },
     {
+      "unityShader": "Shader Graphs/Wiggle",
+      "engineShader": "/shaders/unity/wiggle.hz.glsl",
+      "engineSkinnedShader": "/shaders/unity/wiggle.hz.glsl",
+      "customShader": true,
+      "properties": [
+        { "unity": "_Color",          "slot": "color",            "kind": "color4" },
+        { "unity": "_AlbedoTex",      "slot": "albedo_tex",       "kind": "texture" },
+        { "unity": "_MetallicGloss",  "slot": "metallic_gloss",   "kind": "texture" },
+        { "unity": "_Tints",          "slot": "tints",            "kind": "texture" },
+        { "unity": "_Smoothness",     "slot": "smoothness",       "kind": "float" },
+        { "unity": "_Metallic",       "slot": "metallic",         "kind": "float" },
+        { "unity": "_Wave1Frequency", "slot": "wave_1_frequency", "kind": "float" },
+        { "unity": "_Wave1Speed",     "slot": "wave_1_speed",     "kind": "float" },
+        { "unity": "_Distance",       "slot": "distance",         "kind": "float" },
+        { "unity": "_Offset",         "slot": "offset",           "kind": "float" }
+      ]
+    },
+    {
       "unityShader": "Shader Graphs/FloorTriplanar",
       "engineShader": "/shaders/renderer/standard_static.hz.glsl",
       "engineSkinnedShader": "/shaders/renderer/standard_skinned.hz.glsl",

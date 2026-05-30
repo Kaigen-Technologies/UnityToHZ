@@ -140,11 +140,17 @@ namespace HZExporter.ShaderGraph
             {
                 if (!raw.TryGetValue(pid, out var pobj)) continue;
                 string fq = pobj.TryGetValue("m_Type", out var to) ? to as string : "";
+                // The reference name is what materials/runtime use to address the
+                // property. When the author sets a custom "Reference" in the Graph
+                // Inspector, ShaderGraph stores it in m_OverrideReferenceName and leaves
+                // m_DefaultReferenceName as the auto GUID name. Prefer the override.
+                string overrideRef = pobj.TryGetValue("m_OverrideReferenceName", out var orn) ? orn as string : null;
+                string defaultRef = pobj.TryGetValue("m_DefaultReferenceName", out var rn) ? rn as string : null;
                 var prop = new SgProperty
                 {
                     Id = pid,
                     Name = pobj.TryGetValue("m_Name", out var n) ? n as string : null,
-                    ReferenceName = pobj.TryGetValue("m_DefaultReferenceName", out var rn) ? rn as string : null,
+                    ReferenceName = !string.IsNullOrEmpty(overrideRef) ? overrideRef : defaultRef,
                     Type = MapPropertyType(fq),
                 };
                 if (pobj.TryGetValue("m_Value", out var v)) prop.DefaultValue = v;

@@ -121,7 +121,8 @@ namespace HZExporter
             public bool hasEnv;
             public string envAssetPath;   // e.g. "unity/environments/SceneA_skybox.hza"
             public float envIntensity;
-            public bool skybox;           // true if Unity has a skybox material assigned
+            public bool skybox;           // true only if the main camera clears to Skybox
+            public Color clearColor;      // main camera background color (used when skybox == false)
             // Fog (only meaningful when isSceneSettings == true)
             public uint fogMode;          // 0=off, 1=linear, 2=exp, 3=exp2 (matches engine RendererFogMode)
             public Vector3 fogColor;      // sRGB picker value; engine srgb-linears it
@@ -136,6 +137,10 @@ namespace HZExporter
             // screen-height-fraction units). Strictly descending switch_coverage.
             // Emitted as EcsModelRef.extra_lods.
             public System.Collections.Generic.List<(string modelAssetPath, float switchCoverage)> extraLods;
+            // Custom component blocks emitted verbatim after the standard components.
+            // Each entry is the full text of one `component <Name>` block (the engine
+            // must have a matching reflected struct, else the cooker silently drops it).
+            public List<string> customComponents;
         }
 
         /// <summary>
@@ -461,6 +466,25 @@ namespace HZExporter
                 sb.AppendLine($"  fog_density {F(info.fogDensity)}");
                 sb.AppendLine($"  fog_start {F(info.fogStart)}");
                 sb.AppendLine($"  fog_end {F(info.fogEnd)}");
+                // clear_color is the LAST field in the engine EcsSceneSettings struct;
+                // the .hzt reader advances by struct offset, so it must be emitted last
+                // (emitting it before fog_* makes the reader skip the fog fields → 0).
+                sb.AppendLine("  clear_color");
+                sb.AppendLine($"    r {F(info.clearColor.r)}");
+                sb.AppendLine($"    g {F(info.clearColor.g)}");
+                sb.AppendLine($"    b {F(info.clearColor.b)}");
+                sb.AppendLine($"    a {F(info.clearColor.a)}");
+            }
+
+            // Custom components (boid authoring data, etc.) — emitted verbatim.
+            if (info.customComponents != null)
+            {
+                foreach (var block in info.customComponents)
+                {
+                    if (string.IsNullOrEmpty(block)) continue;
+                    sb.AppendLine();
+                    sb.AppendLine(block.TrimEnd('\n'));
+                }
             }
         }
 
