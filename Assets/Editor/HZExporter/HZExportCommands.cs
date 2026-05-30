@@ -2,6 +2,8 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 using UnityEditor;
+using UnityEditor.SceneManagement;
+using Unity.Scenes;
 using HZExporter;
 
 /// <summary>
@@ -57,6 +59,14 @@ public static class HZExportCommands
         catch (System.Exception e) { Debug.LogError($"[HZ-SG] Water: {e.Message}\n{e.StackTrace}"); }
     }
 
+    public static void ExportWiggleShader()
+    {
+        const string src = "Assets/Boids/SampleAssets/Shaders/Wiggle.shadergraph";
+        string outDir = OutputDir + "/shaders";
+        try { HZShaderGraphExporter.ExportFile(src, outDir); }
+        catch (System.Exception e) { Debug.LogError($"[HZ-SG] Wiggle: {e.Message}\n{e.StackTrace}"); }
+    }
+
     // Folders the "Export Shader Graphs" menu walks. Add more here as new
     // production shaders show up; tests under Assets/ShaderGraphExport/ keep
     // working alongside them. Per-shader exec entry points (ExportSurfaceShader
@@ -66,6 +76,7 @@ public static class HZExportCommands
         "Assets/ShaderGraphExport",
         "Assets/Idyllic Fantasy Nature/Shader",
         "Assets/yyyrjis/ModularAnimeCharacter1/Shaders",
+        "Assets/Boids/SampleAssets/Shaders",
     };
 
     /// <summary>Translate every .shadergraph under the configured source
@@ -411,13 +422,177 @@ public static class HZExportCommands
     }
 
     [MenuItem("HZ Engine/Export Active Scene")]
+    /// <summary>
+    /// Open Boids.unity (single) and additively open every SubScene it references
+    /// (Simulation / Environment), so the entire scene graph is walkable in one editor
+    /// session. The Entities SubScene component keeps its content in separate .unity
+    /// files that aren't loaded by a plain OpenScene — we resolve each SubScene's
+    /// SceneAsset and open it additively.
+    /// </summary>
+    public static void OpenBoidsScene()
+    {
+        OpenSceneWithSubScenes("Assets/Boids/Boids.unity");
+    }
+
+    public static void ExportBoids()
+    {
+        OpenBoidsScene();
+        ExportScene();
+    }
+
+    // ===================== Boids (DOTS sample) custom components =====================
+    // The Unity Boids sample authors data via MonoBehaviour "Authoring" components that
+    // bake to ECS at runtime. We read them by type-name + reflection (the Boids scripts
+    // have no asmdef the editor assembly directly references) and emit matching engine
+    // components into the scene .hzt. The engine must define reflected structs with these
+    // exact field names (BoidSchool / BoidTarget / BoidObstacle / SampledAnimationClip),
+    // else the entity cooker silently drops the unknown `component` block.
+
+    static string FF(float v) => v.ToString("F6", System.Globalization.CultureInfo.InvariantCulture);
+
+    static void AddCustom(ref HZSceneExporter.EntityExportInfo info, string block)
+    {
+        info.customComponents ??= new List<string>();
+        info.customComponents.Add(block);
+    }
+
+    static int ReflInt(object o, string field, int def)
+    {
+        var f = o.GetType().GetField(field);
+        return f != null ? System.Convert.ToInt32(f.GetValue(o)) : def;
+    }
+    static float ReflFloat(object o, string field, float def)
+    {
+        var f = o.GetType().GetField(field);
+        return f != null ? System.Convert.ToSingle(f.GetValue(o)) : def;
+    }
+    static object ReflObj(object o, string field)
+    {
+        var f = o.GetType().GetField(field);
+        return f != null ? f.GetValue(o) : null;
+    }
+    static MonoBehaviour FindMono(GameObject go, string typeName)
+    {
+        foreach (var mb in go.GetComponentsInChildren<MonoBehaviour>(true))
+            if (mb != null && mb.GetType().Name == typeName) return mb;
+        return null;
+    }
+
+    static void AppendBoidComponents(GameObject go,
+        ref HZSceneExporter.EntityExportInfo info,
+        Dictionary<string, string> exportedGlbs)
+    {
+        // --- BoidSchoolAuthoring → BoidSchool (spawner: count, radius, flocking weights, model) ---
+        var school = go.GetComponent("BoidSchoolAuthoring") as MonoBehaviour;
+        if (school != null)
+        {
+            int count = ReflInt(school, "Count", 0);
+            float radius = ReflFloat(school, "InitialRadius", 0f);
+            var prefab = ReflObj(school, "Prefab") as GameObject;
+
+            // Flocking settings come from the prefab's BoidAuthoring (defaults = Unity sample defaults).
+            float cellRadius = 8f, sep = 1f, align = 1f, target = 2f, aversion = 30f, speed = 25f;
+            string modelPath = "";
+            if (prefab != null)
+            {
+                var boid = FindMono(prefab, "BoidAuthoring");
+                if (boid != null)
+                {
+                    cellRadius = ReflFloat(boid, "CellRadius", cellRadius);
+                    sep = ReflFloat(boid, "SeparationWeight", sep);
+                    align = ReflFloat(boid, "AlignmentWeight", align);
+                    target = ReflFloat(boid, "TargetWeight", target);
+                    aversion = ReflFloat(boid, "ObstacleAversionDistance", aversion);
+                    speed = ReflFloat(boid, "MoveSpeed", speed);
+                }
+
+                var pmf = prefab.GetComponentInChildren<MeshFilter>(true);
+                var pmr = prefab.GetComponentInChildren<MeshRenderer>(true);
+                if (pmf != null && pmr != null && pmf.sharedMesh != null)
+                    modelPath = ExportStaticGlbForRenderer(pmr, pmf.sharedMesh, exportedGlbs);
+            }
+
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("component BoidSchool");
+            sb.AppendLine($"  count {count}");
+            sb.AppendLine($"  initial_radius {FF(radius)}");
+            sb.AppendLine($"  cell_radius {FF(cellRadius)}");
+            sb.AppendLine($"  separation_weight {FF(sep)}");
+            sb.AppendLine($"  alignment_weight {FF(align)}");
+            sb.AppendLine($"  target_weight {FF(target)}");
+            sb.AppendLine($"  obstacle_aversion_distance {FF(aversion)}");
+            sb.AppendLine($"  move_speed {FF(speed)}");
+            sb.Append($"  model_path {modelPath}");
+            AddCustom(ref info, sb.ToString());
+            Debug.Log($"[HZ] BoidSchool '{go.name}': count={count} radius={radius} model={modelPath}");
+        }
+
+        // --- BoidTargetAuthoring → BoidTarget + SampledAnimationClip (reuse committed clip) ---
+        if (go.GetComponent("BoidTargetAuthoring") != null)
+        {
+            AddCustom(ref info, "component BoidTarget\n  _ 0");
+            AddCustom(ref info, $"component SampledAnimationClip\n  clip_path boids/{SanitizeName(go.name)}_animation.hzt");
+        }
+
+        // --- BoidObstacleAuthoring → BoidObstacle + SampledAnimationClip ---
+        if (go.GetComponent("BoidObstacleAuthoring") != null)
+        {
+            AddCustom(ref info, "component BoidObstacle\n  _ 0");
+            AddCustom(ref info, $"component SampledAnimationClip\n  clip_path boids/{SanitizeName(go.name)}_animation.hzt");
+        }
+    }
+
+    /// <summary>
+    /// Open a scene (Single) then additively open all SubScenes it references so the
+    /// full graph is loaded. Returns once everything is open.
+    /// </summary>
+    static void OpenSceneWithSubScenes(string mainScenePath)
+    {
+        if (EditorApplication.isPlaying)
+        {
+            // Scene ops are illegal in play mode; request exit and bail. Re-run after.
+            Debug.LogWarning("[HZ] In play mode — exiting play mode. Re-run ExportBoids once stopped.");
+            EditorApplication.isPlaying = false;
+            return;
+        }
+        EditorSceneManager.OpenScene(mainScenePath, OpenSceneMode.Single);
+
+        // Resolve SubScene components → SceneAsset path, open additively if not already open.
+        var subScenes = Object.FindObjectsByType<SubScene>(FindObjectsSortMode.None);
+        foreach (var ss in subScenes)
+        {
+            if (ss.SceneAsset == null) continue;
+            string path = AssetDatabase.GetAssetPath(ss.SceneAsset);
+            if (string.IsNullOrEmpty(path)) continue;
+            var existing = SceneManager.GetSceneByPath(path);
+            if (existing.IsValid() && existing.isLoaded) continue;
+            EditorSceneManager.OpenScene(path, OpenSceneMode.Additive);
+            Debug.Log($"[HZ] Opened SubScene additively: {path}");
+        }
+    }
+
+    /// <summary>
+    /// Gather root GameObjects from every loaded scene (active + additively-opened
+    /// SubScenes). Single-scene exports naturally see just the one scene.
+    /// </summary>
+    static GameObject[] GetAllLoadedRoots()
+    {
+        var roots = new List<GameObject>();
+        for (int i = 0; i < SceneManager.sceneCount; i++)
+        {
+            var s = SceneManager.GetSceneAt(i);
+            if (s.isLoaded) roots.AddRange(s.GetRootGameObjects());
+        }
+        return roots.ToArray();
+    }
+
     public static void ExportScene()
     {
         // Clear the per-export PNG cache so we don't leak texture bytes across runs.
         HZGlbWriter.ResetTextureCache();
 
         var scene = SceneManager.GetActiveScene();
-        var roots = scene.GetRootGameObjects();
+        var roots = GetAllLoadedRoots();
         var entities = new List<HZSceneExporter.EntityExportInfo>();
 
         // Nuke the scene output dir up front: the terrain export (runs inside the
@@ -449,6 +624,13 @@ public static class HZExportCommands
                 AddBoneSkips(animGO.transform, animGO, skipGOs);
             }
         }
+
+        // Skip SubScene placeholder GameObjects (the "Simulation"/"Environment" proxies
+        // in the main scene). Their actual content is in the additively-opened scenes;
+        // the placeholder itself has no renderer and would export as an empty entity.
+        foreach (var root in roots)
+            foreach (var ss in root.GetComponentsInChildren<SubScene>(true))
+                skipGOs.Add(ss.gameObject.GetInstanceID());
 
         // LODGroup: keep LOD0's renderer(s) as base entities; skip every renderer that
         // belongs only to LOD1+. Build lodExtrasByBaseGO so the entity-emission pass can
@@ -871,6 +1053,10 @@ public static class HZExportCommands
                     }
                 }
 
+                // Boid authoring (DOTS sample) → engine boid components. Independent of the
+                // mesh/camera/light branch above (a Target is both a static mesh AND a BoidTarget).
+                AppendBoidComponents(go, ref info, exportedGlbs);
+
                 entities.Add(info);
             }
         }
@@ -885,10 +1071,28 @@ public static class HZExportCommands
 
         string sceneName = SanitizeName(scene.name);
 
-        // Skybox / IBL env: bake the active Unity skybox to an equirect .hdr if the
-        // scene has a skybox material or uses skybox-based ambient. Engine cooks the
-        // .hdr → cubemap KTX + HdrEnvironmentBlobAsset on its side.
-        bool wantsSkybox = RenderSettings.skybox != null;
+        // Background comes from the MAIN camera's clear flags, not just whether a
+        // skybox material exists. A scene can have a skybox assigned but a camera
+        // that clears to a SolidColor — in that case the skybox is never visible,
+        // so we don't export it; the engine clears to the camera's background color.
+        Camera mainCam = Camera.main;
+        if (mainCam == null)
+        {
+            foreach (var root in roots)
+            {
+                var c = root.GetComponentInChildren<Camera>(true);
+                if (c != null) { mainCam = c; break; }
+            }
+        }
+        bool cameraUsesSkybox = mainCam != null && mainCam.clearFlags == CameraClearFlags.Skybox;
+        // Camera background: pass the raw (linear) color through unchanged — the engine
+        // clears the swapchain with it directly (GPU sRGB-encodes on write), unlike
+        // ambient/fog which the engine srgb_to_linears on use.
+        Color clearCol = mainCam != null ? mainCam.backgroundColor : Color.black;
+
+        // Skybox / IBL env: bake the active Unity skybox to an equirect .hdr only when
+        // the camera actually renders it (or skybox-based ambient needs the IBL).
+        bool wantsSkybox = cameraUsesSkybox;
         bool wantsEnv = wantsSkybox || RenderSettings.ambientMode == UnityEngine.Rendering.AmbientMode.Skybox;
         string envAssetPath = null;
         float envIntensity = 1.0f;
@@ -911,7 +1115,10 @@ public static class HZExportCommands
             Color shadowCol = LinearToSrgb(RenderSettings.subtractiveShadowColor);
             // Unity FogMode: Linear=1, Exponential=2, ExponentialSquared=3 — same numbers as RendererFogMode.
             uint fogMode = RenderSettings.fog ? (uint)RenderSettings.fogMode : 0u;
-            Color fogColRaw = LinearToSrgb(RenderSettings.fogColor);
+            // RenderSettings.fogColor already comes back in the space the engine
+            // expects (the engine srgb_to_linears it). Unlike ambient/light, do NOT
+            // apply LinearToSrgb here — that double-encodes and brightens the fog.
+            Color fogColRaw = RenderSettings.fogColor;
             // URP packs unity_FogParams.x = density/sqrt(ln2) and the shader uses exp2(...).
             // Engine uses exp(-d*z) for EXP and exp(-(d*z)^2) for EXP2. EXP2 round-trips
             // (the squared factor cancels ln2); EXP needs *sqrt(ln2) to match URP visually.
@@ -932,6 +1139,7 @@ public static class HZExportCommands
                 envAssetPath = envAssetPath,
                 envIntensity = envIntensity,
                 skybox = wantsSkybox,
+                clearColor = clearCol,
                 fogMode = fogMode,
                 fogColor = new Vector3(fogColRaw.r, fogColRaw.g, fogColRaw.b),
                 fogDensity = fogDensity,
