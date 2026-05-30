@@ -421,7 +421,6 @@ public static class HZExportCommands
         return h == 0 ? 1 : h;
     }
 
-    [MenuItem("HZ Engine/Export Active Scene")]
     /// <summary>
     /// Open Boids.unity (single) and additively open every SubScene it references
     /// (Simulation / Environment), so the entire scene graph is walkable in one editor
@@ -429,11 +428,18 @@ public static class HZExportCommands
     /// files that aren't loaded by a plain OpenScene — we resolve each SubScene's
     /// SceneAsset and open it additively.
     /// </summary>
+    [MenuItem("HZ Engine/Open Boids Scene")]
     public static void OpenBoidsScene()
     {
         OpenSceneWithSubScenes("Assets/Boids/Boids.unity");
     }
 
+    /// <summary>
+    /// Convenience for the Boids scene specifically: open Boids.unity + its SubScenes,
+    /// then export. (Plain "Export Active Scene" only walks already-loaded scenes, so
+    /// for a subscene-based scene you must have the SubScenes open first.)
+    /// </summary>
+    [MenuItem("HZ Engine/Export Boids Scene")]
     public static void ExportBoids()
     {
         OpenBoidsScene();
@@ -586,6 +592,7 @@ public static class HZExportCommands
         return roots.ToArray();
     }
 
+    [MenuItem("HZ Engine/Export Active Scene")]
     public static void ExportScene()
     {
         // Clear the per-export PNG cache so we don't leak texture bytes across runs.
