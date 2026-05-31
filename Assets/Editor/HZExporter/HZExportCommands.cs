@@ -1037,7 +1037,6 @@ public static class HZExportCommands
                         info.lightColor = new Vector3(c.r, c.g, c.b);
                         info.lightIntensity = light.intensity;
                         info.castShadow = light.shadows != LightShadows.None;
-                        info.shadowDistance = QualitySettings.shadowDistance;
                         info.shadowStrength = light.shadowStrength;
                         info.shadowBias = light.shadowBias;
                         info.shadowNormalBias = light.shadowNormalBias;
@@ -1134,6 +1133,7 @@ public static class HZExportCommands
                 ambientColor = new Vector3(ambient.r, ambient.g, ambient.b),
                 ambientIntensity = RenderSettings.ambientIntensity,
                 shadowColor = shadowCol,
+                maxShadowDistance = QualitySettings.shadowDistance,
                 hasEnv = envAssetPath != null,
                 envAssetPath = envAssetPath,
                 envIntensity = envIntensity,
