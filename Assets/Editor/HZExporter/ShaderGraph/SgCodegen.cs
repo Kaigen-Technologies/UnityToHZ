@@ -195,7 +195,15 @@ namespace HZExporter.ShaderGraph
             if (fsScan.Contains("hz_scene_color"))        fsDefines.AppendLine("#define HZ_RENDERER_SCENE_COLOR");
             if (fsScan.Contains("hz_scene_depth_linear")) fsDefines.AppendLine("#define HZ_RENDERER_SCENE_DEPTH");
 
+            // Lit graphs that leave Base Color unwired are "implicit unlit" (their
+            // output is driven through Emission). Skip the PBR lighting block and
+            // start from black — the tail (occlusion/emission/fog) carries it.
+            string lighting = isLit
+                ? (IsBaseColorWired(g) ? LIT_LIGHTING : "    vec3 lit = vec3(0.0);\n")
+                : "";
+
             return template
+                .Replace("${LIGHTING}", lighting)
                 .Replace("${MATERIAL_STRUCT}", FormatMaterialStruct(g))
                 .Replace("${VS_MATERIAL}",    vsMaterial)
                 .Replace("${VS_MAT_UNPACK}",  vsMatUnpack)
@@ -512,6 +520,19 @@ namespace HZExporter.ShaderGraph
             return sb.ToString();
         }
 
+        // True when the fragment Base Color block has an incoming edge. When it's
+        // unwired the graph is treated as "implicit unlit" — the PBR lighting
+        // block is skipped and output flows through Emission. Mirrors the
+        // edge-check in LowerSurface.
+        static bool IsBaseColorWired(SgGraph g)
+        {
+            var block = g.FindFragmentBlock("SurfaceDescription.BaseColor");
+            if (block == null || block.SlotByNum.Count == 0) return false;
+            int numId = 0;
+            foreach (var k in block.SlotByNum.Keys) { numId = k; break; }
+            return g.FindEdgeIntoSlot(block.Id, numId) != null;
+        }
+
         // Lower a SurfaceDescription block into an Assign. Falls back to the
         // provided literal RHS when the block has no input.
         static Assign LowerSurface(SgGraph g, LowerCtx ctx, string blockName,
@@ -661,7 +682,22 @@ ${MATERIAL_STRUCT}
 ${HELPERS}${FUNCTIONS}void main() {
     MaterialFS mat = MaterialFS_unpack(v_material_offset);
 ${MAIN_BODY}
-    vec3 N = apply_normal_map(v_normal, v_tangent, v_bitangent_sign, normal_ts);
+${LIGHTING}
+    lit *= occlusion;
+    lit += emission;
+    lit = hz_apply_fog(lit, v_view_depth);
+    frag_color = vec4(lit, 1.0);
+}
+@end
+";
+
+        // The PBR lighting block for the LIT template. Substituted into
+        // ${LIGHTING} when the graph wires its Base Color. When Base Color is
+        // unwired the graph is "implicit unlit" (output via Emission), so we
+        // substitute `vec3 lit = vec3(0.0);` instead and let the tail
+        // (occlusion/emission/fog) carry the result.
+        const string LIT_LIGHTING =
+@"    vec3 N = apply_normal_map(v_normal, v_tangent, v_bitangent_sign, normal_ts);
 
     SurfaceInput surface = SurfaceInput(base_color, metallic, smoothness);
     LightingInput li = LightingInput(v_world_pos, N, hz_scene.camera_pos);
@@ -679,13 +715,6 @@ ${MAIN_BODY}
         uint cubemap_idx = hz_materials.data[sky_off + 5u];
         lit += ibl_ambient(surface, li, hz_scene.lights, cubemap_idx, intensity);
     }
-
-    lit *= occlusion;
-    lit += emission;
-    lit = hz_apply_fog(lit, v_view_depth);
-    frag_color = vec4(lit, 1.0);
-}
-@end
 ";
 
         // Sibling shadow caster shader, emitted next to the forward LIT/UNLIT

@@ -73,7 +73,7 @@ namespace HZExporter
             }
 
             for (int i = 0; i < layerCount; i++)
-                WriteLayer(td.terrainLayers[i], i, outDir, assetPrefix);
+                WriteLayer(td.terrainLayers[i], i, td.name, outDir, assetPrefix);
 
             string terrainHztPath = Path.Combine(outDir, "terrain.hzt");
             WriteManifest(td, terrainHztPath, assetPrefix, layerCount, splatmapCount, tileSize, maxLod);
@@ -184,7 +184,7 @@ namespace HZExporter
 
         // ---- per-layer textures ----
 
-        static void WriteLayer(TerrainLayer layer, int idx, string outDir, string assetPrefix)
+        static void WriteLayer(TerrainLayer layer, int idx, string terrainName, string outDir, string assetPrefix)
         {
             if (layer == null)
             {
@@ -197,7 +197,14 @@ namespace HZExporter
             WriteLayerTex(layer.diffuseTexture,   idx, "albedo", "TEX_FORMAT_BC1", isSrgb: true,  isNormal: false, outDir, assetPrefix);
             WriteLayerTex(layer.normalMapTexture, idx, "normal", "TEX_FORMAT_BC5", isSrgb: false, isNormal: true,  outDir, assetPrefix);
             if (layer.maskMapTexture != null)
-                WriteLayerTex(layer.maskMapTexture, idx, "mask", "TEX_FORMAT_BC3", isSrgb: false, isNormal: false, outDir, assetPrefix);
+            {
+                var mm = layer.maskMapTexture;
+                // A 1x1 mask map carries no spatial data — it's effectively "no mask".
+                // Log it (with the terrain name) so the right terrain can be confirmed.
+                if (mm.width <= 1 && mm.height <= 1)
+                    Debug.Log($"[HZTerrain] '{terrainName}' layer{idx} '{layer.name}': mask map is a flat {mm.width}x{mm.height} texture ('{mm.name}') — basically no mask");
+                WriteLayerTex(mm, idx, "mask", "TEX_FORMAT_BC3", isSrgb: false, isNormal: false, outDir, assetPrefix);
+            }
             else
                 WriteDefaultMask(idx, outDir, assetPrefix);
         }
