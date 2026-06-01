@@ -33,8 +33,11 @@ namespace HZExporter.ShaderGraph
                 bool peep = PeepholeRewrite(statements, assigns);
                 if (!fold && !peep) break;
             }
+            CommonSubexpr(statements, assigns);   // merge identical computations (CSE)
             DCE(statements, assigns);
-            InlineOnceUsed(statements, assigns);
+            InlineOnceUsed(statements, assigns);  // collapse trivial temps (keeps calls)
+            CommonSubexpr(statements, assigns);   // catch duplicates exposed by inlining
+            DCE(statements, assigns);
             Renumber(statements, assigns);
         }
 
@@ -362,6 +365,74 @@ namespace HZExporter.ShaderGraph
             // know whether they're side-effecting. (UV varying reads are Raw
             // with no refs, and those *are* safe to inline; allow them.)
             if (r is SgRhsRaw raw && raw.RefList.Count > 0) return false;
+            // Keep genuine function calls as named variables rather than burying
+            // them inside larger expressions: texture_sample / subgraph_* / hz_*
+            // helpers (RawTemplate) and any non-constructor call. This (with the
+            // CSE pass) materializes each distinct call once and reuses it instead
+            // of recomputing a costly call multiple times. Trivial temps —
+            // arithmetic, swizzles, vec/mat constructors, literals, refs — still
+            // inline so the output isn't drowned in noise.
+            if (r is SgRhsRawTemplate) return false;
+            if (r is SgRhsCall c && !IsConstructorFunc(c.Func)) return false;
+            return true;
+        }
+
+        static bool IsConstructorFunc(string f) =>
+            f == "vec2" || f == "vec3" || f == "vec4" || f == "mat3" || f == "mat4";
+
+        // ===== CSE: merge identical computations ==============================
+
+        // ShaderGraph compiles to straight-line dataflow (no scope/branches
+        // beyond keyword #ifdefs), so a value computed identically more than
+        // once can be shared. Merge non-conditional statements whose
+        // (type, canonical-GLSL) form matches: drop the later duplicate and
+        // redirect every reference to the first. Combined with IsInlineable
+        // refusing to inline function-call temps, this materializes each
+        // distinct call once and reuses it (e.g. two `hz_baked_gi(pos,nrm)`
+        // nodes collapse to one variable).
+        static bool CommonSubexpr(List<SgStatement> statements, List<IAssignView> assigns)
+        {
+            var seen = new Dictionary<string, string>();    // "type|glsl" -> kept temp name
+            var rename = new Dictionary<string, string>();  // dropped name -> kept name
+            var keep = new List<SgStatement>();
+
+            foreach (var s in statements)
+            {
+                // Conditional (keyword) statements are opaque: never merge them
+                // or across them, but do rewrite their inner refs to temps
+                // merged earlier in this pass.
+                if (s.Branches != null)
+                {
+                    if (rename.Count > 0) RenameStatement(s, rename);
+                    keep.Add(s);
+                    continue;
+                }
+                // A statement only references temps defined before it (SSA), so
+                // applying the renames accumulated so far is sufficient.
+                if (rename.Count > 0) s.Rhs = RenameRefs(s.Rhs, rename);
+
+                string typeKey;
+                if (s.TypeName != null) typeKey = s.TypeName;
+                else if (s.Type == SgType.Unknown || s.Type == SgType.SamplerState) { keep.Add(s); continue; }
+                else typeKey = SgTypes.Glsl(s.Type);
+
+                string key = typeKey + "|" + s.Rhs.ToGlsl();
+                if (seen.TryGetValue(key, out var first))
+                    rename[s.Name] = first;   // duplicate: drop it, redirect uses to `first`
+                else
+                {
+                    seen[key] = s.Name;
+                    keep.Add(s);
+                }
+            }
+
+            if (rename.Count == 0) return false;
+
+            // Surface assigns reference any temp → apply the full map at the end.
+            foreach (var a in assigns) a.Rhs = RenameRefs(a.Rhs, rename);
+
+            statements.Clear();
+            statements.AddRange(keep);
             return true;
         }
 
