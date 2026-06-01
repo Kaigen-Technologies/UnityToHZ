@@ -49,8 +49,8 @@ namespace HZExporter
         const int SIZE_EcsAABB = 24;        // 2x vec3
         // Camera: 4x mat4(256) + Frustum(96) + quat(16) + vec3(12) + 4x f32(16) = 396
         const int SIZE_Camera = 396;
-        const int SIZE_EcsSceneSettings = 36;    // ColorF32(16) + f32(4) + ColorF32(16)
-        const int SIZE_EcsDirectionalLight = 36; // v3 color(12) + f32 intensity(4) + b32 cast_shadow(4) + f32 shadow_distance(4) + 3*f32 shadow_strength/bias/normal_bias(12)
+        const int SIZE_EcsSceneSettings = 40;    // ColorF32(16) + f32(4) + ColorF32(16) + f32 max_shadow_distance(4)
+        const int SIZE_EcsDirectionalLight = 32; // v3 color(12) + f32 intensity(4) + b32 cast_shadow(4) + 3*f32 shadow_strength/bias/normal_bias(12)
         const int SIZE_EcsPointLight = 20;       // v3 color(12) + f32 radius(4) + f32 intensity(4)
         const int SIZE_EcsAnimationRef = 24;     // BlobAssetRef(AnimationBlobAsset)
         const int SIZE_EcsParent = 8;            // EcsEntity (u64)
@@ -94,7 +94,6 @@ namespace HZExporter
             public Vector3 lightColor;
             public float lightIntensity;
             public bool castShadow;
-            public float shadowDistance;
             public float shadowStrength;
             public float shadowBias;
             public float shadowNormalBias;
@@ -117,6 +116,8 @@ namespace HZExporter
             public Vector3 ambientColor;
             public float ambientIntensity;
             public Color shadowColor;
+            // Global max shadow render distance (QualitySettings.shadowDistance).
+            public float maxShadowDistance;
             // Skybox / IBL env (only meaningful when isSceneSettings == true)
             public bool hasEnv;
             public string envAssetPath;   // e.g. "unity/environments/SceneA_skybox.hza"
@@ -416,7 +417,6 @@ namespace HZExporter
                 sb.AppendLine($"    z {F(info.lightColor.z)}");
                 sb.AppendLine($"  intensity {F(info.lightIntensity)}");
                 sb.AppendLine($"  cast_shadow {(info.castShadow ? "true" : "false")}");
-                sb.AppendLine($"  shadow_distance {F(info.shadowDistance)}");
                 sb.AppendLine($"  shadow_strength {F(info.shadowStrength)}");
                 sb.AppendLine($"  shadow_bias {F(info.shadowBias)}");
                 sb.AppendLine($"  shadow_normal_bias {F(info.shadowNormalBias)}");
@@ -451,6 +451,7 @@ namespace HZExporter
                 sb.AppendLine($"    g {F(info.shadowColor.g)}");
                 sb.AppendLine($"    b {F(info.shadowColor.b)}");
                 sb.AppendLine($"    a {F(info.shadowColor.a)}");
+                sb.AppendLine($"  max_shadow_distance {F(info.maxShadowDistance)}");
                 if (info.hasEnv)
                 {
                     sb.AppendLine($"  env {info.envAssetPath} HdrEnvironmentBlobAsset");
@@ -671,7 +672,6 @@ namespace HZExporter
                     wr.WriteVec3(info.lightColor.x, info.lightColor.y, info.lightColor.z);
                     wr.WriteF32(info.lightIntensity);
                     wr.WriteU32(info.castShadow ? 1u : 0u);
-                    wr.WriteF32(info.shadowDistance);
                     wr.WriteF32(info.shadowStrength);
                     wr.WriteF32(info.shadowBias);
                     wr.WriteF32(info.shadowNormalBias);
@@ -695,6 +695,7 @@ namespace HZExporter
                     wr.WriteVec4(info.ambientColor.x, info.ambientColor.y, info.ambientColor.z, 1f);
                     wr.WriteF32(info.ambientIntensity);
                     wr.WriteVec4(info.shadowColor.r, info.shadowColor.g, info.shadowColor.b, info.shadowColor.a);
+                    wr.WriteF32(info.maxShadowDistance);
                 });
             }
 
