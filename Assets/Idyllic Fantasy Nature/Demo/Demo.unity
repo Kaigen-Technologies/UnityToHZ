@@ -53012,6 +53012,7 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 755716460}
+  - component: {fileID: 755716461}
   m_Layer: 0
   m_Name: Controls
   m_TagString: Untagged
@@ -53037,6 +53038,18 @@ Transform:
   - {fileID: 131719058}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &755716461
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 755716459}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 1b3bd9f99e2c742629e86d20b4d20de8, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::FrameTimingDisplay
 --- !u!1001 &757798064
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -154474,7 +154487,6 @@ GameObject:
   - component: {fileID: 2531667858668357520}
   - component: {fileID: 2531667858668357523}
   - component: {fileID: 2531667858668357526}
-  - component: {fileID: 2531667858668357527}
   m_Layer: 0
   m_Name: Main Camera
   m_TagString: MainCamera
@@ -154534,20 +154546,6 @@ MonoBehaviour:
     m_VarianceClampScale: 0.9
     m_ContrastAdaptiveSharpening: 0
   m_Version: 2
---- !u!114 &2531667858668357527
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 2531667858668357522}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: e54e534ce9e48bc4ebad75722140db8d, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  _mouseSensity: 1
-  _controller: {fileID: 2531667859225528127}
 --- !u!1 &2531667859225528117
 GameObject:
   m_ObjectHideFlags: 0

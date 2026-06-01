@@ -5,15 +5,18 @@ EditorBuildSettings:
   m_ObjectHideFlags: 0
   serializedVersion: 2
   m_Scenes:
-  - enabled: 1
+  - enabled: 0
     path: Assets/Boids/Boids.unity
     guid: d5f3505c0b377452db53363d84547627
-  - enabled: 1
+  - enabled: 0
     path: Assets/Boids/Subscenes/Simulation.unity
     guid: e1e53224c62f2477ea66ccbee8043957
-  - enabled: 1
+  - enabled: 0
     path: Assets/Boids/Subscenes/Environment.unity
     guid: 9c5ff16a37c4a4220a0e7795b6c38c6d
+  - enabled: 1
+    path: Assets/Idyllic Fantasy Nature/Demo/Demo.unity
+    guid: 00ad17d337a65f940adcf6e7def9f43e
   m_configObjects:
     com.unity.input.settings.actions: {fileID: -944628639613478452, guid: 052faaac586de48259a63d0c4782560b, type: 3}
   m_UseUCBPForAssetBundles: 0

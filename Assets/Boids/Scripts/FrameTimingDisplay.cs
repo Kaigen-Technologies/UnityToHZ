@@ -75,6 +75,8 @@ public class FrameTimingDisplay : MonoBehaviour
         {
             _logTimer = 0f;
             UnityEngine.Debug.Log($"CPU: {_cpuTimeMs:F2} ms | GPU: {_gpuTimeMs:F2} ms | ECS: {_ecsTimeMs:F2} ms | Frame: {_frameTimeMs:F1} ms | FPS: {_fps:F0}");
+             UnityEngine.Debug.Log($"Screen: {Screen.width}x{Screen.height}  dpi={Screen.dpi}");
+  UnityEngine.Debug.Log($"Display: {Display.main.renderingWidth}x{Display.main.renderingHeight}");
         }
     }
 
