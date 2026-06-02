@@ -409,6 +409,10 @@ namespace HZExporter
             {
                 if (mi > 0) json.Append(",\n");
                 string matName = SanitizeName(materials[mi]?.name ?? $"material_{mi}");
+                // Grass meshes get a distinct material name so the cooked material
+                // (and any references to it) are identifiable as the grass variant,
+                // matching the `_grass` GLB/shader naming.
+                if (grassShader) matName += "_grass";
                 if (customMats[mi] != null)
                 {
                     WriteCustomMaterialJson(json, matName, customMats[mi]);
