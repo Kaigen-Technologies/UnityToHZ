@@ -453,5 +453,70 @@ namespace HZExporter
             }
             return cm;
         }
+
+        // Engine shader for grass that uses a default/PBR Unity material (no custom mapping).
+        const string GRASS_TERRAIN_SHADER = "/shaders/renderer/grass_terrain.hz.glsl";
+
+        /// <summary>
+        /// Synthesize a grass_terrain custom material for a default/PBR material on a grass mesh.
+        /// The exporter routes default grass materials here (instead of the PBR path) so they
+        /// point shader_source at grass_terrain.hz.glsl — the grass analogue of the engine's
+        /// standard_static default. grass_terrain's MaterialFS is {albedo, alpha_cutoff,
+        /// root_color, tip_color}; only albedo + alpha_cutoff are pulled from Unity. root_color
+        /// and tip_color are supplied by the grass system at runtime from the terrain asset's
+        /// grass_types, so they're left at struct-default zero here.
+        /// </summary>
+        public static CustomMaterial EmbedGrassTerrainMaterial(
+            Material mat,
+            MemoryStream bin,
+            System.Func<ImageRecord, int> onImage)
+        {
+            EnsureLoaded();
+            var cm = new CustomMaterial
+            {
+                shaderPath = GRASS_TERRAIN_SHADER,
+                isTransparent = false,            // alpha-cut foliage is opaque (in-shader discard)
+                properties = new List<CustomProperty>(),
+                // foliage is double-sided; respect the material's _Cull but default to NONE
+                cullMode = ResolveCullMode(mat, new ShaderEntry { cullMode = "GPU_CULL_NONE" }),
+            };
+            if (mat == null) return cm;
+
+            // Albedo: reuse the shader mapping's albedoTex slot to find the Unity texture
+            // (same lookup the PBR path uses), then embed it as a custom texture property.
+            var entry = Lookup(mat);
+            Texture2D albedo = null;
+            foreach (var p in entry.properties ?? new List<PropertyMap>())
+            {
+                if (p.slot != "albedoTex") continue;
+                if (string.IsNullOrEmpty(p.unity) || !mat.HasProperty(p.unity)) continue;
+                albedo = mat.GetTexture(p.unity) as Texture2D;
+                if (albedo != null) break;
+            }
+            if (albedo != null)
+            {
+                byte[] png = HZGlbWriter.EncodeAndCachePng(albedo, false);
+                HZGlbWriter.PadTo4(bin);
+                int off = (int)bin.Position;
+                bin.Write(png, 0, png.Length);
+                HZGlbWriter.PadTo4(bin);
+                int idx = onImage(new ImageRecord {
+                    off = off, size = png.Length,
+                    name = HZGlbWriter.SanitizeName(albedo.name ?? "albedo"), role = -1 });
+                cm.properties.Add(new CustomProperty { slot = "albedo", kind = "texture", textureIndex = idx });
+            }
+            else
+            {
+                Debug.LogWarning($"[HZShaderMap] grass material '{mat.name}' (shader '{mat.shader?.name}'): no albedo texture found; grass_terrain material emitted without albedo (engine @white fallback).");
+            }
+
+            // alpha_cutoff: Unity's clip threshold; default 0.5 when absent.
+            float cutoff = 0.5f;
+            if (mat.HasProperty("_Cutoff")) cutoff = mat.GetFloat("_Cutoff");
+            else if (mat.HasProperty("_AlphaClipThreshold")) cutoff = mat.GetFloat("_AlphaClipThreshold");
+            cm.properties.Add(new CustomProperty { slot = "alpha_cutoff", kind = "float", f = cutoff });
+
+            return cm;
+        }
     }
 }

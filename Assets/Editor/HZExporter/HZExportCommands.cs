@@ -108,6 +108,21 @@ public static class HZExportCommands
         Debug.Log($"[HZ-SG] done — {ok} ok, {fail} failed, {skipped} folder(s) skipped");
     }
 
+    /// <summary>Test-export a cube with a default URP/Lit material through the grass path,
+    /// so we can verify default grass materials become grass_terrain custom materials.</summary>
+    public static void ExportGrassTerrainMatTest()
+    {
+        var mat = new Material(Shader.Find("Universal Render Pipeline/Lit"));
+        mat.name = "GrassDefaultTest";
+        var go = GameObject.CreatePrimitive(PrimitiveType.Quad);
+        HZGlbWriter.ExportStaticMesh(go.GetComponent<MeshFilter>().sharedMesh,
+            new Material[] { mat },
+            OutputDir + "/glb/GrassTerrainMat_Test.glb", grassShader: true);
+        Object.DestroyImmediate(go);
+        Object.DestroyImmediate(mat);
+        Debug.Log("[HZ] grass-terrain-mat test exported");
+    }
+
     /// <summary>Test-export a cube using the FloorTriplanar shader-graph material so we can
     /// verify HZShaderMap picks up the new JSON entry and routes _MainTexture/_Normal/etc.</summary>
     public static void ExportFloorTriplanarTest()

@@ -235,6 +235,22 @@ namespace HZExporter
                         imageEntries.Add((img.off, img.size, img.name, capturedMi, img.role));
                         return imageEntries.Count - 1;
                     });
+                    // Custom-shader grass meshes use the shader's `_grass` variant
+                    // (e.g. vegetation.hz.glsl → vegetation_grass.hz.glsl).
+                    if (grassShader && customMats[mi] != null)
+                        customMats[mi].shaderPath = GrassShaderVariant(customMats[mi].shaderPath);
+                }
+                else if (grassShader)
+                {
+                    // Default/PBR material on a grass mesh: synthesize a grass_terrain
+                    // custom material (the grass analogue of the engine's standard_static
+                    // default) rather than falling through to the PBR path, which would
+                    // leave the shader unspecified → standard_static.
+                    customMats[mi] = HZShaderMap.EmbedGrassTerrainMaterial(materials[mi], bin, img =>
+                    {
+                        imageEntries.Add((img.off, img.size, img.name, capturedMi, img.role));
+                        return imageEntries.Count - 1;
+                    });
                 }
                 else
                 {
@@ -243,12 +259,6 @@ namespace HZExporter
                         imageEntries.Add((img.off, img.size, img.name, capturedMi, img.role));
                     });
                 }
-
-                // Grass detail meshes use a `_grass` shader variant. Only custom-shader
-                // materials carry a per-material shader in the GLB, so only those are
-                // rewritten; PBR/default materials are untouched.
-                if (grassShader && customMats[mi] != null)
-                    customMats[mi].shaderPath = GrassShaderVariant(customMats[mi].shaderPath);
             }
 
             byte[] binData = bin.ToArray();
