@@ -61,6 +61,22 @@ namespace HZExporter
         /// </summary>
         public static void ExportStaticMesh(Mesh mesh, Material[] materials, string outputPath)
         {
+            ExportStaticMesh(mesh, materials, outputPath, grassShader: false);
+        }
+
+        /// <summary>
+        /// Export a static mesh as .glb. Supports meshes with multiple submeshes — each submesh
+        /// becomes a separate glTF primitive sharing the same vertex buffers, with its own
+        /// material. `materials[i]` pairs with submesh `i`; if fewer materials are provided than
+        /// submeshes, the last material repeats (matching Unity's MeshRenderer behavior).
+        ///
+        /// When <paramref name="grassShader"/> is true (terrain grass detail meshes), every
+        /// custom-shader material's engine shader path is rewritten to its `_grass` variant
+        /// (e.g. vegetation.hz.glsl → vegetation_grass.hz.glsl). PBR/default materials are left
+        /// untouched (they have no per-material shader in the GLB).
+        /// </summary>
+        public static void ExportStaticMesh(Mesh mesh, Material[] materials, string outputPath, bool grassShader)
+        {
             if (materials == null || materials.Length == 0) materials = new Material[] { null };
 
             var bin = new MemoryStream();
@@ -227,6 +243,12 @@ namespace HZExporter
                         imageEntries.Add((img.off, img.size, img.name, capturedMi, img.role));
                     });
                 }
+
+                // Grass detail meshes use a `_grass` shader variant. Only custom-shader
+                // materials carry a per-material shader in the GLB, so only those are
+                // rewritten; PBR/default materials are untouched.
+                if (grassShader && customMats[mi] != null)
+                    customMats[mi].shaderPath = GrassShaderVariant(customMats[mi].shaderPath);
             }
 
             byte[] binData = bin.ToArray();
@@ -1270,6 +1292,19 @@ namespace HZExporter
         // mirrors the engine's MaterialBlobAsset .hzt. The engine's GLB cooker reads this block
         // when present and emits a custom-shader MaterialBlobAsset; otherwise it falls back to
         // the standard PBR-extraction path.
+        // Rewrite an engine shader path to its grass variant by inserting `_grass` before the
+        // `.hz.glsl` extension: "/shaders/unity/vegetation.hz.glsl" → ".../vegetation_grass.hz.glsl".
+        // Leaves an already-`_grass` path or an unrecognized extension untouched.
+        static string GrassShaderVariant(string shaderPath)
+        {
+            if (string.IsNullOrEmpty(shaderPath)) return shaderPath;
+            const string ext = ".hz.glsl";
+            if (!shaderPath.EndsWith(ext, StringComparison.Ordinal)) return shaderPath;
+            string stem = shaderPath.Substring(0, shaderPath.Length - ext.Length);
+            if (stem.EndsWith("_grass", StringComparison.Ordinal)) return shaderPath;
+            return stem + "_grass" + ext;
+        }
+
         static void WriteCustomMaterialJson(StringBuilder json, string matName, HZShaderMap.CustomMaterial cm)
         {
             json.Append($"    {{\n      \"name\": \"{EscapeJson(matName)}\",\n");

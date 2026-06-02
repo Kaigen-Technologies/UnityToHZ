@@ -963,7 +963,7 @@ public static class HZExportCommands
                         // Grass models flow through the same GLB dedup as scene meshes; grass
                         // albedo textures go to the shared glb/textures tree (deduped).
                         terrainRef = HZTerrainExporter.Export(terrain, outDir, assetPrefix,
-                            (mr, mesh) => ExportStaticGlbForRenderer(mr, mesh, exportedGlbs),
+                            (mr, mesh) => ExportStaticGlbForRenderer(mr, mesh, exportedGlbs, grassShader: true),
                             (tex, hasAlpha) => ExportGrassAlbedo(tex, hasAlpha, exportedGrassAlbedos));
                         exportedTerrains[terrainKey] = terrainRef;
                     }
@@ -1231,17 +1231,19 @@ public static class HZExportCommands
     // GLB cooker to write the same texture filename from multiple sources → asset
     // collision.
     static string ExportStaticGlbForRenderer(MeshRenderer mr, Mesh mesh,
-        Dictionary<string, string> exportedGlbs)
+        Dictionary<string, string> exportedGlbs, bool grassShader = false)
     {
-        string meshKey = GetMeshKey(mesh);
+        // Grass meshes emit a `_grass` shader variant, so they must be a distinct GLB from any
+        // normal static export of the same mesh — namespace both the dedup key and the filename.
+        string meshKey = GetMeshKey(mesh) + (grassShader ? "::grass" : "");
         if (exportedGlbs.TryGetValue(meshKey, out string cached))
             return cached;
 
-        string glbName = GetMeshSourceName(mesh);
+        string glbName = GetMeshSourceName(mesh) + (grassShader ? "_grass" : "");
         string glbPath = $"{OutputDir}/glb/{glbName}.glb";
         string glbAssetPath = $"{AssetPrefix}/glb/{glbName}.glb";
 
-        HZGlbWriter.ExportStaticMesh(mesh, mr.sharedMaterials, glbPath);
+        HZGlbWriter.ExportStaticMesh(mesh, mr.sharedMaterials, glbPath, grassShader);
         exportedGlbs[meshKey] = glbAssetPath;
         return glbAssetPath;
     }

@@ -416,16 +416,16 @@ namespace HZExporter.ShaderGraph
             {
                 case 0: source = uv0; break;
                 case 1: source = uv1; break;
-                // UV2/UV3 emit (0, 0). The engine vertex layout doesn't carry
-                // them; Unity's IA returns zeros for any TEXCOORD semantic the
-                // mesh doesn't actually bind, so this matches Unity's behavior
-                // for meshes WITHOUT the channel. LogError stays loud so we
-                // notice when a shader references one of these — if a mesh
-                // ever carries real UV2/UV3 data, the engine will read zero
-                // here (HZGlbWriter logs the dropped data separately).
+                // UV2/UV3 aren't carried by the engine vertex layout, so they
+                // fall back to UV0. Emitting zero instead collapses anything
+                // that reads them (e.g. vegetation's UV3-driven color overlay)
+                // to a constant, which is more visibly broken than reusing UV0.
+                // LogWarning stays loud so we notice — if a mesh ever carries
+                // real UV2/UV3 data, that data is lost (HZGlbWriter logs the
+                // dropped channel separately).
                 case 2: case 3:
-                    UnityEngine.Debug.LogError($"[SgLowering] UV channel {channel} not plumbed in engine vertex layout — emitting vec2(0.0) in UVNode '{node.Id}' (stage={(ctx.IsVertexStage ? "vs" : "fs")}). Matches Unity behavior for meshes without UV{channel}; if a mesh does carry UV{channel}, that data is lost.");
-                    source = $"vec2(0.0) /* TODO: UV channel {channel} not plumbed; emitting zero */";
+                    UnityEngine.Debug.LogWarning($"[SgLowering] UV channel {channel} not plumbed in engine vertex layout — falling back to UV0 in UVNode '{node.Id}' (stage={(ctx.IsVertexStage ? "vs" : "fs")}). If a mesh carries real UV{channel}, that data is lost.");
+                    source = $"{uv0} /* TODO: UV channel {channel} not plumbed; falling back to UV0 */";
                     break;
                 default: throw new NotImplementedException($"UV channel {channel} not wired");
             }
