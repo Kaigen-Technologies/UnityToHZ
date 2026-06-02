@@ -130,8 +130,15 @@ namespace HZExporter
             // through the injected scene callbacks; density maps are written terrain-local.
             var grassTypes = BuildGrassTypes(terrain, td, outDir, assetPrefix, exportModel, exportAlbedo);
 
+            // Grass workload scale, pulled from Unity terrain settings (same fallbacks as
+            // BuildGrassTypes). The engine treats 0 as "use default", but we always have a
+            // concrete value here, so emit it.
+            float grassViewDistance = terrain.detailObjectDistance > 0f ? terrain.detailObjectDistance : 100f;
+            float grassDensityScale = terrain.detailObjectDensity > 0f ? terrain.detailObjectDensity : 1f;
+
             string terrainHztPath = Path.Combine(outDir, "terrain.hzt");
-            WriteManifest(td, terrainHztPath, assetPrefix, layerCount, splatmapCount, tileSize, maxLod, grassTypes);
+            WriteManifest(td, terrainHztPath, assetPrefix, layerCount, splatmapCount, tileSize, maxLod,
+                grassViewDistance, grassDensityScale, grassTypes);
 
             string assetRef = $"{assetPrefix}/terrain.hzt";
             Debug.Log($"[HZTerrain]   → {terrainHztPath}  (engine ref: {assetRef})");
@@ -606,6 +613,7 @@ namespace HZExporter
 
         static void WriteManifest(TerrainData td, string path, string assetPrefix,
             int layerCount, int splatmapCount, int tileSize, int maxLod,
+            float grassViewDistance, float grassDensityScale,
             List<GrassTypeData> grassTypes)
         {
             var size = td.size;
@@ -644,6 +652,8 @@ namespace HZExporter
             // type/LOD are emitted in struct order; omitted fields default to zero (e.g. a
             // billboard LOD omits `model`). See engine terrain.h / terrain.gen.h.
             sb.AppendLine($"grass_tile_size {F(GRASS_TILE_SIZE)}");
+            sb.AppendLine($"grass_view_distance {F(grassViewDistance)}");
+            sb.AppendLine($"grass_density_scale {F(grassDensityScale)}");
             int grassCount = grassTypes != null ? grassTypes.Count : 0;
             sb.AppendLine($"grass_types {grassCount}");
             for (int t = 0; t < grassCount; t++)
