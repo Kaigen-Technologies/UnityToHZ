@@ -123,6 +123,40 @@ public static class HZExportCommands
         Debug.Log("[HZ] grass-terrain-mat test exported");
     }
 
+    /// <summary>Log the active terrain's TREE data (treePrototypes + treeInstances) — a
+    /// separate system from grass details — to scope tree export.</summary>
+    public static void DebugTerrainTrees()
+    {
+        var terrain = UnityEngine.Object.FindObjectOfType<Terrain>();
+        if (terrain == null) { Debug.LogError("[HZtree] no Terrain"); return; }
+        var td = terrain.terrainData;
+        Debug.Log($"[HZtree] terrain '{td.name}' pos={terrain.transform.position} size={td.size} " +
+                  $"treePrototypes={td.treePrototypes.Length} treeInstances={td.treeInstances.Length} " +
+                  $"treeDistance={terrain.treeDistance} treeBillboardDistance={terrain.treeBillboardDistance}");
+        for (int i = 0; i < td.treePrototypes.Length; i++)
+        {
+            var tp = td.treePrototypes[i];
+            var prefab = tp.prefab;
+            var lodg = prefab ? prefab.GetComponent<LODGroup>() : null;
+            var mfs = prefab ? prefab.GetComponentsInChildren<MeshFilter>(true) : new MeshFilter[0];
+            var smrs = prefab ? prefab.GetComponentsInChildren<SkinnedMeshRenderer>(true) : new SkinnedMeshRenderer[0];
+            Debug.Log($"[HZtree] proto{i} prefab='{(prefab ? prefab.name : "NULL")}' bend={tp.bendFactor} " +
+                      $"LODGroup={(lodg ? lodg.lodCount + " lods" : "none")} meshFilters={mfs.Length} skinned={smrs.Length}");
+        }
+        // per-prototype instance count + a couple sample transforms
+        var counts = new int[Mathf.Max(1, td.treePrototypes.Length)];
+        foreach (var ti in td.treeInstances) if (ti.prototypeIndex < counts.Length) counts[ti.prototypeIndex]++;
+        for (int i = 0; i < counts.Length; i++) Debug.Log($"[HZtree] proto{i}: {counts[i]} instances");
+        int n = Mathf.Min(3, td.treeInstances.Length);
+        for (int i = 0; i < n; i++)
+        {
+            var ti = td.treeInstances[i];
+            var world = terrain.transform.position + Vector3.Scale(ti.position, td.size);
+            Debug.Log($"[HZtree] inst{i} proto={ti.prototypeIndex} normPos={ti.position} world={world} " +
+                      $"wScale={ti.widthScale} hScale={ti.heightScale} rot={ti.rotation:F2}");
+        }
+    }
+
     /// <summary>Test-export a cube using the FloorTriplanar shader-graph material so we can
     /// verify HZShaderMap picks up the new JSON entry and routes _MainTexture/_Normal/etc.</summary>
     public static void ExportFloorTriplanarTest()
@@ -1090,6 +1124,10 @@ public static class HZExportCommands
             HZGlbWriter.ExportSkinnedMesh(d.smrs, d.materials, d.primarySmr, d.entityRoot, d.glbPath, animArray);
         }
 
+        // Terrain trees: TerrainData.treeInstances (separate from grass details). Each instance
+        // becomes an individual entity referencing its prototype's model (LOD0 + extra LODs).
+        CollectTreeEntities(roots, scene, entities, exportedGlbs);
+
         string sceneName = SanitizeName(scene.name);
 
         // Background comes from the MAIN camera's clear flags, not just whether a
@@ -1261,6 +1299,125 @@ public static class HZExportCommands
         HZGlbWriter.ExportStaticMesh(mesh, mr.sharedMaterials, glbPath, grassShader);
         exportedGlbs[meshKey] = glbAssetPath;
         return glbAssetPath;
+    }
+
+    // Resolved tree-prototype model: LOD0 GLB ref + extra LOD refs + render flags.
+    sealed class TreeProtoModel
+    {
+        public string modelPath;
+        public List<(string path, float switchCoverage)> extraLods;
+        public bool castsShadow;
+        public Vector3 localBoundsSize = Vector3.one;
+    }
+
+    // Export one tree prototype prefab as a model (LOD0 + extra LODs), reusing the static-mesh
+    // GLB path. Mirrors the scene LODGroup handling: LOD0's first static MeshRenderer is the base,
+    // LOD1+ become extra_lods with switch_coverage = the previous LOD's transition height.
+    static TreeProtoModel ExportTreePrototype(GameObject prefab, Dictionary<string, string> exportedGlbs)
+    {
+        var pm = new TreeProtoModel();
+        var lg = prefab.GetComponentInChildren<LODGroup>(true);
+        if (lg != null)
+        {
+            var lods = lg.GetLODs();
+            MeshRenderer baseMr = null; MeshFilter baseMf = null;
+            if (lods.Length > 0 && lods[0].renderers != null)
+                foreach (var r in lods[0].renderers)
+                    if (r is MeshRenderer m && m.TryGetComponent(out MeshFilter mf) && mf.sharedMesh != null)
+                    { baseMr = m; baseMf = mf; break; }
+            if (baseMr == null)
+            {
+                Debug.LogWarning($"[HZtree] prototype '{prefab.name}': LOD0 has no static MeshRenderer; skipping");
+                return pm;
+            }
+            pm.modelPath = ExportStaticGlbForRenderer(baseMr, baseMf.sharedMesh, exportedGlbs);
+            pm.castsShadow = baseMr.shadowCastingMode != UnityEngine.Rendering.ShadowCastingMode.Off;
+            pm.localBoundsSize = baseMf.sharedMesh.bounds.size;
+            pm.extraLods = new List<(string, float)>();
+            for (int li = 1; li < lods.Length; li++)
+            {
+                if (lods[li].renderers == null) continue;
+                MeshRenderer lr = null; MeshFilter lf = null;
+                foreach (var r in lods[li].renderers)
+                    if (r is MeshRenderer m && m.TryGetComponent(out MeshFilter mf) && mf.sharedMesh != null)
+                    { lr = m; lf = mf; break; }
+                if (lr == null) continue;
+                float switchCov = lods[li - 1].screenRelativeTransitionHeight;
+                pm.extraLods.Add((ExportStaticGlbForRenderer(lr, lf.sharedMesh, exportedGlbs), switchCov));
+            }
+        }
+        else
+        {
+            var mr = prefab.GetComponentInChildren<MeshRenderer>(true);
+            var mf = mr != null ? mr.GetComponent<MeshFilter>() : null;
+            if (mr == null || mf == null || mf.sharedMesh == null)
+            {
+                Debug.LogWarning($"[HZtree] prototype '{prefab.name}': no static mesh; skipping");
+                return pm;
+            }
+            pm.modelPath = ExportStaticGlbForRenderer(mr, mf.sharedMesh, exportedGlbs);
+            pm.castsShadow = mr.shadowCastingMode != UnityEngine.Rendering.ShadowCastingMode.Off;
+            pm.localBoundsSize = mf.sharedMesh.bounds.size;
+        }
+        return pm;
+    }
+
+    // Emit one entity per TerrainData.treeInstance. World position = terrain origin +
+    // normalized-position × terrain size; rotation = Y by instance.rotation (radians); scale =
+    // (width, height, width). The scene exporter's negate-X / rotation-mirror lands them on the
+    // X-mirrored terrain (verified against the X-flipped heightmap). Prototype models are deduped.
+    static void CollectTreeEntities(GameObject[] roots, UnityEngine.SceneManagement.Scene scene,
+        List<HZSceneExporter.EntityExportInfo> entities, Dictionary<string, string> exportedGlbs)
+    {
+        var protoCache = new Dictionary<int, TreeProtoModel>();
+        foreach (var root in roots)
+            foreach (var terrain in root.GetComponentsInChildren<Terrain>(true))
+            {
+                var td = terrain.terrainData;
+                if (td == null) continue;
+                var protos = td.treePrototypes;
+                var instances = td.treeInstances;
+                if (protos == null || instances == null || instances.Length == 0) continue;
+
+                Vector3 tpos = terrain.transform.position;
+                Vector3 tsize = td.size;
+                int count = 0;
+                for (int i = 0; i < instances.Length; i++)
+                {
+                    var ti = instances[i];
+                    if (ti.prototypeIndex < 0 || ti.prototypeIndex >= protos.Length) continue;
+                    var prefab = protos[ti.prototypeIndex].prefab;
+                    if (prefab == null) continue;
+
+                    int key = prefab.GetInstanceID();
+                    if (!protoCache.TryGetValue(key, out var pm))
+                    {
+                        pm = ExportTreePrototype(prefab, exportedGlbs);
+                        protoCache[key] = pm;
+                    }
+                    if (pm == null || string.IsNullOrEmpty(pm.modelPath)) continue;
+
+                    Vector3 world = tpos + Vector3.Scale(ti.position, tsize);
+                    Quaternion rot = Quaternion.AngleAxis(ti.rotation * Mathf.Rad2Deg, Vector3.up);
+                    Vector3 scl = new Vector3(ti.widthScale, ti.heightScale, ti.widthScale);
+
+                    entities.Add(new HZSceneExporter.EntityExportInfo {
+                        name = $"{prefab.name}_{i}",
+                        position = world, rotation = rot, scale = scl,
+                        worldPosition = world, worldRotation = rot, worldScale = scl,
+                        visible = true,
+                        castsShadow = pm.castsShadow,
+                        bounds = new Bounds(world, Vector3.Scale(pm.localBoundsSize, scl)),
+                        modelAssetPath = pm.modelPath,
+                        extraLods = pm.extraLods != null && pm.extraLods.Count > 0
+                            ? new List<(string, float)>(pm.extraLods) : null,
+                        parentStableId = 0,
+                        stableId = StableIdForString($"{scene.path}::tree::{terrain.GetInstanceID()}::{i}"),
+                    });
+                    count++;
+                }
+                Debug.Log($"[HZtree] '{td.name}': {count} tree entities from {protos.Length} prototypes ({protoCache.Count} models)");
+            }
     }
 
     // Export a grass albedo texture as a standalone TextureBlobAsset under glb/textures/,
