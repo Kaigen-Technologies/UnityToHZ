@@ -327,7 +327,14 @@
         { "unity": "_OREEMISSIONONOFF",             "slot": "ore_emission_enable",   "kind": "float" },
         { "unity": "_OreEmissionIntensity",         "slot": "ore_emission_intensity","kind": "float" },
         { "unity": "_ANIMATEOREEMISSIONONOFF",      "slot": "animate_ore",           "kind": "float" },
-        { "unity": "_Smoothness",                   "slot": "smoothness",            "kind": "float" }
+        { "unity": "_Smoothness",                   "slot": "smoothness",            "kind": "float" },
+        { "unity": "_DecalsTexture",                "slot": "decals_tex",            "kind": "texture" },
+        { "unity": "_DecalsColor",                  "slot": "decals_color",          "kind": "color4" },
+        { "unity": "_DecakEmissionColor",           "slot": "decal_emission_color",  "kind": "color4" },
+        { "unity": "_DECALSONOFF",                  "slot": "decals_enable",         "kind": "float" },
+        { "unity": "_DECALEMISSIONONOFF",           "slot": "decal_emission_enable", "kind": "float" },
+        { "unity": "_DecalEmissionIntensity",       "slot": "decal_emission_intensity","kind": "float" },
+        { "unity": "_ANIMATEDECALEMISSIONONOFF",    "slot": "animate_decal",         "kind": "float" }
       ]
     },
     {

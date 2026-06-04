@@ -63,6 +63,40 @@ namespace HZExporter
         const int SIZEOF_ENTITY_BLOB_ASSET_REF = 72; // sizeof(EntityBlobAsset)
         const int SIZEOF_TERRAIN_BLOB_ASSET = 128;
 
+        /// <summary>Engine EcsPostProcessing values (color grading / tonemap / vignette). Caller
+        /// fills from a URP post-processing Volume; Default() is the engine identity.</summary>
+        public struct PostProcessingSettings
+        {
+            public float exposure, contrast, brightness, saturation, gamma;
+            public uint tonemapMode;
+            public float postExposure, hueShift;
+            public Color colorFilter;
+            public float whiteBalanceTemperature, whiteBalanceTint;
+            public Color vignetteColor;
+            public Vector2 vignetteCenter;
+            public float vignetteIntensity, vignetteSmoothness;
+            public bool vignetteRounded;
+            // Bloom (engine requires bloom_enabled; bloom_intensity 0 disables).
+            public float bloomIntensity, bloomThreshold, bloomScatter, bloomClamp;
+            public Color bloomTint;
+
+            public static PostProcessingSettings Default() => new PostProcessingSettings
+            {
+                exposure = 1f,
+                colorFilter = Color.white,
+                vignetteColor = new Color(0f, 0f, 0f, 1f),
+                vignetteCenter = new Vector2(0.5f, 0.5f),
+                // Unity's Vignette.smoothness default (the engine multiplies ×5 → pow exponent 1.0).
+                // Must NOT be 0, which would make pow(x,0)=1 and erase the vignette entirely.
+                vignetteSmoothness = 0.2f,
+                // URP Bloom defaults (intensity 0 = off). Disabled overrides fall back to these.
+                bloomThreshold = 0.9f,
+                bloomScatter = 0.7f,
+                bloomClamp = 65472f,
+                bloomTint = Color.white,
+            };
+        }
+
         /// <summary>
         /// Info about one entity to export.
         /// </summary>
@@ -116,8 +150,10 @@ namespace HZExporter
             public Vector3 ambientColor;
             public float ambientIntensity;
             public Color shadowColor;
-            // Global max shadow render distance (QualitySettings.shadowDistance).
+            // Global max shadow render distance (from the active render pipeline asset).
             public float maxShadowDistance;
+            // Post-processing (only meaningful when isSceneSettings == true).
+            public PostProcessingSettings postProcessing;
             // Skybox / IBL env (only meaningful when isSceneSettings == true)
             public bool hasEnv;
             public string envAssetPath;   // e.g. "unity/environments/SceneA_skybox.hza"
@@ -480,6 +516,49 @@ namespace HZExporter
                 sb.AppendLine($"    g {F(info.clearColor.g)}");
                 sb.AppendLine($"    b {F(info.clearColor.b)}");
                 sb.AppendLine($"    a {F(info.clearColor.a)}");
+
+                // EcsPostProcessing — singleton color-grading/tonemap/vignette config, emitted on
+                // the scene-settings entity (same pattern as EcsSceneSettings). Values come from the
+                // scene's URP post-processing Volume (only enabled overrides applied; the rest are
+                // the engine identity).
+                var pp = info.postProcessing;
+                sb.AppendLine();
+                sb.AppendLine("component EcsPostProcessing");
+                sb.AppendLine($"  exposure {F(pp.exposure)}");
+                sb.AppendLine($"  contrast {F(pp.contrast)}");
+                sb.AppendLine($"  brightness {F(pp.brightness)}");
+                sb.AppendLine($"  saturation {F(pp.saturation)}");
+                sb.AppendLine($"  gamma {F(pp.gamma)}");
+                sb.AppendLine($"  tonemap_mode {pp.tonemapMode}");
+                sb.AppendLine($"  post_exposure {F(pp.postExposure)}");
+                sb.AppendLine($"  hue_shift {F(pp.hueShift)}");
+                sb.AppendLine("  color_filter");
+                sb.AppendLine($"    r {F(pp.colorFilter.r)}");
+                sb.AppendLine($"    g {F(pp.colorFilter.g)}");
+                sb.AppendLine($"    b {F(pp.colorFilter.b)}");
+                sb.AppendLine($"    a {F(pp.colorFilter.a)}");
+                sb.AppendLine($"  white_balance_temperature {F(pp.whiteBalanceTemperature)}");
+                sb.AppendLine($"  white_balance_tint {F(pp.whiteBalanceTint)}");
+                sb.AppendLine("  vignette_color");
+                sb.AppendLine($"    r {F(pp.vignetteColor.r)}");
+                sb.AppendLine($"    g {F(pp.vignetteColor.g)}");
+                sb.AppendLine($"    b {F(pp.vignetteColor.b)}");
+                sb.AppendLine($"    a {F(pp.vignetteColor.a)}");
+                sb.AppendLine("  vignette_center");
+                sb.AppendLine($"    x {F(pp.vignetteCenter.x)}");
+                sb.AppendLine($"    y {F(pp.vignetteCenter.y)}");
+                sb.AppendLine($"  vignette_intensity {F(pp.vignetteIntensity)}");
+                sb.AppendLine($"  vignette_smoothness {F(pp.vignetteSmoothness)}");
+                sb.AppendLine($"  vignette_rounded {(pp.vignetteRounded ? "true" : "false")}");
+                sb.AppendLine($"  bloom_intensity {F(pp.bloomIntensity)}");
+                sb.AppendLine($"  bloom_threshold {F(pp.bloomThreshold)}");
+                sb.AppendLine($"  bloom_scatter {F(pp.bloomScatter)}");
+                sb.AppendLine($"  bloom_clamp {F(pp.bloomClamp)}");
+                sb.AppendLine("  bloom_tint");
+                sb.AppendLine($"    r {F(pp.bloomTint.r)}");
+                sb.AppendLine($"    g {F(pp.bloomTint.g)}");
+                sb.AppendLine($"    b {F(pp.bloomTint.b)}");
+                sb.AppendLine($"    a {F(pp.bloomTint.a)}");
             }
 
             // Custom components (boid authoring data, etc.) — emitted verbatim.

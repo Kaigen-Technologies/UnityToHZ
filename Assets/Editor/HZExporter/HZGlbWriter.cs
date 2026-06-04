@@ -1108,7 +1108,9 @@ namespace HZExporter
             for (int mi2 = 0; mi2 < materials.Length; mi2++)
             {
                 if (mi2 > 0) json.Append(",\n");
-                string smatName = SanitizeName(materials[mi2]?.name ?? $"material_{mi2}");
+                // Skinned materials get a `_skinned` suffix so the cooked material is identifiable
+                // as the skinned variant (mirrors the `_grass` naming for grass meshes).
+                string smatName = SanitizeName(materials[mi2]?.name ?? $"material_{mi2}") + "_skinned";
                 if (skinnedCustomMats[mi2] != null)
                 {
                     WriteCustomMaterialJson(json, smatName, skinnedCustomMats[mi2]);

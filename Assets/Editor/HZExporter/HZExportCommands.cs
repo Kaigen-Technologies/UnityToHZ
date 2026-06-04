@@ -1,5 +1,8 @@
 using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
+using UnityEngine.Rendering;
+using UnityEngine.Rendering.Universal;
 using UnityEngine.SceneManagement;
 using UnityEditor;
 using UnityEditor.SceneManagement;
@@ -481,6 +484,221 @@ public static class HZExportCommands
     public static void OpenBoidsScene()
     {
         OpenSceneWithSubScenes("Assets/Boids/Boids.unity");
+    }
+
+    /// <summary>Open the Polytope Environment_Free demo scene (terrain + trees + grass).</summary>
+    public static void OpenEnvironmentFree()
+    {
+        UnityEditor.SceneManagement.EditorSceneManager.OpenScene(
+            "Assets/Polytope Studio/Lowpoly_Demos/Environment_Free/Environment_Free.unity",
+            UnityEditor.SceneManagement.OpenSceneMode.Single);
+    }
+
+    /// <summary>Log the active scene's structure so we pick the right granularity for grid layout.</summary>
+    public static void DebugSceneHierarchy()
+    {
+        var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+        var roots = scene.GetRootGameObjects();
+        Debug.Log($"[HZhier] scene '{scene.name}': {roots.Length} root object(s)");
+        foreach (var root in roots)
+        {
+            int mr = root.GetComponentsInChildren<MeshRenderer>(true).Length;
+            int smr = root.GetComponentsInChildren<SkinnedMeshRenderer>(true).Length;
+            int childCount = root.transform.childCount;
+            Debug.Log($"[HZhier]   '{root.name}': children={childCount} meshRenderers={mr} skinned={smr}");
+            // sample first few children
+            for (int i = 0; i < Mathf.Min(childCount, 6); i++)
+            {
+                var c = root.transform.GetChild(i);
+                var rs = c.GetComponentsInChildren<Renderer>(true);
+                Debug.Log($"[HZhier]       child[{i}] '{c.name}' renderers={rs.Length} pos={c.position}");
+            }
+        }
+    }
+
+    /// <summary>Lay out every renderer-bearing root GameObject in the active scene on a square
+    /// grid, sized to the largest object's footprint so nothing overlaps. Each object is centered
+    /// in its cell (by its combined renderer bounds) and dropped so its base sits on y=0.</summary>
+    [MenuItem("HZ Engine/Layout Scene Grid")]
+    public static void LayoutSceneGrid()
+    {
+        var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+
+        // Asset granularity: a container (root with children but no renderer of its own) contributes
+        // each renderer-bearing direct child; a standalone renderer-bearing root is one asset itself.
+        // Camera/light (no renderers) drop out naturally.
+        var assets = new List<Transform>();
+        foreach (var root in scene.GetRootGameObjects())
+        {
+            bool ownRenderer = HasMeshRenderer(root, deep: false);
+            if (root.transform.childCount > 0 && !ownRenderer)
+            {
+                foreach (Transform child in root.transform)
+                    if (HasMeshRenderer(child.gameObject, deep: true)) assets.Add(child);
+            }
+            else if (HasMeshRenderer(root, deep: true))
+            {
+                assets.Add(root.transform);
+            }
+        }
+
+        // Combined world bounds + XZ footprint per asset.
+        var items = new List<(Transform t, Bounds b, float foot)>();
+        foreach (var t in assets)
+        {
+            if (!TryWorldBounds(t.gameObject, out var b)) continue;
+            items.Add((t, b, Mathf.Max(b.size.x, b.size.z)));
+        }
+        if (items.Count == 0) { Debug.LogWarning("[HZgrid] no assets found"); return; }
+
+        // Skip ground/skybox-like outliers (footprint >> median) so they don't blow up the cell.
+        var foots = items.Select(it => it.foot).OrderBy(f => f).ToList();
+        float median = foots[foots.Count / 2];
+        float outlier = Mathf.Max(median * 8f, 0.01f);
+        var skipped = items.Where(it => it.foot > outlier).Select(it => it.t.name).ToList();
+        items = items.Where(it => it.foot <= outlier).ToList();
+        if (items.Count == 0) { Debug.LogWarning("[HZgrid] everything got filtered as outliers"); return; }
+
+        float maxFoot = items.Max(it => it.foot);
+        float cell = maxFoot * 1.15f + 0.05f;     // uniform cell sized to the largest → no overlap
+        int cols = Mathf.CeilToInt(Mathf.Sqrt(items.Count));
+
+        for (int i = 0; i < items.Count; i++)
+        {
+            var (t, b, _) = items[i];
+            int col = i % cols, row = i / cols;
+            Vector3 cellCenter = new Vector3(col * cell, 0f, row * cell);
+            Undo.RecordObject(t, "Grid Layout");
+            // Center the asset's bounds in its cell (XZ), base on y=0.
+            t.position += new Vector3(cellCenter.x - b.center.x, -b.min.y, cellCenter.z - b.center.z);
+        }
+        UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(scene);
+        Debug.Log($"[HZgrid] placed {items.Count} assets on a {cols}-col grid, cell={cell:F2}m "
+                  + $"(max footprint {maxFoot:F2}m). Skipped {skipped.Count} oversized: {string.Join(", ", skipped)}");
+    }
+
+    // Max shadow render distance comes from the active Render Pipeline asset (URP's
+    // `shadowDistance`), not QualitySettings.shadowDistance which is the legacy/built-in path and
+    // is ignored under SRP. Read via reflection to avoid a hard URP assembly reference; falls back
+    // to QualitySettings when no SRP asset is active.
+    static float ActiveShadowDistance()
+    {
+        var rp = UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline;
+        if (rp != null)
+        {
+            var prop = rp.GetType().GetProperty("shadowDistance");
+            if (prop != null && prop.PropertyType == typeof(float))
+                return (float)prop.GetValue(rp);
+        }
+        return QualitySettings.shadowDistance;
+    }
+
+    // Read the scene's URP post-processing Volume into engine EcsPostProcessing values. Picks the
+    // highest-priority active global Volume; only parameters whose override is enabled are applied,
+    // the rest stay at the engine identity. URP has no exposure/brightness/gamma overrides, so those
+    // keep their defaults.
+    static HZSceneExporter.PostProcessingSettings ReadPostProcessing()
+    {
+        var pp = HZSceneExporter.PostProcessingSettings.Default();
+        VolumeProfile profile = null;
+        float bestPriority = float.NegativeInfinity;
+        foreach (var v in Object.FindObjectsOfType<Volume>())
+        {
+            if (!v.isActiveAndEnabled || !v.isGlobal || v.sharedProfile == null) continue;
+            if (v.priority >= bestPriority) { bestPriority = v.priority; profile = v.sharedProfile; }
+        }
+        if (profile == null) { Debug.Log("[HZpp] no active global post-processing Volume; using defaults"); return pp; }
+
+        if (profile.TryGet<Tonemapping>(out var tm) && tm.active && tm.mode.overrideState)
+            pp.tonemapMode = MapTonemap(tm.mode.value);
+        if (profile.TryGet<ColorAdjustments>(out var ca) && ca.active)
+        {
+            // The engine remaps white-balance (/65) and vignette (×3/×5) itself, but NOT contrast,
+            // saturation, or hue — so we must feed those in the post-remap form the shader expects:
+            //   contrast/saturation: Unity slider -100..100 -> /100 (engine adds the +1.0)
+            //   hueShift: Unity degrees -180..180 -> /360
+            // post_exposure stays raw EV (engine does exp2). color_filter raw.
+            if (ca.postExposure.overrideState) pp.postExposure = ca.postExposure.value;
+            if (ca.contrast.overrideState)     pp.contrast = ca.contrast.value / 100f;
+            if (ca.colorFilter.overrideState)  pp.colorFilter = ca.colorFilter.value;
+            if (ca.hueShift.overrideState)     pp.hueShift = ca.hueShift.value / 360f;
+            if (ca.saturation.overrideState)   pp.saturation = ca.saturation.value / 100f;
+        }
+        if (profile.TryGet<WhiteBalance>(out var wb) && wb.active)
+        {
+            if (wb.temperature.overrideState) pp.whiteBalanceTemperature = wb.temperature.value;
+            if (wb.tint.overrideState)        pp.whiteBalanceTint = wb.tint.value;
+        }
+        if (profile.TryGet<Vignette>(out var vg) && vg.active)
+        {
+            if (vg.color.overrideState)      pp.vignetteColor = vg.color.value;
+            if (vg.center.overrideState)     pp.vignetteCenter = vg.center.value;
+            if (vg.intensity.overrideState)  pp.vignetteIntensity = vg.intensity.value;
+            if (vg.smoothness.overrideState) pp.vignetteSmoothness = vg.smoothness.value;
+            if (vg.rounded.overrideState)    pp.vignetteRounded = vg.rounded.value;
+        }
+        if (profile.TryGet<Bloom>(out var bl) && bl.active)
+        {
+            if (bl.intensity.overrideState) pp.bloomIntensity = bl.intensity.value;
+            if (bl.threshold.overrideState) pp.bloomThreshold = bl.threshold.value;
+            if (bl.scatter.overrideState)   pp.bloomScatter = bl.scatter.value;
+            if (bl.clamp.overrideState)     pp.bloomClamp = bl.clamp.value;
+            if (bl.tint.overrideState)      pp.bloomTint = bl.tint.value;
+        }
+        Debug.Log($"[HZpp] '{profile.name}': contrast={pp.contrast} saturation={pp.saturation} "
+                + $"postExp={pp.postExposure} wbTemp={pp.whiteBalanceTemperature} wbTint={pp.whiteBalanceTint} "
+                + $"vignette(int={pp.vignetteIntensity}) tonemap={pp.tonemapMode} "
+                + $"bloom(int={pp.bloomIntensity} thresh={pp.bloomThreshold} scatter={pp.bloomScatter})");
+        return pp;
+    }
+
+    // URP TonemappingMode -> engine TonemapMode (NONE=0, ACES=4, NEUTRAL=6).
+    static uint MapTonemap(TonemappingMode m)
+    {
+        switch (m)
+        {
+            case TonemappingMode.Neutral: return 6u;
+            case TonemappingMode.ACES:    return 4u;
+            default:                      return 0u;
+        }
+    }
+
+    static bool HasMeshRenderer(GameObject go, bool deep)
+    {
+        if (deep)
+            return go.GetComponentInChildren<MeshRenderer>(true) != null
+                || go.GetComponentInChildren<SkinnedMeshRenderer>(true) != null;
+        return go.GetComponent<MeshRenderer>() != null || go.GetComponent<SkinnedMeshRenderer>() != null;
+    }
+
+    static bool TryWorldBounds(GameObject go, out Bounds bounds)
+    {
+        // Build world AABB from each renderer's authored mesh bounds transformed by its transform.
+        // Renderer.bounds is avoided because SkinnedMeshRenderer.bounds is bone-pose-driven and can
+        // balloon to scene-scale when the skeleton isn't in a clean rest state.
+        bounds = default; bool init = false;
+        foreach (var r in go.GetComponentsInChildren<Renderer>(true))
+        {
+            Mesh mesh = null;
+            if (r is SkinnedMeshRenderer smr) mesh = smr.sharedMesh;
+            else if (r is MeshRenderer && r.TryGetComponent<MeshFilter>(out var mf)) mesh = mf.sharedMesh;
+            if (mesh == null) continue;
+
+            var lb = mesh.bounds;
+            var m = r.transform.localToWorldMatrix;
+            Vector3 c = lb.center, e = lb.extents;
+            for (int s = 0; s < 8; s++)
+            {
+                Vector3 corner = c + new Vector3(
+                    ((s & 1) == 0 ? -e.x : e.x),
+                    ((s & 2) == 0 ? -e.y : e.y),
+                    ((s & 4) == 0 ? -e.z : e.z));
+                Vector3 w = m.MultiplyPoint3x4(corner);
+                if (!init) { bounds = new Bounds(w, Vector3.zero); init = true; }
+                else bounds.Encapsulate(w);
+            }
+        }
+        return init;
     }
 
     /// <summary>
@@ -1194,7 +1412,8 @@ public static class HZExportCommands
                 ambientColor = new Vector3(ambient.r, ambient.g, ambient.b),
                 ambientIntensity = RenderSettings.ambientIntensity,
                 shadowColor = shadowCol,
-                maxShadowDistance = QualitySettings.shadowDistance,
+                maxShadowDistance = ActiveShadowDistance(),
+                postProcessing = ReadPostProcessing(),
                 hasEnv = envAssetPath != null,
                 envAssetPath = envAssetPath,
                 envIntensity = envIntensity,
