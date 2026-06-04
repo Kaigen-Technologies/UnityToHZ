@@ -188,9 +188,9 @@ namespace HZExporter
             sb.AppendLine("type SceneBlobAsset");
             sb.AppendLine("version 3");
             sb.AppendLine("---");
-            sb.AppendLine($"scene_dir {sceneDirAssetPath}");
+            sb.AppendLine($"scene_dir \"{sceneDirAssetPath}\"");
             sb.AppendLine("chunks 1");
-            sb.AppendLine($"  chunk {chunkAssetPath} EntityChunkBlobAsset");
+            sb.AppendLine($"  chunk \"{chunkAssetPath}\" EntityChunkBlobAsset");
             sb.AppendLine($"  bounds_min {F(boundsMin.x)} {F(boundsMin.y)} {F(boundsMin.z)}");
             sb.AppendLine($"  bounds_max {F(boundsMax.x)} {F(boundsMax.y)} {F(boundsMax.z)}");
 
@@ -243,55 +243,60 @@ namespace HZExporter
                 if (n.Length > 63) n = n.Substring(0, 63);
                 sb.AppendLine();
                 sb.AppendLine("component EntityName");
-                sb.AppendLine($"  name {n}");
+                sb.AppendLine($"  name \"{n}\"");
             }
 
-            // LocalTransform
+            // Transforms — skipped for SceneSettings, which is a pure config singleton with
+            // no spatial meaning (no engine system queries its transform).
+            if (!info.isSceneSettings)
             {
-                // Position: negate X
-                float px = -info.position.x, py = info.position.y, pz = info.position.z;
-                // Rotation: X-mirror (qx, -qy, -qz, qw)
-                var q = info.rotation;
-                float qx = q.x, qy = -q.y, qz = -q.z, qw = q.w;
+                // LocalTransform
+                {
+                    // Position: negate X
+                    float px = -info.position.x, py = info.position.y, pz = info.position.z;
+                    // Rotation: X-mirror (qx, -qy, -qz, qw)
+                    var q = info.rotation;
+                    float qx = q.x, qy = -q.y, qz = -q.z, qw = q.w;
 
-                sb.AppendLine();
-                sb.AppendLine("component LocalTransform");
-                sb.AppendLine("  position");
-                sb.AppendLine($"    x {F(px)}");
-                sb.AppendLine($"    y {F(py)}");
-                sb.AppendLine($"    z {F(pz)}");
-                sb.AppendLine("  rotation");
-                sb.AppendLine($"    x {F(qx)}");
-                sb.AppendLine($"    y {F(qy)}");
-                sb.AppendLine($"    z {F(qz)}");
-                sb.AppendLine($"    w {F(qw)}");
-                sb.AppendLine("  scale");
-                sb.AppendLine($"    x {F(info.scale.x)}");
-                sb.AppendLine($"    y {F(info.scale.y)}");
-                sb.AppendLine($"    z {F(info.scale.z)}");
-            }
+                    sb.AppendLine();
+                    sb.AppendLine("component LocalTransform");
+                    sb.AppendLine("  position");
+                    sb.AppendLine($"    x {F(px)}");
+                    sb.AppendLine($"    y {F(py)}");
+                    sb.AppendLine($"    z {F(pz)}");
+                    sb.AppendLine("  rotation");
+                    sb.AppendLine($"    x {F(qx)}");
+                    sb.AppendLine($"    y {F(qy)}");
+                    sb.AppendLine($"    z {F(qz)}");
+                    sb.AppendLine($"    w {F(qw)}");
+                    sb.AppendLine("  scale");
+                    sb.AppendLine($"    x {F(info.scale.x)}");
+                    sb.AppendLine($"    y {F(info.scale.y)}");
+                    sb.AppendLine($"    z {F(info.scale.z)}");
+                }
 
-            // WorldTransform (actual world-space values)
-            {
-                float px = -info.worldPosition.x, py = info.worldPosition.y, pz = info.worldPosition.z;
-                var q = info.worldRotation;
-                float qx = q.x, qy = -q.y, qz = -q.z, qw = q.w;
+                // WorldTransform (actual world-space values)
+                {
+                    float px = -info.worldPosition.x, py = info.worldPosition.y, pz = info.worldPosition.z;
+                    var q = info.worldRotation;
+                    float qx = q.x, qy = -q.y, qz = -q.z, qw = q.w;
 
-                sb.AppendLine();
-                sb.AppendLine("component WorldTransform");
-                sb.AppendLine("  position");
-                sb.AppendLine($"    x {F(px)}");
-                sb.AppendLine($"    y {F(py)}");
-                sb.AppendLine($"    z {F(pz)}");
-                sb.AppendLine("  rotation");
-                sb.AppendLine($"    x {F(qx)}");
-                sb.AppendLine($"    y {F(qy)}");
-                sb.AppendLine($"    z {F(qz)}");
-                sb.AppendLine($"    w {F(qw)}");
-                sb.AppendLine("  scale");
-                sb.AppendLine($"    x {F(info.worldScale.x)}");
-                sb.AppendLine($"    y {F(info.worldScale.y)}");
-                sb.AppendLine($"    z {F(info.worldScale.z)}");
+                    sb.AppendLine();
+                    sb.AppendLine("component WorldTransform");
+                    sb.AppendLine("  position");
+                    sb.AppendLine($"    x {F(px)}");
+                    sb.AppendLine($"    y {F(py)}");
+                    sb.AppendLine($"    z {F(pz)}");
+                    sb.AppendLine("  rotation");
+                    sb.AppendLine($"    x {F(qx)}");
+                    sb.AppendLine($"    y {F(qy)}");
+                    sb.AppendLine($"    z {F(qz)}");
+                    sb.AppendLine($"    w {F(qw)}");
+                    sb.AppendLine("  scale");
+                    sb.AppendLine($"    x {F(info.worldScale.x)}");
+                    sb.AppendLine($"    y {F(info.worldScale.y)}");
+                    sb.AppendLine($"    z {F(info.worldScale.z)}");
+                }
             }
 
             // EcsVisibility
@@ -315,7 +320,7 @@ namespace HZExporter
             {
                 sb.AppendLine();
                 sb.AppendLine("component EcsBoneAttachmentSpec");
-                sb.AppendLine($"  bone_name {info.boneAttachmentName}");
+                sb.AppendLine($"  bone_name \"{info.boneAttachmentName}\"");
             }
 
             // EcsModelRef
@@ -323,14 +328,14 @@ namespace HZExporter
             {
                 sb.AppendLine();
                 sb.AppendLine("component EcsModelRef");
-                sb.AppendLine($"  model {info.modelAssetPath} ModelBlobAsset");
+                sb.AppendLine($"  model \"{info.modelAssetPath}\" ModelBlobAsset");
                 int lodCount = info.extraLods != null ? info.extraLods.Count : 0;
                 if (lodCount > 0)
                 {
                     sb.AppendLine($"  extra_lods {lodCount}");
                     foreach (var (lodPath, switchCov) in info.extraLods)
                     {
-                        sb.AppendLine($"    model {lodPath} ModelBlobAsset");
+                        sb.AppendLine($"    model \"{lodPath}\" ModelBlobAsset");
                         sb.AppendLine($"    switch_coverage {F(switchCov)}");
                     }
                 }
@@ -343,7 +348,7 @@ namespace HZExporter
                 uint matTypehash = (uint)HZBlobWriter.TypeHash("MaterialBlobAsset", SIZEOF_MATERIAL_BLOB_ASSET);
                 sb.AppendLine();
                 sb.AppendLine("component EcsMaterialRef");
-                sb.AppendLine($"  material {info.materialAssetPath} {matTypeSize} {matTypehash}");
+                sb.AppendLine($"  material \"{info.materialAssetPath}\" {matTypeSize} {matTypehash}");
             }
 
             // EcsAnimationRef
@@ -351,7 +356,7 @@ namespace HZExporter
             {
                 sb.AppendLine();
                 sb.AppendLine("component EcsAnimationRef");
-                sb.AppendLine($"  animation {info.animationAssetPath} AnimationBlobAsset");
+                sb.AppendLine($"  animation \"{info.animationAssetPath}\" AnimationBlobAsset");
             }
 
             // EcsTerrainRef
@@ -360,7 +365,7 @@ namespace HZExporter
             {
                 sb.AppendLine();
                 sb.AppendLine("component EcsTerrainRef");
-                sb.AppendLine($"  terrain {info.terrainAssetPath} TerrainBlobAsset");
+                sb.AppendLine($"  terrain \"{info.terrainAssetPath}\" TerrainBlobAsset");
                 sb.AppendLine($"  grid_dim {info.terrainGridDim}");
                 sb.AppendLine($"  lod_levels {info.terrainLodLevels}");
             }
@@ -454,7 +459,7 @@ namespace HZExporter
                 sb.AppendLine($"  max_shadow_distance {F(info.maxShadowDistance)}");
                 if (info.hasEnv)
                 {
-                    sb.AppendLine($"  env {info.envAssetPath} HdrEnvironmentBlobAsset");
+                    sb.AppendLine($"  env \"{info.envAssetPath}\" HdrEnvironmentBlobAsset");
                     sb.AppendLine($"  env_intensity {F(info.envIntensity)}");
                 }
                 sb.AppendLine($"  skybox {(info.skybox ? "true" : "false")}");

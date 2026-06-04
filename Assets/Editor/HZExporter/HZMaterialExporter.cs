@@ -165,7 +165,7 @@ namespace HZExporter
             sb.AppendLine("type MaterialBlobAsset");
             sb.AppendLine("version 3");
             sb.AppendLine("---");
-            sb.AppendLine($"shader_source {shaderPath} ShaderBlobAsset");
+            sb.AppendLine($"shader_source \"{shaderPath}\" ShaderBlobAsset");
             sb.AppendLine("depth_test true");
             sb.AppendLine("depth_write true");
             sb.AppendLine("depth_compare GPU_COMPARE_GREATER_EQUAL");
@@ -175,7 +175,7 @@ namespace HZExporter
             sb.AppendLine($"properties {propCount}");
 
             // color property
-            sb.AppendLine($"  name color");
+            sb.AppendLine($"  name \"color\"");
             sb.AppendLine($"  type MAT_PROP_COLOR4");
             sb.AppendLine($"  c4");
             sb.AppendLine($"    r {F(baseColor.r)}");
@@ -186,9 +186,9 @@ namespace HZExporter
             if (hasAlbedo)
             {
                 sb.AppendLine();
-                sb.AppendLine($"  name albedo");
+                sb.AppendLine($"  name \"albedo\"");
                 sb.AppendLine($"  type MAT_PROP_TEXTURE");
-                sb.AppendLine($"  texture {texturePath} TextureBlobAsset");
+                sb.AppendLine($"  texture \"{texturePath}\" TextureBlobAsset");
             }
 
             Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
@@ -246,7 +246,7 @@ namespace HZExporter
             sb.AppendLine("type MaterialBlobAsset");
             sb.AppendLine("version 3");
             sb.AppendLine("---");
-            sb.AppendLine($"shader_source {shaderPath} ShaderBlobAsset");
+            sb.AppendLine($"shader_source \"{shaderPath}\" ShaderBlobAsset");
             sb.AppendLine("depth_test true");
             sb.AppendLine("depth_write true");
             sb.AppendLine("depth_compare GPU_COMPARE_GREATER_EQUAL");
@@ -261,14 +261,14 @@ namespace HZExporter
             foreach (var (slot, v) in floats)
             {
                 Sep();
-                sb.AppendLine($"  name {slot}");
+                sb.AppendLine($"  name \"{slot}\"");
                 sb.AppendLine($"  type MAT_PROP_FLOAT");
                 sb.AppendLine($"  f {F(v)}");
             }
             foreach (var (slot, v) in colors)
             {
                 Sep();
-                sb.AppendLine($"  name {slot}");
+                sb.AppendLine($"  name \"{slot}\"");
                 sb.AppendLine($"  type MAT_PROP_COLOR4");
                 sb.AppendLine($"  c4");
                 sb.AppendLine($"    r {F(v.r)}");
@@ -279,9 +279,9 @@ namespace HZExporter
             foreach (var (slot, path) in textures)
             {
                 Sep();
-                sb.AppendLine($"  name {slot}");
+                sb.AppendLine($"  name \"{slot}\"");
                 sb.AppendLine($"  type MAT_PROP_TEXTURE");
-                sb.AppendLine($"  texture {path} TextureBlobAsset");
+                sb.AppendLine($"  texture \"{path}\" TextureBlobAsset");
             }
 
             Directory.CreateDirectory(Path.GetDirectoryName(outputPath));

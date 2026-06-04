@@ -679,7 +679,7 @@ namespace HZExporter
             sb.AppendLine("type TextureBlobAsset");
             sb.AppendLine("version 3");
             sb.AppendLine("---");
-            sb.AppendLine($"image {imagePath} u8");
+            sb.AppendLine($"image \"{imagePath}\" u8");
             sb.AppendLine($"format {format}");
             sb.AppendLine($"width {width}");
             sb.AppendLine($"height {height}");
@@ -698,7 +698,7 @@ namespace HZExporter
             sb.AppendLine("type TerrainBlobAsset");
             sb.AppendLine("version 3");
             sb.AppendLine("---");
-            sb.AppendLine($"heightmap {assetPrefix}/heightmap.hzt TextureBlobAsset");
+            sb.AppendLine($"heightmap \"{assetPrefix}/heightmap.hzt\" TextureBlobAsset");
             sb.AppendLine($"world_width {F(size.x)}");
             sb.AppendLine($"world_depth {F(size.z)}");
             sb.AppendLine($"height_scale {F(size.y)}");
@@ -708,7 +708,7 @@ namespace HZExporter
             sb.AppendLine($"splatmaps {splatmapCount}");
             for (int s = 0; s < splatmapCount; s++)
             {
-                sb.AppendLine($"  texture {assetPrefix}/splatmap{s}.hzt TextureBlobAsset");
+                sb.AppendLine($"  texture \"{assetPrefix}/splatmap{s}.hzt\" TextureBlobAsset");
                 sb.AppendLine();
             }
 
@@ -716,11 +716,11 @@ namespace HZExporter
             for (int i = 0; i < layerCount; i++)
             {
                 var layer = td.terrainLayers[i];
-                sb.AppendLine($"  albedo {assetPrefix}/layer{i}_albedo.hzt TextureBlobAsset");
+                sb.AppendLine($"  albedo \"{assetPrefix}/layer{i}_albedo.hzt\" TextureBlobAsset");
                 if (layer != null && layer.normalMapTexture != null)
-                    sb.AppendLine($"  normal {assetPrefix}/layer{i}_normal.hzt TextureBlobAsset");
+                    sb.AppendLine($"  normal \"{assetPrefix}/layer{i}_normal.hzt\" TextureBlobAsset");
                 // mask is always emitted (either the Unity mask or a synthesized default)
-                sb.AppendLine($"  mask {assetPrefix}/layer{i}_mask.hzt TextureBlobAsset");
+                sb.AppendLine($"  mask \"{assetPrefix}/layer{i}_mask.hzt\" TextureBlobAsset");
                 sb.AppendLine($"  uv_scale {F(layer != null ? layer.tileSize.x : 1f)}");
                 sb.AppendLine();
             }
@@ -737,9 +737,9 @@ namespace HZExporter
             {
                 var gt = grassTypes[t];
                 if (!string.IsNullOrEmpty(gt.albedoRef))
-                    sb.AppendLine($"  albedo {gt.albedoRef} TextureBlobAsset");
+                    sb.AppendLine($"  albedo \"{gt.albedoRef}\" TextureBlobAsset");
                 if (!string.IsNullOrEmpty(gt.densityRef))
-                    sb.AppendLine($"  density_map {gt.densityRef} TextureBlobAsset");
+                    sb.AppendLine($"  density_map \"{gt.densityRef}\" TextureBlobAsset");
                 sb.AppendLine($"  density_channel {gt.densityChannel}");
                 sb.AppendLine($"  scale_xz_min {F(gt.scaleXzMin)}");
                 sb.AppendLine($"  scale_xz_max {F(gt.scaleXzMax)}");
@@ -754,7 +754,7 @@ namespace HZExporter
                 {
                     // model first (struct order); omit on billboard LODs so it defaults to null.
                     if (!lod.generateBillboard && !string.IsNullOrEmpty(lod.modelRef))
-                        sb.AppendLine($"    model {lod.modelRef} ModelBlobAsset");
+                        sb.AppendLine($"    model \"{lod.modelRef}\" ModelBlobAsset");
                     sb.AppendLine($"    generate_billboard {(lod.generateBillboard ? "true" : "false")}");
                     if (lod.generateBillboard)
                     {

@@ -147,7 +147,7 @@ namespace HZExporter
             sb.AppendLine("type TextureBlobAsset");
             sb.AppendLine("version 3");
             sb.AppendLine("---");
-            sb.AppendLine($"image {imageBasePath} u8");
+            sb.AppendLine($"image \"{imageBasePath}\" u8");
             sb.AppendLine($"format {formatName}");
             sb.AppendLine("width 0");
             sb.AppendLine("height 0");
