@@ -1505,13 +1505,23 @@ public static class HZExportCommands
     static string ExportStaticGlbForRenderer(MeshRenderer mr, Mesh mesh,
         Dictionary<string, string> exportedGlbs, bool grassShader = false)
     {
+        // WORKAROUND: the builtin Plane is reused across scenes and exports to the same
+        // `Plane.glb`. The cooker dedupes textures/materials by GLB name, so each scene's Plane
+        // would clobber the others. Suffix the Plane (and only the Plane) with the active scene
+        // name so its GLB — and thus its cooked material/textures — is unique per scene.
+        string planeAssetPath = mesh != null ? AssetDatabase.GetAssetPath(mesh) : null;
+        bool isBuiltinPlane = mesh != null && mesh.name == "Plane"
+            && (string.IsNullOrEmpty(planeAssetPath) || planeAssetPath.StartsWith("Library/"));
+        string planeSuffix = isBuiltinPlane
+            ? "_" + SanitizeName(SceneManager.GetActiveScene().name) : "";
+
         // Grass meshes emit a `_grass` shader variant, so they must be a distinct GLB from any
         // normal static export of the same mesh — namespace both the dedup key and the filename.
-        string meshKey = GetMeshKey(mesh) + (grassShader ? "::grass" : "");
+        string meshKey = GetMeshKey(mesh) + planeSuffix + (grassShader ? "::grass" : "");
         if (exportedGlbs.TryGetValue(meshKey, out string cached))
             return cached;
 
-        string glbName = GetMeshSourceName(mesh) + (grassShader ? "_grass" : "");
+        string glbName = GetMeshSourceName(mesh) + planeSuffix + (grassShader ? "_grass" : "");
         string glbPath = $"{OutputDir}/glb/{glbName}.glb";
         string glbAssetPath = $"{AssetPrefix}/glb/{glbName}.glb";
 
