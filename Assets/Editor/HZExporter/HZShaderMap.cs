@@ -245,6 +245,33 @@ namespace HZExporter
             }
         }
 
+        // Read a material color property. HDR color properties come out of Unity in linear, so we
+        // convert them to sRGB (the engine applies srgb->linear, same as it does for light colors,
+        // recovering the authored value). LDR colors are already in the engine's expected space and
+        // pass through unchanged — Unity isn't consistent about which colors it gamma-encodes.
+        static Color ReadColor(Material mat, string prop)
+        {
+            Color c = mat.GetColor(prop);
+            if (IsHdrColorProperty(mat, prop))
+                c = new Color(LinearToSrgbF(c.r), LinearToSrgbF(c.g), LinearToSrgbF(c.b), c.a);
+            return c;
+        }
+
+        static bool IsHdrColorProperty(Material mat, string prop)
+        {
+            var sh = mat != null ? mat.shader : null;
+            if (sh == null) return false;
+            int idx = sh.FindPropertyIndex(prop);
+            if (idx < 0) return false;
+            return (sh.GetPropertyFlags(idx) & UnityEngine.Rendering.ShaderPropertyFlags.HDR) != 0;
+        }
+
+        static float LinearToSrgbF(float x)
+        {
+            if (x <= 0.0031308f) return x * 12.92f;
+            return 1.055f * Mathf.Pow(x, 1f / 2.4f) - 0.055f;
+        }
+
         /// <summary>
         /// Embed all textures referenced by a material per its shader mapping, plus read factor
         /// values. Invokes <paramref name="onImage"/> for every PNG embedded (caller records it).
@@ -284,12 +311,12 @@ namespace HZExporter
                 {
                     case "color4":
                     {
-                        if (p.slot == "baseColor") { f.baseColor = mat.GetColor(p.unity); filled.Add(p.slot); }
+                        if (p.slot == "baseColor") { f.baseColor = ReadColor(mat, p.unity); filled.Add(p.slot); }
                         break;
                     }
                     case "color3":
                     {
-                        if (p.slot == "emissive") { f.emissive = mat.GetColor(p.unity); filled.Add(p.slot); }
+                        if (p.slot == "emissive") { f.emissive = ReadColor(mat, p.unity); filled.Add(p.slot); }
                         break;
                     }
                     case "float":
@@ -416,7 +443,7 @@ namespace HZExporter
                         break;
                     }
                     case "color4":
-                        cm.properties.Add(new CustomProperty { slot = p.slot, kind = "color4", c4 = mat.GetColor(p.unity) });
+                        cm.properties.Add(new CustomProperty { slot = p.slot, kind = "color4", c4 = ReadColor(mat, p.unity) });
                         break;
                     case "texture":
                     case "texture_normal":

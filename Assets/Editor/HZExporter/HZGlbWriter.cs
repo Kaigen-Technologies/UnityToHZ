@@ -1600,57 +1600,70 @@ namespace HZExporter
             return readable;
         }
 
+        static Material s_unpackNormalMat;
+        static bool s_unpackNormalTried;
+
+        // Tiny blit material running UnpackNormal(), which decodes BOTH DXT5nm (X packed in alpha)
+        // and BC5 automatically per-platform. Lets us read the imported normal map directly instead
+        // of bypassing the importer with a full-res source-file read.
+        static Material UnpackNormalMaterial()
+        {
+            if (s_unpackNormalTried) return s_unpackNormalMat;
+            s_unpackNormalTried = true;
+            const string src =
+                "Shader \"Hidden/HZUnpackNormal\" {\n" +
+                "Properties { _MainTex(\"Tex\", 2D) = \"bump\" {} }\n" +
+                "SubShader { Cull Off ZWrite Off ZTest Always\n" +
+                "Pass { CGPROGRAM\n" +
+                "#pragma vertex vert\n#pragma fragment frag\n#include \"UnityCG.cginc\"\n" +
+                "struct appdata { float4 vertex : POSITION; float2 uv : TEXCOORD0; };\n" +
+                "struct v2f { float2 uv : TEXCOORD0; float4 vertex : SV_POSITION; };\n" +
+                "sampler2D _MainTex;\n" +
+                "v2f vert(appdata v){ v2f o; o.vertex = UnityObjectToClipPos(v.vertex); o.uv = v.uv; return o; }\n" +
+                "fixed4 frag(v2f i) : SV_Target {\n" +
+                "  half3 n = UnpackNormal(tex2D(_MainTex, i.uv));\n" +
+                "  n.y = -n.y;\n" +   // DirectX source (+Y down) -> engine OpenGL (+Y up)
+                "  return fixed4(n * 0.5 + 0.5, 1.0);\n" +
+                "} ENDCG } } }";
+            try
+            {
+                var shader = UnityEditor.ShaderUtil.CreateShaderAsset(src);
+                if (shader != null)
+                    s_unpackNormalMat = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[HZGlbWriter] UnpackNormal shader build failed: {e.Message}");
+            }
+            return s_unpackNormalMat;
+        }
+
         static Texture2D MakeReadableNormalMap(Texture2D src)
         {
-            // Unity imports normal maps as either BC5 or DXT5nm with the X
-            // channel packed into alpha (or a separate plane). A plain
-            // Graphics.Blit through the default copy shader DOES NOT decode
-            // these formats — the destination texture ends up with R=255 /
-            // A=255 / B=128 constants and only G carrying real data, which
-            // destroys X. We have to either run a custom UnpackNormal shader
-            // during blit, or bypass the importer entirely and read the
-            // source file on disk. The latter is simpler and side-steps every
-            // Unity-version-specific quirk of the normal-map import path.
-            string path = UnityEditor.AssetDatabase.GetAssetPath(src);
-            if (!string.IsNullOrEmpty(path) && System.IO.File.Exists(path))
+            // Read the IMPORTED normal map (already clamped to the importer's Max Size) and unpack it
+            // with UnpackNormal — handles BC5 and DXT5nm regardless of platform, so no full-res
+            // source read or downscale is needed. Y is flipped to the engine's OpenGL (+Y up)
+            // convention. This respects Max Size exactly like albedo/ORM.
+            int w = src.width, h = src.height;
+            Material mat = UnpackNormalMaterial();
+            RenderTexture tmp = RenderTexture.GetTemporary(w, h, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            if (mat != null)
             {
-                byte[] bytes = System.IO.File.ReadAllBytes(path);
-                Texture2D fromDisk = new Texture2D(2, 2, TextureFormat.RGBA32, false, true);
-                if (fromDisk.LoadImage(bytes))
-                {
-                    // Source PNGs are authored in the DirectX tangent-space
-                    // convention (+Y points down toward decreasing V). The
-                    // engine's TBN math uses OpenGL convention (+Y up). Flip
-                    // Y here so the engine receives a normal map it can
-                    // interpret without further adjustment.
-                    Color[] pixels = fromDisk.GetPixels();
-                    for (int i = 0; i < pixels.Length; i++)
-                    {
-                        float nx = pixels[i].r * 2f - 1f;
-                        float ny = -(pixels[i].g * 2f - 1f);
-                        float nz = Mathf.Sqrt(Mathf.Max(0f, 1f - nx * nx - ny * ny));
-                        pixels[i] = new Color(nx * 0.5f + 0.5f, ny * 0.5f + 0.5f, nz * 0.5f + 0.5f, 1f);
-                    }
-                    Texture2D unpacked = new Texture2D(fromDisk.width, fromDisk.height, TextureFormat.RGBA32, false, true);
-                    unpacked.SetPixels(pixels);
-                    unpacked.Apply();
-                    UnityEngine.Object.DestroyImmediate(fromDisk);
-                    return unpacked;
-                }
-                UnityEngine.Object.DestroyImmediate(fromDisk);
+                Graphics.Blit(src, tmp, mat);
             }
-            Debug.LogWarning($"[HZGlbWriter] normal-map source file unreadable for '{src.name}' — falling back to imported (alpha-packed X may be lost)");
-            // Fallback path (kept for in-memory textures with no source asset).
-            RenderTexture tmp = RenderTexture.GetTemporary(src.width, src.height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
-            Graphics.Blit(src, tmp);
+            else
+            {
+                Debug.LogWarning($"[HZGlbWriter] UnpackNormal material unavailable for '{src.name}' — plain blit (alpha-packed X may be lost)");
+                Graphics.Blit(src, tmp);
+            }
             RenderTexture prev = RenderTexture.active;
             RenderTexture.active = tmp;
-            Texture2D packed = new Texture2D(src.width, src.height, TextureFormat.RGBA32, false, true);
-            packed.ReadPixels(new Rect(0, 0, src.width, src.height), 0, 0);
-            packed.Apply();
+            Texture2D readable = new Texture2D(w, h, TextureFormat.RGBA32, false, true);
+            readable.ReadPixels(new Rect(0, 0, w, h), 0, 0);
+            readable.Apply();
             RenderTexture.active = prev;
             RenderTexture.ReleaseTemporary(tmp);
-            return packed;
+            return readable;
         }
     }
 }
