@@ -14,7 +14,9 @@ namespace MagicaCloth2.Tests
     {
         public MagicaCloth cloth;
         public readonly List<GameObject> objects = new List<GameObject>();
-        public Transform[] bones; // for BoneCloth: the chain transforms, root first
+        public Transform[] bones;     // for BoneCloth: the chain transforms, root first
+        public Renderer renderer;     // for MeshCloth: the source renderer
+        public int meshVertexCount;   // for MeshCloth: source grid vertex count
 
         public void Dispose()
         {
@@ -114,6 +116,92 @@ namespace MagicaCloth2.Tests
                 sd.rootBones.Add(colRoot);
             }
             rig.bones = bones.ToArray();
+
+            configure?.Invoke(sd);
+
+            if (autoBuild)
+                cloth.BuildAndRun();
+
+            return rig;
+        }
+
+        /// <summary>
+        /// A MeshCloth over a procedurally-generated planar grid (nx*ny vertices in the XY plane,
+        /// +Y up). A paint-map texture marks the top strip (uv.v &gt; <paramref name="fixedTopV"/>) as
+        /// Fixed (red) and the rest as Move (green), via paintMode Texture_Fixed_Move — the same path
+        /// RuntimeBuildDemo uses. Reduction is disabled by default so proxy verts == grid verts.
+        /// </summary>
+        public static Rig MeshGrid(int nx, int ny, float spacing, float fixedTopV = 0.9f,
+            bool disableReduction = true, Action<ClothSerializeData> configure = null, bool autoBuild = true)
+        {
+            var rig = new Rig();
+            rig.meshVertexCount = nx * ny;
+
+            // --- mesh ---
+            var mesh = new Mesh { name = "TestGrid" };
+            var verts = new Vector3[nx * ny];
+            var uvs = new Vector2[nx * ny];
+            for (int j = 0; j < ny; j++)
+                for (int i = 0; i < nx; i++)
+                {
+                    int idx = j * nx + i;
+                    verts[idx] = new Vector3(i * spacing, j * spacing, 0f);
+                    // Texel-center UVs in [0,1): the selection decoder wraps uv==1.0 back to 0.0,
+                    // so a top row at exactly v=1 would sample the bottom of the paint map. Insetting
+                    // by half a cell avoids the wrap. Top row (j=ny-1) lands at v=(ny-0.5)/ny.
+                    uvs[idx] = new Vector2((i + 0.5f) / nx, (j + 0.5f) / ny);
+                }
+            var tris = new List<int>((nx - 1) * (ny - 1) * 6);
+            for (int j = 0; j < ny - 1; j++)
+                for (int i = 0; i < nx - 1; i++)
+                {
+                    int a = j * nx + i, b = a + 1, c = a + nx, d = c + 1;
+                    tris.Add(a); tris.Add(c); tris.Add(b);
+                    tris.Add(b); tris.Add(c); tris.Add(d);
+                }
+            mesh.vertices = verts;
+            mesh.uv = uvs;
+            mesh.triangles = tris.ToArray();
+            mesh.RecalculateNormals();
+            mesh.RecalculateBounds();
+
+            var meshObj = new GameObject("GridMesh");
+            rig.objects.Add(meshObj);
+            meshObj.AddComponent<MeshFilter>().sharedMesh = mesh;
+            var mr = meshObj.AddComponent<MeshRenderer>();
+            rig.renderer = mr;
+
+            // --- paint map (R=Fixed, G=Move) ---
+            const int ts = 128;
+            var tex = new Texture2D(ts, ts, TextureFormat.RGBA32, false);
+            var px = new Color32[ts * ts];
+            var red = new Color32(255, 0, 0, 255);
+            var green = new Color32(0, 255, 0, 255);
+            for (int py = 0; py < ts; py++)
+            {
+                float v = py / (float)(ts - 1);
+                var col = v > fixedTopV ? red : green;
+                for (int pxi = 0; pxi < ts; pxi++) px[py * ts + pxi] = col;
+            }
+            tex.SetPixels32(px);
+            tex.Apply(false);
+
+            // --- cloth ---
+            var clothObj = new GameObject("MeshCloth");
+            rig.objects.Add(clothObj);
+            var cloth = clothObj.AddComponent<MagicaCloth>();
+            rig.cloth = cloth;
+
+            var sd = cloth.SerializeData;
+            sd.clothType = ClothProcess.ClothType.MeshCloth;
+            sd.sourceRenderers.Add(mr);
+            sd.paintMode = ClothSerializeData.PaintMode.Texture_Fixed_Move;
+            sd.paintMaps.Add(tex);
+            if (disableReduction)
+            {
+                sd.reductionSetting.simpleDistance = 0f;
+                sd.reductionSetting.shapeDistance = 0f;
+            }
 
             configure?.Invoke(sd);
 

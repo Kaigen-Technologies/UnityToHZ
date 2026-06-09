@@ -12,6 +12,7 @@ namespace MagicaCloth2.Tests
         {
             list.Add(new TestEntry("build.bonecloth_line_topology", BoneClothLineTopology));
             list.Add(new TestEntry("build.bonecloth_mesh_topology", BoneClothMeshTopology));
+            list.Add(new TestEntry("build.meshcloth_paintmap_attributes", MeshClothPaintMapAttributes));
         }
 
         // 1.1 A single-chain BoneCloth (Line connection) of N bones must yield a proxy with:
@@ -96,6 +97,43 @@ namespace MagicaCloth2.Tests
             check.Metric("edges", edges);
             check.Metric("tris", tris);
             check.Metric("fixed", fixedCount);
+
+            rig.Dispose();
+        }
+
+        // 1.3 MeshCloth import: a generated nx*ny grid with a Texture_Fixed_Move paint map (top row red
+        // = Fixed, rest green = Move). With reduction disabled, the proxy keeps all grid vertices and the
+        // attributes must match the painted regions: nx Fixed (top row), nx*(ny-1) Move.
+        static IEnumerator MeshClothPaintMapAttributes(Check check)
+        {
+            const int nx = 6, ny = 6;
+            var rig = Build.MeshGrid(nx, ny, 0.1f, fixedTopV: 0.9f, disableReduction: true, configure: sd =>
+            {
+                sd.gravity = 0f;
+            });
+            yield return Build.WaitForBuild(rig.cloth);
+
+            check.IsTrue("valid", rig.cloth.IsValid());
+
+            int verts = ClothState.ProxyVertexCount(rig.cloth);
+            int tris = ClothState.ProxyTriangleCount(rig.cloth);
+            check.Approx("verts==grid (no reduction)", verts, nx * ny, 0);
+            check.Greater("has_triangles", tris, 0);
+
+            int fixedCount = 0, moveCount = 0;
+            for (int i = 0; i < verts; i++)
+            {
+                var a = ClothState.ProxyAttribute(rig.cloth, i);
+                if (a.IsFixed()) fixedCount++;
+                else if (a.IsMove()) moveCount++;
+            }
+            check.Approx("fixed==top_row", fixedCount, nx, 0);
+            check.Approx("move==rest", moveCount, nx * (ny - 1), 0);
+
+            check.Metric("verts", verts);
+            check.Metric("tris", tris);
+            check.Metric("fixed", fixedCount);
+            check.Metric("move", moveCount);
 
             rig.Dispose();
         }
