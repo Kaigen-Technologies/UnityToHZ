@@ -67,6 +67,7 @@ namespace MagicaCloth2.Tests
             MeshSimTests.Register(list);
             ConstraintTests.Register(list);
             CollisionTests.Register(list);
+            WindTests.Register(list);
             return list;
         }
 
