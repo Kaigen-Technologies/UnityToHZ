@@ -132,7 +132,7 @@ namespace MagicaCloth2.Tests
         /// RuntimeBuildDemo uses. Reduction is disabled by default so proxy verts == grid verts.
         /// </summary>
         public static Rig MeshGrid(int nx, int ny, float spacing, float fixedTopV = 0.9f,
-            bool disableReduction = true, Action<ClothSerializeData> configure = null, bool autoBuild = true)
+            bool disableReduction = true, bool planeXZ = false, Action<ClothSerializeData> configure = null, bool autoBuild = true)
         {
             var rig = new Rig();
             rig.meshVertexCount = nx * ny;
@@ -145,7 +145,11 @@ namespace MagicaCloth2.Tests
                 for (int i = 0; i < nx; i++)
                 {
                     int idx = j * nx + i;
-                    verts[idx] = new Vector3(i * spacing, j * spacing, 0f);
+                    // planeXZ=false: vertical curtain in XY (j = +Y). planeXZ=true: flat sheet in XZ (j = +Z),
+                    // so the painted "far" row is pinned and the rest droops under -Y gravity.
+                    verts[idx] = planeXZ
+                        ? new Vector3(i * spacing, 0f, j * spacing)
+                        : new Vector3(i * spacing, j * spacing, 0f);
                     // Texel-center UVs in [0,1): the selection decoder wraps uv==1.0 back to 0.0,
                     // so a top row at exactly v=1 would sample the bottom of the paint map. Insetting
                     // by half a cell avoids the wrap. Top row (j=ny-1) lands at v=(ny-0.5)/ny.
