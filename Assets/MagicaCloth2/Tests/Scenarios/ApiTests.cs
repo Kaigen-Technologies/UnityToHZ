@@ -11,6 +11,74 @@ namespace MagicaCloth2.Tests
         public static void Register(List<TestEntry> list)
         {
             list.Add(new TestEntry("api.add_force", AddForce));
+            list.Add(new TestEntry("api.reset_cloth", ResetCloth));
+            list.Add(new TestEntry("api.set_time_scale", SetTimeScale));
+        }
+
+        // 8.2 ResetCloth(false) snaps the simulation back to its initial (rest) pose: a chain that has
+        // fallen far from its horizontal rest returns to it after a reset; without a reset it stays fallen.
+        static IEnumerator MeasureReset(bool doReset, float[] outDispFromRest)
+        {
+            var rig = Build.BoneChain(12, new float3(1, 0, 0), 0.1f, sd =>
+            {
+                sd.gravity = 5f;
+                sd.damping.SetValue(0.1f);
+            });
+            yield return Build.WaitForBuild(rig.cloth);
+            var rest = ClothState.Positions(rig.cloth); // horizontal rest, captured at build
+            yield return Build.Step(200);                // chain falls and hangs
+            if (doReset) rig.cloth.ResetCloth(false);
+            yield return Build.Step(2);
+
+            outDispFromRest[0] = ClothState.MaxDisplacement(ClothState.Positions(rig.cloth), rest);
+            rig.Dispose();
+        }
+
+        static IEnumerator ResetCloth(Check check)
+        {
+            var reset = new float[1];
+            var noReset = new float[1];
+            yield return MeasureReset(true, reset);
+            yield return MeasureReset(false, noReset);
+
+            check.Less("reset_returns_to_rest", reset[0], 0.05f);
+            check.Greater("no_reset_stays_fallen", noReset[0], 0.3f);
+
+            check.Metric("dispFromRest_afterReset", reset[0]);
+            check.Metric("dispFromRest_noReset", noReset[0]);
+        }
+
+        // 8.3 SetTimeScale scales how fast the simulation advances: timeScale 0 freezes the cloth,
+        // timeScale 1 lets it fall normally.
+        static IEnumerator MeasureTimeScaleActivity(float timeScale, float[] outActivity)
+        {
+            var rig = Build.BoneChain(12, new float3(1, 0, 0), 0.1f, sd =>
+            {
+                sd.gravity = 5f;
+                sd.damping.SetValue(0.05f);
+            });
+            yield return Build.WaitForBuild(rig.cloth);
+            rig.cloth.SetTimeScale(timeScale);
+            yield return null;
+
+            var a = ClothState.Positions(rig.cloth);
+            yield return Build.Step(60);
+            outActivity[0] = ClothState.MaxDisplacement(a, ClothState.Positions(rig.cloth));
+            rig.Dispose();
+        }
+
+        static IEnumerator SetTimeScale(Check check)
+        {
+            var full = new float[1];
+            var frozen = new float[1];
+            yield return MeasureTimeScaleActivity(1f, full);
+            yield return MeasureTimeScaleActivity(0f, frozen);
+
+            check.Greater("full_scale_moves", full[0], 0.1f);
+            check.Less("zero_scale_frozen", frozen[0], 0.005f);
+
+            check.Metric("activity_scale1", full[0]);
+            check.Metric("activity_scale0", frozen[0]);
         }
 
         // Settle a hanging chain, optionally apply a sideways impulse via AddForce, and report the peak
