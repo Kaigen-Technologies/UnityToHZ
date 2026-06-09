@@ -62,6 +62,7 @@ namespace MagicaCloth2.Tests
         {
             var list = new List<TestEntry>();
             SmokeTests.Register(list);
+            BuildTests.Register(list);
             return list;
         }
 
