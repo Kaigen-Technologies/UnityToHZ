@@ -10,6 +10,26 @@ namespace MagicaCloth2.Tests
         public static void Register(List<TestEntry> list)
         {
             list.Add(new TestEntry("constraint.distance_length_preservation", DistanceLengthPreservation));
+            list.Add(new TestEntry("constraint.tether_compression_limit", TetherCompressionLimit));
+        }
+
+        // Compress a chain axially (gravity toward the fixed root) and report settled tip-to-root distance.
+        static IEnumerator MeasureTipToRoot(float distanceCompression, float[] outDist)
+        {
+            var rig = Build.BoneChain(12, new float3(1, 0, 0), 0.1f, sd =>
+            {
+                sd.gravity = 10f;
+                sd.gravityDirection = new float3(-1, 0, 0); // pull tip back toward the root => compression
+                sd.damping.SetValue(0.2f);
+                sd.angleRestorationConstraint.useAngleRestoration = false;
+                sd.angleLimitConstraint.useAngleLimit = false;
+                sd.tetherConstraint.distanceCompression = distanceCompression;
+            });
+            yield return Build.WaitForBuild(rig.cloth);
+            yield return Build.Step(400);
+            var p = ClothState.Positions(rig.cloth);
+            outDist[0] = math.distance(p[0], p[p.Length - 1]);
+            rig.Dispose();
         }
 
         // Max ratio of any consecutive-particle distance to the rest spacing (1.0 = perfectly preserved).
@@ -51,6 +71,24 @@ namespace MagicaCloth2.Tests
 
             check.Metric("maxStretch_slack", slack[0]);
             check.Metric("maxStretch_stiff", stiff[0]);
+        }
+
+        // 4.2 The tether constraint limits how far a chain may compress toward its root. A higher
+        // distanceCompression permits more compression (tip ends closer to the root); a low value holds
+        // the chain out. Ordinal + the held-out chain stays a meaningful fraction of its rest length.
+        static IEnumerator TetherCompressionLimit(Check check)
+        {
+            const float restTip = 1.1f; // 11 segments * 0.1
+            var lowComp = new float[1];
+            var highComp = new float[1];
+            yield return MeasureTipToRoot(0.1f, lowComp);  // little compression allowed -> tip stays far
+            yield return MeasureTipToRoot(0.9f, highComp); // much compression allowed -> tip near root
+
+            check.Greater("more_compression_allows_closer", lowComp[0], highComp[0]);
+            check.Greater("low_compression_holds_chain_out", lowComp[0], 0.5f * restTip);
+
+            check.Metric("tipToRoot_lowComp", lowComp[0]);
+            check.Metric("tipToRoot_highComp", highComp[0]);
         }
     }
 }
