@@ -87,6 +87,18 @@ namespace MagicaCloth2.Tests
             return sum / vs.Length;
         }
 
+        /// <summary>World-space vertices of the baked custom render mesh (empty if not built/skinned).</summary>
+        public static float3[] RenderMeshPositions(MagicaCloth cloth, UnityEngine.Renderer ren)
+        {
+            var mesh = cloth.GetCustomMesh(ren);
+            if (mesh == null) return new float3[0];
+            var vs = mesh.vertices;
+            var m = ren.localToWorldMatrix;
+            var result = new float3[vs.Length];
+            for (int i = 0; i < vs.Length; i++) result[i] = (float3)m.MultiplyPoint3x4(vs[i]);
+            return result;
+        }
+
         public static int ProxyVertexCount(MagicaCloth cloth) => Proxy(cloth)?.VertexCount ?? 0;
         public static int ProxyEdgeCount(MagicaCloth cloth) => Proxy(cloth)?.EdgeCount ?? 0;
         public static int ProxyTriangleCount(MagicaCloth cloth) => Proxy(cloth)?.TriangleCount ?? 0;

@@ -12,6 +12,14 @@ namespace MagicaCloth2.Tests
             list.Add(new TestEntry("meshsim.pinned_sheet_droops", PinnedSheetDroops));
             list.Add(new TestEntry("meshsim.blendweight_endpoints", BlendWeightEndpoints));
             list.Add(new TestEntry("meshsim.normal_split_equivalence", NormalSplitEquivalence));
+            list.Add(new TestEntry("meshsim.mesh_writeback", MeshWriteback));
+        }
+
+        static float MinY(float3[] pts)
+        {
+            float m = float.MaxValue;
+            for (int i = 0; i < pts.Length; i++) m = math.min(m, pts[i].y);
+            return m;
         }
 
         // Settle the drooping sheet, forcing the Normal vs Split job path via the split-vertex threshold.
@@ -159,6 +167,45 @@ namespace MagicaCloth2.Tests
             check.Metric("centroidDelta", centroidDelta);
             check.Metric("centroidYNormal", cN.y);
             check.Metric("centroidYSplit", cS.y);
+        }
+
+        // 3.4 The baked custom render mesh tracks the simulated proxy: with blendWeight=1 (full sim) the
+        // rendered mesh's centroid and lowest point match the proxy display pose within the loose band,
+        // and the mesh has actually drooped (writeback reflects the sim, not the flat original).
+        static IEnumerator MeshWriteback(Check check)
+        {
+            const float L = 0.7f;
+            var rig = Build.MeshGrid(8, 8, 0.1f, fixedTopV: 0.9f, disableReduction: true, planeXZ: true, configure: sd =>
+            {
+                sd.gravity = 5f;
+                sd.damping.SetValue(0.05f);
+                sd.blendWeight = 1f; // full sim => render mesh should equal the simulated proxy
+            });
+            yield return Build.WaitForBuild(rig.cloth);
+            check.IsTrue("valid", rig.cloth.IsValid());
+
+            yield return Build.Step(400);
+            var proxy = ClothState.DisplayPositions(rig.cloth);
+            yield return new UnityEngine.WaitForEndOfFrame(); // mesh write happens pre-render
+            var render = ClothState.RenderMeshPositions(rig.cloth, rig.renderer);
+
+            check.Greater("render_mesh_exists", render.Length, 0);
+
+            float3 proxyC = ClothState.Centroid(proxy);
+            float3 renderC = ClothState.Centroid(render);
+            float centroidDelta = math.distance(proxyC, renderC);
+            float minYDelta = math.abs(MinY(proxy) - MinY(render));
+
+            check.Less("render_drooped", renderC.y, -0.1f * L);                 // writeback reflects sim
+            check.Less("centroid_matches_proxy", centroidDelta, 0.03f * L);
+            check.Less("lowest_point_matches_proxy", minYDelta, 0.03f * L);
+
+            check.Metric("proxyCentroidY", proxyC.y);
+            check.Metric("renderCentroidY", renderC.y);
+            check.Metric("centroidDelta", centroidDelta);
+            check.Metric("minYDelta", minYDelta);
+
+            rig.Dispose();
         }
     }
 }
