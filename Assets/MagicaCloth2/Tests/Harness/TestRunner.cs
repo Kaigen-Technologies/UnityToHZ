@@ -71,6 +71,7 @@ namespace MagicaCloth2.Tests
             InertiaTests.Register(list);
             ApiTests.Register(list);
             SerializationTests.Register(list);
+            MathTests.Register(list);
             return list;
         }
 
