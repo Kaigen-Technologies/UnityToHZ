@@ -11,6 +11,22 @@ namespace MagicaCloth2.Tests
         {
             list.Add(new TestEntry("meshsim.pinned_sheet_droops", PinnedSheetDroops));
             list.Add(new TestEntry("meshsim.blendweight_endpoints", BlendWeightEndpoints));
+            list.Add(new TestEntry("meshsim.normal_split_equivalence", NormalSplitEquivalence));
+        }
+
+        // Settle the drooping sheet, forcing the Normal vs Split job path via the split-vertex threshold.
+        static IEnumerator SettleSheetPositions(int splitThreshold, float3[][] outPos, float gravity = 5f)
+        {
+            MagicaManager.SetSplitProxyMeshVertexCount(splitThreshold);
+            var rig = Build.MeshGrid(8, 8, 0.1f, fixedTopV: 0.9f, disableReduction: true, planeXZ: true, configure: sd =>
+            {
+                sd.gravity = gravity;
+                sd.damping.SetValue(0.05f);
+            });
+            yield return Build.WaitForBuild(rig.cloth);
+            yield return Build.Step(500);
+            outPos[0] = ClothState.Positions(rig.cloth);
+            rig.Dispose();
         }
 
         // Settle a drooping sheet at a given blendWeight; report the settled rendered-mesh centroid height.
@@ -114,6 +130,35 @@ namespace MagicaCloth2.Tests
 
             check.Metric("centroidY_blend0", animated[0]);
             check.Metric("centroidY_blend1", fullSim[0]);
+        }
+
+        // 3.3 The Normal (single-job) and Split (multi-job) simulation paths are an optimization choice,
+        // not a behavior change: the same sheet settles to the same shape within the loose band whether
+        // forced through Normal (high threshold) or Split (threshold=1).
+        static IEnumerator NormalSplitEquivalence(Check check)
+        {
+            const float spacing = 0.1f, L = 0.7f;
+            var normal = new float3[1][];
+            var split = new float3[1][];
+            yield return SettleSheetPositions(100000, normal); // Normal path (64 verts < threshold)
+            yield return SettleSheetPositions(1, split);        // Split path (64 verts >= 1)
+            MagicaManager.SetSplitProxyMeshVertexCount(300);    // restore default
+
+            float maxDisp = ClothState.MaxDisplacement(normal[0], split[0]);
+            float3 cN = ClothState.Centroid(normal[0]);
+            float3 cS = ClothState.Centroid(split[0]);
+            float centroidDelta = math.distance(cN, cS);
+
+            check.Greater("both_built", math.min(normal[0].Length, split[0].Length), 0);
+            check.Less("both_drooped", math.max(cN.y, cS.y), -0.1f * L);
+            check.Less("per_vertex_within_band", maxDisp, 0.15f * spacing);
+            check.Less("centroid_within_band", centroidDelta, 0.03f * L);
+
+            check.Metric("maxVertexDelta", maxDisp);
+            check.Metric("maxVertexDelta_over_spacing", maxDisp / spacing);
+            check.Metric("centroidDelta", centroidDelta);
+            check.Metric("centroidYNormal", cN.y);
+            check.Metric("centroidYSplit", cS.y);
         }
     }
 }
