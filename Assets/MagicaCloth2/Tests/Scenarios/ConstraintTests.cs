@@ -11,6 +11,32 @@ namespace MagicaCloth2.Tests
         {
             list.Add(new TestEntry("constraint.distance_length_preservation", DistanceLengthPreservation));
             list.Add(new TestEntry("constraint.tether_compression_limit", TetherCompressionLimit));
+            list.Add(new TestEntry("constraint.angle_restoration", AngleRestoration));
+        }
+
+        static float MinY(float3[] p)
+        {
+            float m = float.MaxValue;
+            for (int i = 0; i < p.Length; i++) m = math.min(m, p[i].y);
+            return m;
+        }
+
+        // Settle a horizontal chain (rest shape = straight along +X) and report its lowest point. Angle
+        // restoration pulls the chain back toward that horizontal rest, so it sags less when enabled.
+        static IEnumerator MeasureSagMinY(bool restorationOn, float[] outMinY)
+        {
+            var rig = Build.BoneChain(12, new float3(1, 0, 0), 0.1f, sd =>
+            {
+                sd.gravity = 5f;
+                sd.damping.SetValue(0.1f);
+                sd.angleLimitConstraint.useAngleLimit = false;          // isolate restoration from limit
+                sd.angleRestorationConstraint.useAngleRestoration = restorationOn;
+                if (restorationOn) sd.angleRestorationConstraint.stiffness.SetValue(1.0f);
+            });
+            yield return Build.WaitForBuild(rig.cloth);
+            yield return Build.Step(400);
+            outMinY[0] = MinY(ClothState.Positions(rig.cloth));
+            rig.Dispose();
         }
 
         // Compress a chain axially (gravity toward the fixed root) and report settled tip-to-root distance.
@@ -89,6 +115,23 @@ namespace MagicaCloth2.Tests
 
             check.Metric("tipToRoot_lowComp", lowComp[0]);
             check.Metric("tipToRoot_highComp", highComp[0]);
+        }
+
+        // 4.3 Angle restoration pulls the chain back toward its straight horizontal rest shape. With it
+        // OFF the chain sags fully (hangs down); with it ON the chain stays much higher (less sag).
+        static IEnumerator AngleRestoration(Check check)
+        {
+            const float L = 1.1f;
+            var off = new float[1];
+            var on = new float[1];
+            yield return MeasureSagMinY(false, off);
+            yield return MeasureSagMinY(true, on);
+
+            check.Less("sags_fully_without_restoration", off[0], -0.3f * L); // clearly droops when off
+            check.Greater("restoration_reduces_sag", on[0], off[0]);          // ON stays higher
+
+            check.Metric("minY_off", off[0]);
+            check.Metric("minY_on", on[0]);
         }
     }
 }
