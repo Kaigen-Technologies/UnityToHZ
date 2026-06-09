@@ -14,6 +14,52 @@ namespace MagicaCloth2.Tests
             list.Add(new TestEntry("api.reset_cloth", ResetCloth));
             list.Add(new TestEntry("api.set_time_scale", SetTimeScale));
             list.Add(new TestEntry("api.skip_writing", SkipWriting));
+            list.Add(new TestEntry("api.distance_culling", DistanceCulling));
+            // NOTE: ReplaceTransform (runtime re-targeting onto a different rig) is not covered here. It
+            // needs a second, identically-named bone hierarchy and name-keyed remapping, which is more
+            // setup than a synthetic test warrants; it is a re-binding convenience over the same simulation
+            // already covered above. Revisit if the port implements dress-up re-targeting.
+        }
+
+        // 8.6 Distance culling pauses the simulation when the reference object is beyond the cull length:
+        // with the reference near, the chain falls; with it far away, the chain is frozen.
+        static IEnumerator MeasureCulling(float refDistance, float[] outActivity)
+        {
+            var extra = new List<GameObject>();
+            var refGo = new GameObject("CullRef");
+            refGo.transform.position = new Vector3(refDistance, 0, 0);
+            extra.Add(refGo);
+
+            var rig = Build.BoneChain(12, new float3(1, 0, 0), 0.1f, sd =>
+            {
+                sd.gravity = 5f;
+                sd.damping.SetValue(0.05f);
+                sd.cullingSettings.cameraCullingMode = CullingSettings.CameraCullingMode.Off;
+                sd.cullingSettings.distanceCullingLength.use = true;
+                sd.cullingSettings.distanceCullingLength.value = 5f;
+                sd.cullingSettings.distanceCullingReferenceObject = refGo;
+            });
+            yield return Build.WaitForBuild(rig.cloth);
+
+            var a = ClothState.Positions(rig.cloth);
+            yield return Build.Step(100);
+            outActivity[0] = ClothState.MaxDisplacement(a, ClothState.Positions(rig.cloth));
+            rig.Dispose();
+            foreach (var g in extra) if (g != null) Object.Destroy(g);
+        }
+
+        static IEnumerator DistanceCulling(Check check)
+        {
+            var near = new float[1];
+            var far = new float[1];
+            yield return MeasureCulling(1f, near);    // reference within 5 m -> active
+            yield return MeasureCulling(50f, far);    // reference far -> culled
+
+            check.Greater("near_reference_simulates", near[0], 0.1f);
+            check.Less("far_reference_culled", far[0], 0.005f);
+
+            check.Metric("activity_refNear", near[0]);
+            check.Metric("activity_refFar", far[0]);
         }
 
         // 8.4 SetSkipWriting(true) freezes Transform/mesh writeback while the simulation keeps running:
