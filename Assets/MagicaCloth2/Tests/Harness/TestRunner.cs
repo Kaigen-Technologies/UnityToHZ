@@ -83,6 +83,9 @@ namespace MagicaCloth2.Tests
             {
                 if (filter.Length > 0 && !entry.name.Contains(filter)) continue;
 
+                // progress marker (so a hung test is identifiable even with no final results)
+                try { File.WriteAllText(Path.Combine(ResultDir, "progress.txt"), entry.name); } catch { }
+
                 var check = new Check(entry.name);
                 IEnumerator body = null;
                 try { body = entry.body(check); }
@@ -102,13 +105,14 @@ namespace MagicaCloth2.Tests
                 var r = check.ToResult();
                 results.Add(r);
                 Debug.Log($"[MC2Tests] {r.status}  {r.name}{(r.status == "FAIL" ? "  -> " + r.message : "")}");
+                WriteResults(results, final: false); // incremental: survive a later hang
             }
 
             Determinism.Exit();
-            WriteResults(results);
+            WriteResults(results, final: true);
         }
 
-        static void WriteResults(List<TestResult> results)
+        static void WriteResults(List<TestResult> results, bool final)
         {
             int pass = 0, fail = 0;
             foreach (var r in results) { if (r.status == "PASS") pass++; else fail++; }
@@ -145,8 +149,10 @@ namespace MagicaCloth2.Tests
             sb.Append("}\n");
 
             Directory.CreateDirectory(ResultDir);
-            File.WriteAllText(ResultPath, sb.ToString());
-            Debug.Log($"[MC2Tests] Wrote {results.Count} results ({pass} pass / {fail} fail) -> {ResultPath}");
+            // incremental writes go to results.partial.json so the CLI's wait-for-results.json still
+            // blocks until the run truly finishes; the partial file lets us see progress / diagnose hangs.
+            File.WriteAllText(final ? ResultPath : Path.Combine(ResultDir, "results.partial.json"), sb.ToString());
+            if (final) Debug.Log($"[MC2Tests] Wrote {results.Count} results ({pass} pass / {fail} fail) -> {ResultPath}");
         }
 
         static string Esc(string s)

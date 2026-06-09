@@ -3,7 +3,7 @@
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File tools/run_mc2_tests.ps1            # full cycle
 #   powershell -ExecutionPolicy Bypass -File tools/run_mc2_tests.ps1 -NoRefresh # skip recompile
-param([switch]$NoRefresh, [string]$Only = '')
+param([switch]$NoRefresh, [string]$Only = '', [switch]$Summary)
 
 function Cmd($c) {
     try { return (& "$PSScriptRoot/unity_cmd.ps1" -cmd $c) 2>$null } catch { return 'down' }
@@ -32,9 +32,18 @@ if (Test-Path $results) { Remove-Item $results -Force }
 
 Cmd "exec:MagicaCloth2.Tests.TestRunner.Run" | Out-Null
 
-for ($i = 0; $i -lt 45; $i++) {
+for ($i = 0; $i -lt 180; $i++) {
     if (Test-Path $results) { break }
     Start-Sleep -Seconds 2
 }
 
-if (Test-Path $results) { Get-Content $results -Raw } else { Write-Output 'NO RESULTS (timeout)' }
+if (-not (Test-Path $results)) { Write-Output 'NO RESULTS (timeout)'; exit 1 }
+
+if ($Summary) {
+    $j = Get-Content $results -Raw | ConvertFrom-Json
+    Write-Output ("TOTAL {0}  PASS {1}  FAIL {2}" -f $j.summary.total, $j.summary.pass, $j.summary.fail)
+    $j.tests | Where-Object { $_.status -ne 'PASS' } | ForEach-Object { Write-Output ("FAIL: {0} -> {1}" -f $_.name, $_.message) }
+}
+else {
+    Get-Content $results -Raw
+}
