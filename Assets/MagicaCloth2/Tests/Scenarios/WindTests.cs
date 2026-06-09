@@ -12,6 +12,48 @@ namespace MagicaCloth2.Tests
         {
             list.Add(new TestEntry("wind.global_directional_influence", GlobalDirectionalInfluence));
             list.Add(new TestEntry("wind.sphere_zone_containment", SphereZoneContainment));
+            list.Add(new TestEntry("wind.turbulence_oscillation", TurbulenceOscillation));
+        }
+
+        static IEnumerator MeasureWindActivity(float turbulence, float[] outActivity, float[] outMaxR)
+        {
+            var extra = new List<GameObject>();
+            var wz = MakeGlobalWind(extra, 15f);
+            wz.turbulence = turbulence;
+            var rig = Build.BoneChain(12, new float3(0, -1, 0), 0.1f, sd =>
+            {
+                sd.gravity = 5f;
+                sd.damping.SetValue(0.05f);
+                sd.wind.influence = 2f;
+            });
+            yield return Build.WaitForBuild(rig.cloth);
+            yield return Build.Step(300);
+            var a = ClothState.Positions(rig.cloth);
+            yield return Build.Step(20);
+            var b = ClothState.Positions(rig.cloth);
+            outActivity[0] = ClothState.MaxDisplacement(a, b);
+            outMaxR[0] = ClothState.MaxRadius(b, b[0]);
+            rig.Dispose();
+            foreach (var g in extra) if (g != null) Object.Destroy(g);
+        }
+
+        // 6.3 Turbulence: with turbulence=0 the wind-blown chain settles to a steady pose (near-zero
+        // residual motion); with turbulence>0 it keeps oscillating, but bounded (no explosion).
+        static IEnumerator TurbulenceOscillation(Check check)
+        {
+            const float L = 1.1f;
+            var steady = new float[1]; var steadyR = new float[1];
+            var turbo = new float[1]; var turboR = new float[1];
+            yield return MeasureWindActivity(0f, steady, steadyR);
+            yield return MeasureWindActivity(1f, turbo, turboR);
+
+            check.Less("steady_settles", steady[0], 0.003f);
+            check.Greater("turbulence_keeps_moving", turbo[0], steady[0] + 0.003f);
+            check.Less("turbulence_bounded", turboR[0], 3f * L);
+
+            check.Metric("activity_steady", steady[0]);
+            check.Metric("activity_turbulent", turbo[0]);
+            check.Metric("maxRadius_turbulent", turboR[0]);
         }
 
         static IEnumerator MeasureZoneDeflection(float3 zoneCenter, float radius, float[] outTipX)
