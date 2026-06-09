@@ -75,6 +75,54 @@ namespace MagicaCloth2.Tests
             return rig;
         }
 
+        /// <summary>
+        /// A BoneCloth grid: <paramref name="cols"/> vertical chains (each <paramref name="rows"/> bones)
+        /// laid out side by side along +X, descending along -Y. rootBones = the top bone of each column,
+        /// in column order (so SequentialNonLoopMesh connection stitches adjacent columns into triangles).
+        /// </summary>
+        public static Rig BoneGrid(int cols, int rows, float spacing,
+            Action<ClothSerializeData> configure = null, bool autoBuild = true)
+        {
+            var rig = new Rig();
+            var holder = new GameObject("GridHolder");
+            rig.objects.Add(holder);
+
+            var clothObj = new GameObject("BoneClothGrid");
+            rig.objects.Add(clothObj);
+            var cloth = clothObj.AddComponent<MagicaCloth>();
+            rig.cloth = cloth;
+
+            var sd = cloth.SerializeData;
+            sd.clothType = ClothProcess.ClothType.BoneCloth;
+
+            var bones = new List<Transform>(cols * rows);
+            for (int c = 0; c < cols; c++)
+            {
+                Transform prev = holder.transform;
+                Transform colRoot = null;
+                for (int r = 0; r < rows; r++)
+                {
+                    var b = new GameObject($"b_{c}_{r}");
+                    b.transform.SetParent(prev, false);
+                    b.transform.localPosition = r == 0
+                        ? new Vector3(c * spacing, 0f, 0f)
+                        : new Vector3(0f, -spacing, 0f);
+                    if (r == 0) colRoot = b.transform;
+                    bones.Add(b.transform);
+                    prev = b.transform;
+                }
+                sd.rootBones.Add(colRoot);
+            }
+            rig.bones = bones.ToArray();
+
+            configure?.Invoke(sd);
+
+            if (autoBuild)
+                cloth.BuildAndRun();
+
+            return rig;
+        }
+
         // --- coroutine helpers --------------------------------------------------------------
 
         /// <summary>Step frames until the cloth reports valid, or timeout. Each frame == 1 sub-step.</summary>

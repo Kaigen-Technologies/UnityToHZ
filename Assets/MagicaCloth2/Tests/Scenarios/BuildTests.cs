@@ -11,6 +11,7 @@ namespace MagicaCloth2.Tests
         public static void Register(List<TestEntry> list)
         {
             list.Add(new TestEntry("build.bonecloth_line_topology", BoneClothLineTopology));
+            list.Add(new TestEntry("build.bonecloth_mesh_topology", BoneClothMeshTopology));
         }
 
         // 1.1 A single-chain BoneCloth (Line connection) of N bones must yield a proxy with:
@@ -59,6 +60,42 @@ namespace MagicaCloth2.Tests
             check.Metric("move", moveCount);
             check.Metric("minDepth", minDepth);
             check.Metric("maxDepth", maxDepth);
+
+            rig.Dispose();
+        }
+
+        // 1.2 A BoneCloth grid with a Mesh connection mode must synthesize triangle topology:
+        //   - cols*rows vertices
+        //   - triangles > 0 and more edges than a pure path (mesh, not line)
+        //   - one Fixed vertex per column root
+        static IEnumerator BoneClothMeshTopology(Check check)
+        {
+            const int cols = 4, rows = 5;
+            var rig = Build.BoneGrid(cols, rows, 0.1f, sd =>
+            {
+                sd.connectionMode = RenderSetupData.BoneConnectionMode.SequentialNonLoopMesh;
+                sd.gravity = 0f;
+            });
+            yield return Build.WaitForBuild(rig.cloth);
+
+            check.IsTrue("valid", rig.cloth.IsValid());
+
+            int verts = ClothState.ProxyVertexCount(rig.cloth);
+            int edges = ClothState.ProxyEdgeCount(rig.cloth);
+            int tris = ClothState.ProxyTriangleCount(rig.cloth);
+            check.Approx("verts==cols*rows", verts, cols * rows, 0);
+            check.Greater("has_triangles", tris, 0);
+            check.Greater("mesh_has_more_edges_than_path", edges, verts - 1);
+
+            int fixedCount = 0;
+            for (int i = 0; i < verts; i++)
+                if (ClothState.ProxyAttribute(rig.cloth, i).IsFixed()) fixedCount++;
+            check.Approx("one_fixed_per_column", fixedCount, cols, 0);
+
+            check.Metric("verts", verts);
+            check.Metric("edges", edges);
+            check.Metric("tris", tris);
+            check.Metric("fixed", fixedCount);
 
             rig.Dispose();
         }
