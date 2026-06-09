@@ -12,6 +12,24 @@ namespace MagicaCloth2.Tests
             list.Add(new TestEntry("bonesim.rest_stability", RestStability));
             list.Add(new TestEntry("bonesim.gravity_settle", GravitySettle));
             list.Add(new TestEntry("bonesim.damping_ordinal", DampingOrdinal));
+            list.Add(new TestEntry("bonesim.stiffness_ordinal", StiffnessOrdinal));
+        }
+
+        // Settle a horizontal chain at a given angle-restoration stiffness; report settled centroid height
+        // (a robust "sag" measure: stiffer chains resist gravity and keep their centroid higher).
+        static IEnumerator MeasureSag(float stiffness, float[] outCentroidY)
+        {
+            var rig = Build.BoneChain(12, new float3(1, 0, 0), 0.1f, sd =>
+            {
+                sd.gravity = 5f;
+                sd.damping.SetValue(0.1f);
+                sd.angleRestorationConstraint.useAngleRestoration = true;
+                sd.angleRestorationConstraint.stiffness.SetValue(stiffness);
+            });
+            yield return Build.WaitForBuild(rig.cloth);
+            yield return Build.Step(400);
+            outCentroidY[0] = ClothState.Centroid(ClothState.Positions(rig.cloth)).y;
+            rig.Dispose();
         }
 
         // Build a horizontal chain with a given damping and measure how many frames it takes to settle.
@@ -131,6 +149,22 @@ namespace MagicaCloth2.Tests
 
             check.Metric("framesLowDamping", low[0]);
             check.Metric("framesHighDamping", high[0]);
+        }
+
+        // 2.4 Ordinal: a stiffer chain (higher angle-restoration stiffness) sags less under gravity —
+        // its settled centroid sits higher than a floppy chain's. Tolerance-free ordering.
+        static IEnumerator StiffnessOrdinal(Check check)
+        {
+            var floppy = new float[1];
+            var stiff = new float[1];
+            yield return MeasureSag(0.0f, floppy);
+            yield return MeasureSag(1.0f, stiff);
+
+            check.Less("floppy_sags_below_root", floppy[0], 0f);
+            check.Greater("stiffer_sags_less", stiff[0], floppy[0]);
+
+            check.Metric("centroidY_floppy", floppy[0]);
+            check.Metric("centroidY_stiff", stiff[0]);
         }
     }
 }
