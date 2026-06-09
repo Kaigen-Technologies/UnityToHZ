@@ -39,6 +39,27 @@ namespace MagicaCloth2.Tests
             return TryParticleRange(cloth, out _, out int count) ? count : 0;
         }
 
+        /// <summary>Live world-space BASE (animated/rest) positions — the reference the motion constraint clamps to.</summary>
+        public static float3[] BasePositions(MagicaCloth cloth)
+        {
+            if (!TryParticleRange(cloth, out int start, out int count)) return new float3[0];
+            var arr = MagicaManager.Simulation.basePosArray.GetNativeArray();
+            var result = new float3[count];
+            for (int i = 0; i < count; i++) result[i] = arr[start + i];
+            return result;
+        }
+
+        /// <summary>Largest distance any particle has moved from its base pose.</summary>
+        public static float MaxDistanceFromBase(MagicaCloth cloth)
+        {
+            var cur = Positions(cloth);
+            var bas = BasePositions(cloth);
+            int n = math.min(cur.Length, bas.Length);
+            float max = 0f;
+            for (int i = 0; i < n; i++) max = math.max(max, math.distance(cur[i], bas[i]));
+            return max;
+        }
+
         /// <summary>Number of triangle-bending constraint pairs registered for this cloth (0 if none).</summary>
         public static int BendingPairCount(MagicaCloth cloth)
         {

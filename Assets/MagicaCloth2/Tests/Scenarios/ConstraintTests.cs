@@ -14,6 +14,23 @@ namespace MagicaCloth2.Tests
             list.Add(new TestEntry("constraint.angle_restoration", AngleRestoration));
             list.Add(new TestEntry("constraint.angle_limit", AngleLimit));
             list.Add(new TestEntry("constraint.triangle_bending", TriangleBending));
+            list.Add(new TestEntry("constraint.motion_max_distance", MotionMaxDistance));
+        }
+
+        static IEnumerator MeasureMaxDistFromBase(bool useMaxDistance, float maxDistance, float[] outMaxDist)
+        {
+            var rig = Build.BoneChain(12, new float3(1, 0, 0), 0.1f, sd =>
+            {
+                sd.gravity = 10f;
+                sd.damping.SetValue(0.1f);
+                sd.angleRestorationConstraint.useAngleRestoration = false;
+                sd.motionConstraint.useMaxDistance = useMaxDistance;
+                if (useMaxDistance) sd.motionConstraint.maxDistance.SetValue(maxDistance);
+            });
+            yield return Build.WaitForBuild(rig.cloth);
+            yield return Build.Step(400);
+            outMaxDist[0] = ClothState.MaxDistanceFromBase(rig.cloth);
+            rig.Dispose();
         }
 
 
@@ -219,6 +236,24 @@ namespace MagicaCloth2.Tests
             check.Metric("meshTriangles", meshTris);
             check.Metric("meshBendingPairs", meshPairs);
             check.Metric("lineBendingPairs", linePairs);
+        }
+
+        // 4.6 The motion MaxDistance constraint hard-caps how far any particle may move from its base
+        // (animated) pose: with it ON no particle exceeds maxDistance; with it OFF the chain falls far.
+        static IEnumerator MotionMaxDistance(Check check)
+        {
+            const float maxDistance = 0.05f;
+            var on = new float[1];
+            var off = new float[1];
+            yield return MeasureMaxDistFromBase(true, maxDistance, on);
+            yield return MeasureMaxDistFromBase(false, maxDistance, off);
+
+            check.AtMost("on_caps_displacement", on[0], maxDistance, 0.01f); // within cap (+ small solver slack)
+            check.Greater("off_moves_far", off[0], 0.3f);                    // unconstrained chain falls far
+
+            check.Metric("maxDistFromBase_on", on[0]);
+            check.Metric("maxDistFromBase_off", off[0]);
+            check.Metric("maxDistanceLimit", maxDistance);
         }
     }
 }
