@@ -10,6 +10,7 @@ namespace MagicaCloth2.Tests
         public static void Register(List<TestEntry> list)
         {
             list.Add(new TestEntry("bonesim.rest_stability", RestStability));
+            list.Add(new TestEntry("bonesim.gravity_settle", GravitySettle));
         }
 
         // 2.1 A chain already hanging straight down under aligned gravity is at equilibrium: after a
@@ -45,6 +46,56 @@ namespace MagicaCloth2.Tests
             check.Metric("drift", drift);
             check.Metric("drift_over_spacing", drift / spc);
             check.Metric("maxRadius", maxR);
+            check.Metric("L", L);
+
+            rig.Dispose();
+        }
+
+        // 2.2 A horizontal chain pinned at the root falls under gravity and settles hanging:
+        //   - it ends below the root (tip well under, centroid below)
+        //   - motion decays (late per-step activity << early): energy dissipates, no perpetual motion
+        //   - no NaN
+        static IEnumerator GravitySettle(Check check)
+        {
+            const int n = 12;
+            const float spacing = 0.1f;
+            var rig = Build.BoneChain(n, new float3(1, 0, 0), spacing, sd =>
+            {
+                sd.gravity = 5f; // down; chain starts horizontal (+X) so it must swing down
+                sd.damping.SetValue(0.05f);
+            });
+            yield return Build.WaitForBuild(rig.cloth);
+            check.IsTrue("valid", rig.cloth.IsValid());
+
+            float L = ClothState.CharacteristicLength(rig.cloth);
+            float3 root = ClothState.Positions(rig.cloth)[0];
+
+            // early activity (chain is actively falling)
+            var e0 = ClothState.Positions(rig.cloth);
+            yield return Build.Step(10);
+            float earlyActivity = ClothState.MaxDisplacement(e0, ClothState.Positions(rig.cloth));
+
+            // settle
+            yield return Build.Step(400);
+
+            // late activity (should be ~still)
+            var l0 = ClothState.Positions(rig.cloth);
+            yield return Build.Step(10);
+            var lEnd = ClothState.Positions(rig.cloth);
+            float lateActivity = ClothState.MaxDisplacement(l0, lEnd);
+
+            float3 tip = lEnd[lEnd.Length - 1];
+            float3 centroid = ClothState.Centroid(lEnd);
+
+            check.NoNaN("no_nan", lEnd);
+            check.Less("tip_below_root", tip.y, root.y - 0.5f * L);   // hangs well below the pin
+            check.Less("centroid_below_root", centroid.y, root.y);
+            check.Less("motion_decays", lateActivity, 0.05f * earlyActivity);
+
+            check.Metric("earlyActivity", earlyActivity);
+            check.Metric("lateActivity", lateActivity);
+            check.Metric("tipY", tip.y);
+            check.Metric("rootY", root.y);
             check.Metric("L", L);
 
             rig.Dispose();
