@@ -15,6 +15,12 @@ namespace MagicaCloth2.Tests
             list.Add(new TestEntry("constraint.angle_limit", AngleLimit));
             list.Add(new TestEntry("constraint.triangle_bending", TriangleBending));
             list.Add(new TestEntry("constraint.motion_max_distance", MotionMaxDistance));
+            list.Add(new TestEntry("constraint.bonespring", BoneSpring));
+            // NOTE: Motion Backstop is intentionally not tested in isolation here. It requires a configured
+            // normal-alignment direction (a body center, e.g. hair-on-head) to define which way the backstop
+            // sphere sits; with synthetic flat/chain rigs the normals are degenerate and the backstop is inert
+            // (verified: even a 0.5m backstop radius produced no shape change). The sibling clamp mechanism is
+            // covered by constraint.motion_max_distance. Revisit with a realistic skinned-hair rig if needed.
         }
 
         static IEnumerator MeasureMaxDistFromBase(bool useMaxDistance, float maxDistance, float[] outMaxDist)
@@ -254,6 +260,56 @@ namespace MagicaCloth2.Tests
             check.Metric("maxDistFromBase_on", on[0]);
             check.Metric("maxDistFromBase_off", off[0]);
             check.Metric("maxDistanceLimit", maxDistance);
+        }
+
+        // 4.8 BoneSpring: gravity is forced to 0 (a pinned spring bone doesn't fall), and the spring
+        // constraint bounds how far a bone may wobble from its base pose to limitDistance.
+        static IEnumerator BoneSpring(Check check)
+        {
+            const float limitDistance = 0.06f;
+
+            // (a) no force: despite gravity=10, BoneSpring forces gravity to 0 -> bones stay at base.
+            var atRest = Build.BoneChain(8, new float3(0, -1, 0), 0.1f, sd =>
+            {
+                sd.clothType = ClothProcess.ClothType.BoneSpring;
+                sd.gravity = 10f; // should be ignored by BoneSpring
+                sd.springConstraint.useSpring = true;
+                sd.springConstraint.limitDistance = limitDistance;
+                sd.springConstraint.springPower = 0.05f;
+                sd.damping.SetValue(0.05f);
+            });
+            yield return Build.WaitForBuild(atRest.cloth);
+            yield return Build.Step(200);
+            float restMove = ClothState.MaxDistanceFromBase(atRest.cloth);
+            atRest.Dispose();
+
+            // (b) strong impulse: the spring caps wobble to limitDistance.
+            var kicked = Build.BoneChain(8, new float3(0, -1, 0), 0.1f, sd =>
+            {
+                sd.clothType = ClothProcess.ClothType.BoneSpring;
+                sd.gravity = 0f;
+                sd.springConstraint.useSpring = true;
+                sd.springConstraint.limitDistance = limitDistance;
+                sd.springConstraint.springPower = 0.05f;
+                sd.damping.SetValue(0.02f);
+            });
+            yield return Build.WaitForBuild(kicked.cloth);
+            kicked.cloth.AddForce(new UnityEngine.Vector3(1, 0, 0), 25f, ClothForceMode.VelocityChange);
+            float peak = 0f;
+            for (int i = 0; i < 120; i++)
+            {
+                yield return null;
+                peak = math.max(peak, ClothState.MaxDistanceFromBase(kicked.cloth));
+            }
+            kicked.Dispose();
+
+            check.Less("gravity_forced_zero", restMove, 0.01f);          // no fall under BoneSpring
+            check.AtMost("spring_caps_wobble", peak, limitDistance, 0.02f); // wobble bounded by limitDistance
+            check.Greater("spring_actually_wobbles", peak, 0.005f);       // the impulse did move it
+
+            check.Metric("restMove", restMove);
+            check.Metric("peakWobble", peak);
+            check.Metric("limitDistance", limitDistance);
         }
     }
 }

@@ -133,7 +133,7 @@ namespace MagicaCloth2.Tests
         /// </summary>
         public static Rig MeshGrid(int nx, int ny, float spacing, float fixedTopV = 0.9f,
             bool disableReduction = true, bool planeXZ = false, float fixedBottomV = -1f,
-            Action<ClothSerializeData> configure = null, bool autoBuild = true)
+            bool flipWinding = false, Action<ClothSerializeData> configure = null, bool autoBuild = true)
         {
             var rig = new Rig();
             rig.meshVertexCount = nx * ny;
@@ -161,8 +161,16 @@ namespace MagicaCloth2.Tests
                 for (int i = 0; i < nx - 1; i++)
                 {
                     int a = j * nx + i, b = a + 1, c = a + nx, d = c + 1;
-                    tris.Add(a); tris.Add(c); tris.Add(b);
-                    tris.Add(b); tris.Add(c); tris.Add(d);
+                    if (flipWinding)
+                    {
+                        tris.Add(a); tris.Add(b); tris.Add(c);
+                        tris.Add(b); tris.Add(d); tris.Add(c);
+                    }
+                    else
+                    {
+                        tris.Add(a); tris.Add(c); tris.Add(b);
+                        tris.Add(b); tris.Add(c); tris.Add(d);
+                    }
                 }
             mesh.vertices = verts;
             mesh.uv = uvs;
