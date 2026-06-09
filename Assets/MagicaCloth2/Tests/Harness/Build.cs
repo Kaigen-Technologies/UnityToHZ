@@ -227,5 +227,24 @@ namespace MagicaCloth2.Tests
             for (int i = 0; i < frames; i++)
                 yield return null;
         }
+
+        /// <summary>
+        /// Steps until per-5-frame particle motion drops below <paramref name="threshold"/> (settled) or
+        /// <paramref name="maxFrames"/> is reached; writes the frame count to <paramref name="outFrames"/>[0].
+        /// </summary>
+        public static IEnumerator StepUntilSettled(MagicaCloth cloth, float threshold, int maxFrames, int[] outFrames)
+        {
+            int frames = 0;
+            var prev = ClothState.Positions(cloth);
+            while (frames < maxFrames)
+            {
+                yield return Step(5);
+                frames += 5;
+                var cur = ClothState.Positions(cloth);
+                if (ClothState.MaxDisplacement(prev, cur) < threshold) break;
+                prev = cur;
+            }
+            outFrames[0] = frames;
+        }
     }
 }

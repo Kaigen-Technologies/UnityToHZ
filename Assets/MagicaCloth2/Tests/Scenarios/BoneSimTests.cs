@@ -11,6 +11,20 @@ namespace MagicaCloth2.Tests
         {
             list.Add(new TestEntry("bonesim.rest_stability", RestStability));
             list.Add(new TestEntry("bonesim.gravity_settle", GravitySettle));
+            list.Add(new TestEntry("bonesim.damping_ordinal", DampingOrdinal));
+        }
+
+        // Build a horizontal chain with a given damping and measure how many frames it takes to settle.
+        static IEnumerator MeasureSettleFrames(float damping, float threshold, int[] outFrames)
+        {
+            var rig = Build.BoneChain(12, new float3(1, 0, 0), 0.1f, sd =>
+            {
+                sd.gravity = 5f;
+                sd.damping.SetValue(damping);
+            });
+            yield return Build.WaitForBuild(rig.cloth);
+            yield return Build.StepUntilSettled(rig.cloth, threshold, 800, outFrames);
+            rig.Dispose();
         }
 
         // 2.1 A chain already hanging straight down under aligned gravity is at equilibrium: after a
@@ -99,6 +113,24 @@ namespace MagicaCloth2.Tests
             check.Metric("L", L);
 
             rig.Dispose();
+        }
+
+        // 2.3 Ordinal: a more heavily damped chain settles in fewer (or equal) frames than a lightly
+        // damped one. Tolerance-free ordering — catches sign/scale errors in the damping term.
+        static IEnumerator DampingOrdinal(Check check)
+        {
+            const float threshold = 0.0003f;
+            var low = new int[1];
+            var high = new int[1];
+            yield return MeasureSettleFrames(0.02f, threshold, low);
+            yield return MeasureSettleFrames(0.4f, threshold, high);
+
+            check.Greater("low_settles_at_all", low[0], 0);
+            check.AtMost("higher_damping_settles_faster", high[0], low[0]);
+            check.Less("high_strictly_faster", high[0], low[0]);
+
+            check.Metric("framesLowDamping", low[0]);
+            check.Metric("framesHighDamping", high[0]);
         }
     }
 }
