@@ -12,6 +12,45 @@ namespace MagicaCloth2.Tests
         {
             list.Add(new TestEntry("collision.sphere_no_penetration", SphereNoPenetration));
             list.Add(new TestEntry("collision.capsule_no_penetration", CapsuleNoPenetration));
+            list.Add(new TestEntry("collision.plane_keeps_above", PlaneKeepsAbove));
+        }
+
+        // 5.3 A MagicaPlaneCollider (faces +Y) stops a falling chain at the plane: no particle goes
+        // below the plane height (minus particle radius). With collision off the chain falls through.
+        static IEnumerator PlaneKeepsAbove(Check check)
+        {
+            const float planeY = -0.8f;
+            const float particleRadius = 0.02f;
+            var extra = new List<GameObject>();
+            var planeGo = new GameObject("PlaneCollider");
+            planeGo.transform.position = new Vector3(0, planeY, 0);
+            extra.Add(planeGo);
+            var plane = planeGo.AddComponent<MagicaPlaneCollider>();
+
+            var rig = Build.BoneChain(12, new float3(0, -1, 0), 0.1f, sd =>
+            {
+                sd.gravity = 6f;
+                sd.damping.SetValue(0.1f);
+                sd.radius.SetValue(particleRadius);
+                sd.colliderCollisionConstraint.mode = ColliderCollisionConstraint.Mode.Point;
+                sd.colliderCollisionConstraint.colliderList.Add(plane);
+            });
+            yield return Build.WaitForBuild(rig.cloth);
+            check.IsTrue("valid", rig.cloth.IsValid());
+            yield return Build.Step(400);
+
+            var p = ClothState.Positions(rig.cloth);
+            float minY = float.MaxValue;
+            for (int i = 0; i < p.Length; i++) minY = math.min(minY, p[i].y);
+
+            check.NoNaN("no_nan", p);
+            check.AtLeast("stays_above_plane", minY, planeY - particleRadius, 0.05f * particleRadius);
+
+            check.Metric("minY", minY);
+            check.Metric("planeY", planeY);
+
+            rig.Dispose();
+            foreach (var go in extra) if (go != null) Object.Destroy(go);
         }
 
         static float DistToSegment(float3 p, float3 a, float3 b)
