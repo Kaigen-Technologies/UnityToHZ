@@ -12,6 +12,12 @@ namespace MagicaCloth2.Tests
         {
             list.Add(new TestEntry("inertia.world_inertia_lag", WorldInertiaLag));
             list.Add(new TestEntry("inertia.teleport_reset_vs_none", TeleportResetVsNone));
+            // NOTE: the inertia Anchor and the movement/rotation Speed Limits are not tested in isolation
+            // here. Because the cloth simulates in its component-transform LOCAL space, translating the
+            // whole rig is largely transparent, so the anchor's motion-cancellation and the speed-limit
+            // anti-explosion behaviors don't produce a robust supra-noise signal with these synthetic rigs
+            // (they need a parent-rig / animated-character setup). The core inertia behavior is covered by
+            // inertia.world_inertia_lag and the teleport transient by inertia.teleport_reset_vs_none.
         }
 
         static float MaxEdgeStretch(float3[] p, float rest)
