@@ -13,6 +13,47 @@ namespace MagicaCloth2.Tests
             list.Add(new TestEntry("api.add_force", AddForce));
             list.Add(new TestEntry("api.reset_cloth", ResetCloth));
             list.Add(new TestEntry("api.set_time_scale", SetTimeScale));
+            list.Add(new TestEntry("api.skip_writing", SkipWriting));
+        }
+
+        // 8.4 SetSkipWriting(true) freezes Transform/mesh writeback while the simulation keeps running:
+        // the particle sim still moves, but the bone Transform stays at its authored pose. Without it the
+        // bone follows the sim.
+        static IEnumerator MeasureSkipWriting(bool skip, float[] outParticleMove, float[] outBoneMove)
+        {
+            var rig = Build.BoneChain(12, new float3(1, 0, 0), 0.1f, sd =>
+            {
+                sd.gravity = 5f;
+                sd.damping.SetValue(0.1f);
+            });
+            yield return Build.WaitForBuild(rig.cloth);
+            if (skip) rig.cloth.SetSkipWriting(true);
+
+            var restParticles = ClothState.Positions(rig.cloth);
+            float3 tipBone0 = rig.bones[11].position;
+
+            yield return Build.Step(200);
+
+            outParticleMove[0] = ClothState.MaxDisplacement(restParticles, ClothState.Positions(rig.cloth));
+            yield return new UnityEngine.WaitForEndOfFrame();
+            outBoneMove[0] = math.distance((float3)rig.bones[11].position, tipBone0);
+            rig.Dispose();
+        }
+
+        static IEnumerator SkipWriting(Check check)
+        {
+            var pmSkip = new float[1]; var bmSkip = new float[1];
+            var pmNo = new float[1]; var bmNo = new float[1];
+            yield return MeasureSkipWriting(true, pmSkip, bmSkip);
+            yield return MeasureSkipWriting(false, pmNo, bmNo);
+
+            check.Greater("sim_runs_while_skipping", pmSkip[0], 0.3f);  // particles still move
+            check.Less("writeback_frozen", bmSkip[0], 0.02f);          // bone Transform does not
+            check.Greater("writeback_active_without_skip", bmNo[0], 0.3f);
+
+            check.Metric("particleMove_skip", pmSkip[0]);
+            check.Metric("boneMove_skip", bmSkip[0]);
+            check.Metric("boneMove_noSkip", bmNo[0]);
         }
 
         // 8.2 ResetCloth(false) snaps the simulation back to its initial (rest) pose: a chain that has
