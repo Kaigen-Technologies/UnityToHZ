@@ -13,7 +13,9 @@ namespace MagicaCloth2.Tests
             list.Add(new TestEntry("constraint.tether_compression_limit", TetherCompressionLimit));
             list.Add(new TestEntry("constraint.angle_restoration", AngleRestoration));
             list.Add(new TestEntry("constraint.angle_limit", AngleLimit));
+            list.Add(new TestEntry("constraint.triangle_bending", TriangleBending));
         }
+
 
         // Max inter-segment bend angle (degrees) along the chain.
         static float MaxBendDeg(float3[] p)
@@ -186,6 +188,37 @@ namespace MagicaCloth2.Tests
             check.Metric("maxBend_loose", looseBend[0]);
             check.Metric("tipX_tight", tightTipX[0]);
             check.Metric("tipX_loose", looseTipX[0]);
+        }
+
+        // 4.5 Triangle-bending constraint construction: a triangulated MeshCloth registers bending pairs
+        // (interior edges shared by two triangles), while a pure line-topology BoneCloth registers none.
+        // This deterministic data-construction property is what the engine port must replicate. (The
+        // constraint's isolated quasi-static *shape* effect is below the simulation's cross-build noise
+        // floor in simple settles, so it is characterized here at the data level rather than by droop.)
+        static IEnumerator TriangleBending(Check check)
+        {
+            var mesh = Build.MeshGrid(6, 6, 0.1f, fixedTopV: 0.9f, disableReduction: true, configure: sd => sd.gravity = 0f);
+            yield return Build.WaitForBuild(mesh.cloth);
+            int meshTris = ClothState.ProxyTriangleCount(mesh.cloth);
+            int meshPairs = ClothState.BendingPairCount(mesh.cloth);
+            mesh.Dispose();
+
+            var line = Build.BoneChain(10, new float3(0, -1, 0), 0.1f, sd =>
+            {
+                sd.connectionMode = RenderSetupData.BoneConnectionMode.Line;
+                sd.gravity = 0f;
+            });
+            yield return Build.WaitForBuild(line.cloth);
+            int linePairs = ClothState.BendingPairCount(line.cloth);
+            line.Dispose();
+
+            check.Greater("mesh_has_triangles", meshTris, 0);
+            check.Greater("mesh_creates_bending_pairs", meshPairs, 0);
+            check.Approx("line_creates_no_bending_pairs", linePairs, 0, 0);
+
+            check.Metric("meshTriangles", meshTris);
+            check.Metric("meshBendingPairs", meshPairs);
+            check.Metric("lineBendingPairs", linePairs);
         }
     }
 }

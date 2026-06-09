@@ -39,6 +39,14 @@ namespace MagicaCloth2.Tests
             return TryParticleRange(cloth, out _, out int count) ? count : 0;
         }
 
+        /// <summary>Number of triangle-bending constraint pairs registered for this cloth (0 if none).</summary>
+        public static int BendingPairCount(MagicaCloth cloth)
+        {
+            if (cloth == null || !cloth.IsValid()) return 0;
+            ref var tdata = ref MagicaManager.Team.GetTeamDataRef(cloth.Process.TeamId);
+            return tdata.bendingPairChunk.dataLength;
+        }
+
         /// <summary>
         /// Live world-space DISPLAY positions (dispPosArray) — the future-predicted, blendWeight-blended
         /// pose actually used for render/transform writeback. Differs from raw sim Positions() when

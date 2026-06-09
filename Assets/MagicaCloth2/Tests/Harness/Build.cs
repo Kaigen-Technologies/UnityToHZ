@@ -132,7 +132,8 @@ namespace MagicaCloth2.Tests
         /// RuntimeBuildDemo uses. Reduction is disabled by default so proxy verts == grid verts.
         /// </summary>
         public static Rig MeshGrid(int nx, int ny, float spacing, float fixedTopV = 0.9f,
-            bool disableReduction = true, bool planeXZ = false, Action<ClothSerializeData> configure = null, bool autoBuild = true)
+            bool disableReduction = true, bool planeXZ = false, float fixedBottomV = -1f,
+            Action<ClothSerializeData> configure = null, bool autoBuild = true)
         {
             var rig = new Rig();
             rig.meshVertexCount = nx * ny;
@@ -184,7 +185,7 @@ namespace MagicaCloth2.Tests
             for (int py = 0; py < ts; py++)
             {
                 float v = py / (float)(ts - 1);
-                var col = v > fixedTopV ? red : green;
+                var col = (v > fixedTopV || v < fixedBottomV) ? red : green; // pin top and (optionally) bottom strip
                 for (int pxi = 0; pxi < ts; pxi++) px[py * ts + pxi] = col;
             }
             tex.SetPixels32(px);
