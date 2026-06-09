@@ -12,6 +12,41 @@ namespace MagicaCloth2.Tests
             list.Add(new TestEntry("constraint.distance_length_preservation", DistanceLengthPreservation));
             list.Add(new TestEntry("constraint.tether_compression_limit", TetherCompressionLimit));
             list.Add(new TestEntry("constraint.angle_restoration", AngleRestoration));
+            list.Add(new TestEntry("constraint.angle_limit", AngleLimit));
+        }
+
+        // Max inter-segment bend angle (degrees) along the chain.
+        static float MaxBendDeg(float3[] p)
+        {
+            float max = 0f;
+            for (int i = 1; i + 1 < p.Length; i++)
+            {
+                float3 v1 = math.normalizesafe(p[i] - p[i - 1]);
+                float3 v2 = math.normalizesafe(p[i + 1] - p[i]);
+                max = math.max(max, math.degrees(math.acos(math.clamp(math.dot(v1, v2), -1f, 1f))));
+            }
+            return max;
+        }
+
+        // Hang a chain (rest = straight down -Y), push it sideways with +X gravity, restoration OFF so the
+        // angle-limit constraint is isolated; report the max per-joint bend and the tip's sideways swing.
+        static IEnumerator MeasureAngleLimit(float limitAngle, float[] outMaxBend, float[] outTipX)
+        {
+            var rig = Build.BoneChain(12, new float3(0, -1, 0), 0.1f, sd =>
+            {
+                sd.gravity = 10f;
+                sd.gravityDirection = new float3(1, 0, 0); // sideways -> tries to fold the hanging chain
+                sd.damping.SetValue(0.15f);
+                sd.angleRestorationConstraint.useAngleRestoration = false;
+                sd.angleLimitConstraint.useAngleLimit = true;
+                sd.angleLimitConstraint.limitAngle.SetValue(limitAngle);
+            });
+            yield return Build.WaitForBuild(rig.cloth);
+            yield return Build.Step(400);
+            var p = ClothState.Positions(rig.cloth);
+            outMaxBend[0] = MaxBendDeg(p);
+            outTipX[0] = p[p.Length - 1].x - p[0].x; // tip horizontal offset from root
+            rig.Dispose();
         }
 
         static float MinY(float3[] p)
@@ -132,6 +167,25 @@ namespace MagicaCloth2.Tests
 
             check.Metric("minY_off", off[0]);
             check.Metric("minY_on", on[0]);
+        }
+
+        // 4.4 The angle-limit constraint caps how far the chain can fold. A tighter limit keeps the chain
+        // closer to its rest (less sideways swing) than a loose one. (Observe-then-assert ordinal.)
+        static IEnumerator AngleLimit(Check check)
+        {
+            var tightBend = new float[1]; var tightTipX = new float[1];
+            var looseBend = new float[1]; var looseTipX = new float[1];
+            yield return MeasureAngleLimit(10f, tightBend, tightTipX);
+            yield return MeasureAngleLimit(80f, looseBend, looseTipX);
+
+            check.AtMost("tight_caps_joint_bend", tightBend[0], 10f, 3f); // bend held near the 10deg limit
+            check.Less("tighter_limit_less_swing", tightTipX[0], looseTipX[0]);
+            check.Greater("loose_limit_swings", looseTipX[0], 0.1f);
+
+            check.Metric("maxBend_tight", tightBend[0]);
+            check.Metric("maxBend_loose", looseBend[0]);
+            check.Metric("tipX_tight", tightTipX[0]);
+            check.Metric("tipX_loose", looseTipX[0]);
         }
     }
 }
