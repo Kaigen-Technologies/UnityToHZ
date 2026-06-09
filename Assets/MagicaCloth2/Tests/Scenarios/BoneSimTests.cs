@@ -13,6 +13,7 @@ namespace MagicaCloth2.Tests
             list.Add(new TestEntry("bonesim.gravity_settle", GravitySettle));
             list.Add(new TestEntry("bonesim.damping_ordinal", DampingOrdinal));
             list.Add(new TestEntry("bonesim.stiffness_ordinal", StiffnessOrdinal));
+            list.Add(new TestEntry("bonesim.fixed_root_and_writeback", FixedRootAndWriteback));
         }
 
         // Settle a horizontal chain at a given angle-restoration stiffness; report settled centroid height
@@ -165,6 +166,56 @@ namespace MagicaCloth2.Tests
 
             check.Metric("centroidY_floppy", floppy[0]);
             check.Metric("centroidY_stiff", stiff[0]);
+        }
+
+        // 2.5 Two invariants: the fixed root particle never moves, and the simulated result is written
+        // back to the bone Transforms (the moving tip bone's Transform must actually relocate).
+        //
+        // NOTE (characterization the engine must replicate): BoneCloth restores bones to their authored
+        // pose in EarlyUpdate and writes the simulated pose only after LateUpdate. So bone Transforms must
+        // be sampled at END OF FRAME to observe the written-back pose; mid-frame they read the authored pose.
+        // Particle positions (nextPosArray) always hold the true sim state regardless of timing.
+        static IEnumerator FixedRootAndWriteback(Check check)
+        {
+            const int n = 12;
+            const float spacing = 0.1f;
+            var rig = Build.BoneChain(n, new float3(1, 0, 0), spacing, sd =>
+            {
+                sd.gravity = 5f;
+                sd.damping.SetValue(0.1f);
+            });
+            yield return Build.WaitForBuild(rig.cloth);
+            check.IsTrue("valid", rig.cloth.IsValid());
+
+            float spc = ClothState.Spacing(rig.cloth);
+            float L = ClothState.CharacteristicLength(rig.cloth);
+            float3 rootParticle0 = ClothState.Positions(rig.cloth)[0];
+            float3 rootBone0 = rig.bones[0].position;
+            float3 tipBone0 = rig.bones[n - 1].position; // authored rest pose
+
+            yield return Build.Step(400);
+
+            float3 rootParticleEnd = ClothState.Positions(rig.cloth)[0];
+
+            // read bone Transforms at end of frame, after the write-back pass
+            yield return new UnityEngine.WaitForEndOfFrame();
+            float3 rootBoneEnd = rig.bones[0].position;
+            float3 tipBoneEnd = rig.bones[n - 1].position;
+
+            float rootParticleMove = math.distance(rootParticle0, rootParticleEnd);
+            float rootBoneMove = math.distance(rootBone0, rootBoneEnd);
+            float tipBoneMove = math.distance(tipBone0, tipBoneEnd);
+
+            check.Less("fixed_root_particle_immovable", rootParticleMove, 0.01f * spc);
+            check.Less("fixed_root_bone_immovable", rootBoneMove, 0.01f * spc);
+            check.Greater("tip_bone_written_back", tipBoneMove, 0.5f * L); // writeback relocated the tip bone
+
+            check.Metric("rootParticleMove", rootParticleMove);
+            check.Metric("rootBoneMove", rootBoneMove);
+            check.Metric("tipBoneMove", tipBoneMove);
+            check.Metric("L", L);
+
+            rig.Dispose();
         }
     }
 }
