@@ -13,6 +13,65 @@ namespace MagicaCloth2.Tests
             list.Add(new TestEntry("collision.sphere_no_penetration", SphereNoPenetration));
             list.Add(new TestEntry("collision.capsule_no_penetration", CapsuleNoPenetration));
             list.Add(new TestEntry("collision.plane_keeps_above", PlaneKeepsAbove));
+            list.Add(new TestEntry("collision.self_collision", SelfCollision));
+            // NOTE: Collider friction and the Point-vs-Edge collision mode are not tested in isolation here.
+            // With synthetic chain/sheet rigs a chain slides off a sphere regardless of friction, so the
+            // friction ordinal lands below the cross-build noise floor (~0.004). Robustly demonstrating
+            // either needs a clinging hair-on-curved-surface rig. Collider symmetry is likewise deferred
+            // (needs a humanoid Animator or explicit symmetry target). The core push-out invariants are
+            // covered by the sphere/capsule/plane tests above.
+        }
+
+        // Two parallel, unconnected bone chains (one cloth, Line connection so the columns don't link).
+        // Self-collision should push the columns apart to the surface thickness; without it they stay at
+        // their initial column spacing. Partition particles into the two columns by base-pose X.
+        static IEnumerator MeasureColumnGap(bool selfCollision, float thickness, float[] outMinGap)
+        {
+            var rig = Build.BoneGrid(2, 8, 0.03f, sd =>
+            {
+                sd.connectionMode = RenderSetupData.BoneConnectionMode.Line;
+                sd.gravity = 3f;
+                sd.damping.SetValue(0.1f);
+                sd.angleRestorationConstraint.useAngleRestoration = false;
+                sd.selfCollisionConstraint.selfMode = selfCollision
+                    ? SelfCollisionConstraint.SelfCollisionMode.FullMesh
+                    : SelfCollisionConstraint.SelfCollisionMode.None;
+                if (selfCollision) sd.selfCollisionConstraint.surfaceThickness.SetValue(thickness);
+            });
+            yield return Build.WaitForBuild(rig.cloth);
+
+            // partition by base X, then find each column's tip (lowest base Y, a free particle)
+            var baseP = ClothState.BasePositions(rig.cloth);
+            int tip0 = -1, tip1 = -1;
+            float y0 = float.MaxValue, y1 = float.MaxValue;
+            for (int i = 0; i < baseP.Length; i++)
+            {
+                if (baseP[i].x < 0.015f) { if (baseP[i].y < y0) { y0 = baseP[i].y; tip0 = i; } }
+                else { if (baseP[i].y < y1) { y1 = baseP[i].y; tip1 = i; } }
+            }
+
+            yield return Build.Step(400);
+            var p = ClothState.Positions(rig.cloth);
+            outMinGap[0] = math.distance(p[tip0], p[tip1]); // gap between the two free tips
+            rig.Dispose();
+        }
+
+        // 5.7 Self-collision keeps two close, unconnected cloth columns from interpenetrating: with it ON
+        // the minimum gap between the columns is held near the surface thickness; with it OFF they stay at
+        // (or collapse below) their initial 0.03 spacing.
+        static IEnumerator SelfCollision(Check check)
+        {
+            const float thickness = 0.05f;
+            var on = new float[1];
+            var off = new float[1];
+            yield return MeasureColumnGap(true, thickness, on);
+            yield return MeasureColumnGap(false, thickness, off);
+
+            check.Greater("self_collision_separates", on[0], off[0] + 0.01f);
+
+            check.Metric("minGap_selfCollisionOn", on[0]);
+            check.Metric("minGap_selfCollisionOff", off[0]);
+            check.Metric("thickness", thickness);
         }
 
         // 5.3 A MagicaPlaneCollider (faces +Y) stops a falling chain at the plane: no particle goes
