@@ -13,6 +13,7 @@ namespace MagicaCloth2.Tests
             list.Add(new TestEntry("build.bonecloth_line_topology", BoneClothLineTopology));
             list.Add(new TestEntry("build.bonecloth_mesh_topology", BoneClothMeshTopology));
             list.Add(new TestEntry("build.meshcloth_paintmap_attributes", MeshClothPaintMapAttributes));
+            list.Add(new TestEntry("build.reduction_monotonic", ReductionMonotonic));
         }
 
         // 1.1 A single-chain BoneCloth (Line connection) of N bones must yield a proxy with:
@@ -136,6 +137,53 @@ namespace MagicaCloth2.Tests
             check.Metric("move", moveCount);
 
             rig.Dispose();
+        }
+
+        // 1.4 Reduction decimates the proxy: a 10x10 grid built at increasing reduction strength must
+        // yield monotonically fewer proxy vertices, strictly fewer than the un-reduced baseline, while
+        // still building a valid cloth (particle count == reduced vertex count => mapping/joinIndices OK).
+        static IEnumerator ReductionMonotonic(Check check)
+        {
+            const int n = 10;
+
+            var baseRig = Build.MeshGrid(n, n, 0.05f, disableReduction: true, configure: sd => sd.gravity = 0f);
+            yield return Build.WaitForBuild(baseRig.cloth);
+            int vBase = ClothState.ProxyVertexCount(baseRig.cloth);
+            baseRig.Dispose();
+
+            var midRig = Build.MeshGrid(n, n, 0.05f, disableReduction: false, configure: sd =>
+            {
+                sd.reductionSetting.simpleDistance = 0.12f;
+                sd.reductionSetting.shapeDistance = 0f;
+                sd.gravity = 0f;
+            });
+            yield return Build.WaitForBuild(midRig.cloth);
+            int vMid = ClothState.ProxyVertexCount(midRig.cloth);
+            midRig.Dispose();
+
+            var strongRig = Build.MeshGrid(n, n, 0.05f, disableReduction: false, configure: sd =>
+            {
+                sd.reductionSetting.simpleDistance = 0.18f;
+                sd.reductionSetting.shapeDistance = 0.1f;
+                sd.gravity = 0f;
+            });
+            yield return Build.WaitForBuild(strongRig.cloth);
+            int vStrong = ClothState.ProxyVertexCount(strongRig.cloth);
+            int strongParticles = ClothState.ParticleCount(strongRig.cloth);
+
+            check.Approx("baseline==grid", vBase, n * n, 0);
+            check.Less("strong_reduces", vStrong, vBase);
+            check.AtMost("monotonic_mid", vMid, vBase);
+            check.AtMost("monotonic_strong", vStrong, vMid);
+            check.Greater("strong_nonempty", vStrong, 0);
+            check.IsTrue("strong_valid", strongRig.cloth.IsValid());
+            check.Approx("particles==reduced_verts", strongParticles, vStrong, 0);
+
+            check.Metric("vBase", vBase);
+            check.Metric("vMid", vMid);
+            check.Metric("vStrong", vStrong);
+
+            strongRig.Dispose();
         }
     }
 }
