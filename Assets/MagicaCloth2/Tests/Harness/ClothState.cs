@@ -39,6 +39,20 @@ namespace MagicaCloth2.Tests
             return TryParticleRange(cloth, out _, out int count) ? count : 0;
         }
 
+        /// <summary>
+        /// Live world-space DISPLAY positions (dispPosArray) — the future-predicted, blendWeight-blended
+        /// pose actually used for render/transform writeback. Differs from raw sim Positions() when
+        /// blendWeight &gt; 0 (blend toward the animated pose).
+        /// </summary>
+        public static float3[] DisplayPositions(MagicaCloth cloth)
+        {
+            if (!TryParticleRange(cloth, out int start, out int count)) return new float3[0];
+            var arr = MagicaManager.Simulation.dispPosArray.GetNativeArray();
+            var result = new float3[count];
+            for (int i = 0; i < count; i++) result[i] = arr[start + i];
+            return result;
+        }
+
         // --- proxy mesh geometry (for scale-relative tolerances) -----------------------------
 
         static VirtualMesh Proxy(MagicaCloth cloth) => cloth?.Process?.ProxyMeshContainer?.shareVirtualMesh;
@@ -55,6 +69,22 @@ namespace MagicaCloth2.Tests
         {
             var vm = Proxy(cloth);
             return (vm != null && vm.averageVertexDistance.IsCreated) ? vm.averageVertexDistance.Value : 1f;
+        }
+
+        /// <summary>
+        /// Centroid of the cloth's baked custom render mesh (in renderer-local space). This is the final
+        /// blended output (blendWeight applied), so it reflects blendWeight where the raw particle buffers
+        /// do not. Read at END OF FRAME (after the pre-render mesh write) to see the current pose.
+        /// </summary>
+        public static float3 RenderMeshCentroid(MagicaCloth cloth, UnityEngine.Renderer ren)
+        {
+            var mesh = cloth.GetCustomMesh(ren);
+            if (mesh == null) return float3.zero;
+            var vs = mesh.vertices;
+            if (vs.Length == 0) return float3.zero;
+            float3 sum = float3.zero;
+            for (int i = 0; i < vs.Length; i++) sum += (float3)vs[i];
+            return sum / vs.Length;
         }
 
         public static int ProxyVertexCount(MagicaCloth cloth) => Proxy(cloth)?.VertexCount ?? 0;

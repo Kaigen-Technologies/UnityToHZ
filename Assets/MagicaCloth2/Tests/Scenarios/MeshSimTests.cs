@@ -10,6 +10,25 @@ namespace MagicaCloth2.Tests
         public static void Register(List<TestEntry> list)
         {
             list.Add(new TestEntry("meshsim.pinned_sheet_droops", PinnedSheetDroops));
+            list.Add(new TestEntry("meshsim.blendweight_endpoints", BlendWeightEndpoints));
+        }
+
+        // Settle a drooping sheet at a given blendWeight; report the settled rendered-mesh centroid height.
+        // blendWeight is applied to the proxy OUTPUT (lerp(animationPose, sim, blendWeight)), so it shows up
+        // in the rendered mesh, not in the raw particle buffers. 0 = animated pose, 1 = full sim.
+        static IEnumerator MeasureRenderDroop(float blendWeight, float[] outCentroidY)
+        {
+            var rig = Build.MeshGrid(8, 8, 0.1f, fixedTopV: 0.9f, disableReduction: true, planeXZ: true, configure: sd =>
+            {
+                sd.gravity = 5f;
+                sd.damping.SetValue(0.05f);
+                sd.blendWeight = blendWeight;
+            });
+            yield return Build.WaitForBuild(rig.cloth);
+            yield return Build.Step(400);
+            yield return new UnityEngine.WaitForEndOfFrame(); // mesh write happens pre-render
+            outCentroidY[0] = ClothState.RenderMeshCentroid(rig.cloth, rig.renderer).y;
+            rig.Dispose();
         }
 
         // Collect the proxy indices flagged Fixed.
@@ -76,6 +95,25 @@ namespace MagicaCloth2.Tests
             check.Metric("L", L);
 
             rig.Dispose();
+        }
+
+        // 3.2 blendWeight blends the rendered output between the animated (flat) pose and the full sim:
+        //   - blend=0 keeps the sheet at its animated flat pose (centroid ~0)
+        //   - blend=1 shows the full simulation (drooped, centroid well below)
+        static IEnumerator BlendWeightEndpoints(Check check)
+        {
+            const float L = 0.7f;
+            var animated = new float[1];
+            var fullSim = new float[1];
+            yield return MeasureRenderDroop(0f, animated);
+            yield return MeasureRenderDroop(1f, fullSim);
+
+            check.Approx("blend0_matches_animated_flat", animated[0], 0f, 0.03f * L);
+            check.Less("blend1_full_sim_droops", fullSim[0], -0.1f * L);
+            check.Less("blend1_droops_more_than_blend0", fullSim[0], animated[0]);
+
+            check.Metric("centroidY_blend0", animated[0]);
+            check.Metric("centroidY_blend1", fullSim[0]);
         }
     }
 }
