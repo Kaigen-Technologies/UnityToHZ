@@ -11,6 +11,53 @@ namespace MagicaCloth2.Tests
         public static void Register(List<TestEntry> list)
         {
             list.Add(new TestEntry("inertia.world_inertia_lag", WorldInertiaLag));
+            list.Add(new TestEntry("inertia.teleport_reset_vs_none", TeleportResetVsNone));
+        }
+
+        static float MaxEdgeStretch(float3[] p, float rest)
+        {
+            float max = 0f;
+            for (int i = 0; i + 1 < p.Length; i++) max = math.max(max, math.distance(p[i], p[i + 1]) / rest);
+            return max;
+        }
+
+        // Settle a chain, jump its whole frame +2m in X, then take ONE step; report the worst edge stretch.
+        // TeleportMode.Reset re-bases the cloth so the world-movement transient produces no stretch; None
+        // lets the one-frame world-inertia transient stretch the edges.
+        static IEnumerator MeasureTeleportStretch(InertiaConstraint.TeleportMode mode, float[] outStretch)
+        {
+            var rig = Build.BoneChain(12, new float3(0, -1, 0), 0.1f, sd =>
+            {
+                sd.gravity = 2f;
+                sd.damping.SetValue(0.1f);
+                sd.inertiaConstraint.teleportMode = mode;
+                sd.inertiaConstraint.teleportDistance = 0.5f;
+            });
+            yield return Build.WaitForBuild(rig.cloth);
+            yield return Build.Step(60);
+
+            rig.objects[0].transform.position += new Vector3(2f, 0, 0);
+            rig.cloth.transform.position += new Vector3(2f, 0, 0);
+            yield return null; // single step right after the jump
+
+            outStretch[0] = MaxEdgeStretch(ClothState.Positions(rig.cloth), 0.1f);
+            rig.Dispose();
+        }
+
+        // 7.3 A large one-frame teleport (+2m): TeleportMode.Reset re-bases the cloth so no stretch
+        // transient appears; TeleportMode.None lets the world-inertia transient stretch the edges.
+        static IEnumerator TeleportResetVsNone(Check check)
+        {
+            var reset = new float[1];
+            var none = new float[1];
+            yield return MeasureTeleportStretch(InertiaConstraint.TeleportMode.Reset, reset);
+            yield return MeasureTeleportStretch(InertiaConstraint.TeleportMode.None, none);
+
+            check.Less("reset_no_transient", reset[0], 1.02f);          // re-based: edges stay at rest
+            check.Greater("none_has_transient", none[0], reset[0] + 0.02f); // not re-based: stretch spike
+
+            check.Metric("maxStretch_reset", reset[0]);
+            check.Metric("maxStretch_none", none[0]);
         }
 
         // Settle a hanging chain, then translate its holder sideways over several frames; report how far
