@@ -1,0 +1,21 @@
+{
+    "name": "MagicaClothV2.Tests",
+    "rootNamespace": "MagicaCloth2.Tests",
+    "references": [
+        "MagicaClothV2",
+        "Unity.Burst",
+        "Unity.Collections",
+        "Unity.Mathematics"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
