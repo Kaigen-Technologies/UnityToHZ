@@ -16,6 +16,7 @@ namespace MagicaCloth2.Tests
             list.Add(new TestEntry("constraint.triangle_bending", TriangleBending));
             list.Add(new TestEntry("constraint.motion_max_distance", MotionMaxDistance));
             list.Add(new TestEntry("constraint.bonespring", BoneSpring));
+            list.Add(new TestEntry("constraint.distance_isolate_shape", DistanceIsolateShape));
             // NOTE: Motion Backstop is intentionally not tested in isolation here. It requires a configured
             // normal-alignment direction (a body center, e.g. hair-on-head) to define which way the backstop
             // sphere sits; with synthetic flat/chain rigs the normals are degenerate and the backstop is inert
@@ -310,6 +311,34 @@ namespace MagicaCloth2.Tests
             check.Metric("restMove", restMove);
             check.Metric("peakWobble", peak);
             check.Metric("limitDistance", limitDistance);
+        }
+
+        // Oracle for the C distance mass-model convergence: an 8-bone chain with angle
+        // restoration/limit OFF (isolate distance + tether), settled under gravity. Logs every
+        // settled particle position so the C port can diff the full shape, not just the tip.
+        static IEnumerator DistanceIsolateShape(Check check)
+        {
+            const int n = 8;
+            const float spacing = 0.1f;
+            var rig = Build.BoneChain(n, new float3(1, 0, 0), spacing, sd =>
+            {
+                sd.gravity = 5f;
+                sd.damping.SetValue(0.05f);
+                sd.angleRestorationConstraint.useAngleRestoration = false;
+                sd.angleLimitConstraint.useAngleLimit = false;
+            });
+            yield return Build.WaitForBuild(rig.cloth);
+            check.IsTrue("valid", rig.cloth.IsValid());
+
+            yield return Build.Step(600);
+
+            var pos = ClothState.Positions(rig.cloth);
+            check.NoNaN("no_nan", pos);
+            check.Metric("count", pos.Length);
+            for (int i = 0; i < pos.Length; i++)
+                check.Metric($"p{i}", pos[i]);
+
+            rig.Dispose();
         }
     }
 }

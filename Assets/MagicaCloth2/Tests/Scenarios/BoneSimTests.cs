@@ -14,6 +14,49 @@ namespace MagicaCloth2.Tests
             list.Add(new TestEntry("bonesim.damping_ordinal", DampingOrdinal));
             list.Add(new TestEntry("bonesim.stiffness_ordinal", StiffnessOrdinal));
             list.Add(new TestEntry("bonesim.fixed_root_and_writeback", FixedRootAndWriteback));
+            list.Add(new TestEntry("bonesim.settle_steps", SettleSteps));
+        }
+
+        // Diagnostic golden: per-step positions of the gravity_settle rig, for cross-engine
+        // step-by-step bisection of solver divergence (which step does the C port first diverge at).
+        // Stabilization is disabled so velocityWeight=1 from the first substep; frames where the
+        // positions do not change ran zero substeps (TimeManager accumulator skip) and let the C
+        // side substep-align its trajectory.
+        static IEnumerator SettleSteps(Check check)
+        {
+            var rig = Build.BoneChain(12, new float3(1, 0, 0), 0.1f, sd =>
+            {
+                sd.gravity = 5f;
+                sd.damping.SetValue(0.05f);
+                sd.stablizationTimeAfterReset = 0f;
+            });
+            yield return Build.WaitForBuild(rig.cloth);
+            check.IsTrue("valid", rig.cloth.IsValid());
+
+            for (int f = 1; f <= 40; f++)
+            {
+                yield return Build.Step(1);
+                var p = ClothState.Positions(rig.cloth);
+                check.Metric($"f{f}_p1x", p[1].x);
+                check.Metric($"f{f}_p1y", p[1].y);
+                check.Metric($"f{f}_tipx", p[11].x);
+                check.Metric($"f{f}_tipy", p[11].y);
+            }
+
+            int[] sampleSteps = { 50, 100, 200, 400 };
+            int done = 40;
+            foreach (int target in sampleSteps)
+            {
+                yield return Build.Step(target - done);
+                done = target;
+                var p = ClothState.Positions(rig.cloth);
+                check.Metric($"s{target}_p1x", p[1].x);
+                check.Metric($"s{target}_p1y", p[1].y);
+                check.Metric($"s{target}_tipx", p[11].x);
+                check.Metric($"s{target}_tipy", p[11].y);
+            }
+
+            rig.Dispose();
         }
 
         // Settle a horizontal chain at a given angle-restoration stiffness; report settled centroid height
