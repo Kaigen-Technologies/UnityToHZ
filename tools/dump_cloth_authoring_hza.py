@@ -168,6 +168,21 @@ def main():
               f"rot=({lr[0]:.3f},{lr[1]:.3f},{lr[2]:.3f},{lr[3]:.3f}) dir={cdir} "
               f"size=({csize[0]:.3f},{csize[1]:.3f},{csize[2]:.3f}) aligned={aligned}")
 
+    # BoneCloth/BoneSpring: bone_names (StringBlob[8] each) + bone_attributes (u8)
+    bn = read_blobptr(d, 960)
+    ba = read_blobptr(d, 976)
+    nbone = bn["size"] // 8 if bn["size"] else 0
+    nbattr = ba["size"] // 1 if ba["size"] else 0
+    print(f"bones: {nbone}")
+    if nbone:
+        names = [read_string(d, bn["off"] + i * 8) for i in range(nbone)]
+        bcounts = [0, 0, 0]
+        for i in range(nbattr):
+            a = d[ba["off"] + i]
+            bcounts[a if a < 3 else 0] += 1
+        print(f"  fixed={bcounts[1]} move={bcounts[2]} invalid={bcounts[0]}")
+        print(f"  first: {', '.join(names[:6])}{' ...' if nbone > 6 else ''}")
+
 
 if __name__ == "__main__":
     main()

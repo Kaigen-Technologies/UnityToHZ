@@ -434,6 +434,16 @@ public static class HZExportCommands
         OpenSceneWithSubScenes("Assets/Boids/Boids.unity");
     }
 
+    // Open SkirtDemo (the KAGURA_MC2 cloth test scene) and run the full scene export.
+    public static void ExportSkirtDemo()
+    {
+        const string scenePath =
+            "Assets/MagicaCloth2/Example (Can be deleted)/DemoScenes/URP/SkirtDemo.unity";
+        UnityEditor.SceneManagement.EditorSceneManager.OpenScene(scenePath,
+            UnityEditor.SceneManagement.OpenSceneMode.Single);
+        ExportScene();
+    }
+
     /// <summary>
     /// Convenience for the Boids scene specifically: open Boids.unity + its SubScenes,
     /// then export. (Plain "Export Active Scene" only walks already-loaded scenes, so
@@ -939,6 +949,29 @@ public static class HZExportCommands
                         }
                     }
 
+                    // MeshCloth authoring → per-character cloth blobs + EcsClothRefs.
+                    // Cloths target submeshes of this character's GLB by name and share its
+                    // model instance + extended bone palette (engine resolve_cloth_model_system).
+                    string clothSceneNm = SanitizeName(scene.name);
+                    string clothOutDir = $"{OutputDir}/scenes/{clothSceneNm}/cloth";
+                    string clothAssetPrefix = $"{AssetPrefix}/{clothSceneNm}/cloth";
+                    var clothFiles = HZClothExporter.ExportMeshClothsUnder(go, validSmrs.ToArray(), clothOutDir);
+                    const int ECS_CLOTH_MAX_PER_MODEL = 24;
+                    if (clothFiles.Count > ECS_CLOTH_MAX_PER_MODEL)
+                    {
+                        Debug.LogWarning($"[HZExport] {go.name}: {clothFiles.Count} MeshCloths exceeds " +
+                                         $"ECS_CLOTH_MAX_PER_MODEL ({ECS_CLOTH_MAX_PER_MODEL}); extra cloths dropped");
+                        clothFiles = clothFiles.GetRange(0, ECS_CLOTH_MAX_PER_MODEL);
+                    }
+                    if (clothFiles.Count > 0)
+                    {
+                        var csb = new System.Text.StringBuilder();
+                        csb.AppendLine("component EcsClothRefs");
+                        csb.AppendLine($"  cloths {clothFiles.Count}");
+                        foreach (var fn in clothFiles)
+                            csb.AppendLine($"    cloth {clothAssetPrefix}/{fn} ClothAuthoringBlobAsset");
+                        AddCustom(ref info, csb.ToString());
+                    }
                 }
                 // Terrain — export the TerrainData (heightmap + splatmaps + layer textures)
                 // and reference it via EcsTerrainRef. Dedup so a TerrainData shared by
@@ -1119,6 +1152,11 @@ public static class HZExportCommands
             // (raw RenderSettings color, no .linear) so engine recovers what Unity uses.
             Color ambient = LinearToSrgb(RenderSettings.ambientLight);
             Color shadowCol = LinearToSrgb(RenderSettings.subtractiveShadowColor);
+            // When the scene has an IBL env (skybox), the engine's ibl_ambient
+            // provides the ambient. Adding the flat ambient_color*intensity on top
+            // double-counts (blown-out white). Zero the flat term whenever an env
+            // is present; scenes without a skybox keep their flat ambient.
+            float flatAmbientIntensity = envAssetPath != null ? 0f : RenderSettings.ambientIntensity;
             // Unity FogMode: Linear=1, Exponential=2, ExponentialSquared=3 — same numbers as RendererFogMode.
             uint fogMode = RenderSettings.fog ? (uint)RenderSettings.fogMode : 0u;
             // RenderSettings.fogColor already comes back in the space the engine
@@ -1139,7 +1177,7 @@ public static class HZExportCommands
                 stableId = StableIdForString(scene.path + "::scene_settings"),
                 isSceneSettings = true,
                 ambientColor = new Vector3(ambient.r, ambient.g, ambient.b),
-                ambientIntensity = RenderSettings.ambientIntensity,
+                ambientIntensity = flatAmbientIntensity,
                 shadowColor = shadowCol,
                 maxShadowDistance = QualitySettings.shadowDistance,
                 hasEnv = envAssetPath != null,

@@ -59,6 +59,37 @@ namespace HZExporter
             Debug.Log($"[HZClothExporter] exported {exported} MeshCloths -> {OutDir}");
         }
 
+        /// <summary>
+        /// Exports every Mesh/Bone cloth under `root` belonging to this character to
+        /// `outDir`, returning the written .hzt file names. MeshCloths are filtered to
+        /// `validRenderers` (the character's skinned meshes); BoneCloths are scoped by
+        /// being under `root`. BoneSpring (Phase 3) is skipped. Used by the scene
+        /// exporter to attach a character's cloths as an EcsClothRefs component.
+        /// </summary>
+        public static List<string> ExportMeshClothsUnder(GameObject root, Renderer[] validRenderers, string outDir)
+        {
+            var names = new List<string>();
+            if (root == null) return names;
+            var valid = new HashSet<Renderer>(validRenderers ?? new Renderer[0]);
+            foreach (var cloth in root.GetComponentsInChildren<MagicaCloth>(true))
+            {
+                var ct = cloth.SerializeData.clothType;
+                if (ct == ClothProcess.ClothType.MeshCloth)
+                {
+                    var srcs = cloth.SerializeData.sourceRenderers;
+                    if (valid.Count > 0 && (srcs.Count == 0 || srcs[0] == null || !valid.Contains(srcs[0]))) continue;
+                }
+                else if (ct != ClothProcess.ClothType.BoneCloth &&
+                         ct != ClothProcess.ClothType.BoneSpring)
+                {
+                    continue;
+                }
+                string fileName = ExportClothToDir(cloth, outDir);
+                if (fileName != null) names.Add(fileName);
+            }
+            return names;
+        }
+
         // --- .hzt writer helpers ---------------------------------------------------------
 
         static string F(float v) => v.ToString("F6", CI);
@@ -112,14 +143,25 @@ namespace HZExporter
 
         // --- export one component -------------------------------------------------------
 
-        static void ExportCloth(MagicaCloth cloth)
+        static void ExportCloth(MagicaCloth cloth) => ExportClothToDir(cloth, OutDir);
+
+        /// <summary>
+        /// Exports one MeshCloth's authoring data to outDir as &lt;name&gt;_cloth.hzt and
+        /// returns the file name (e.g. "skirt_cloth.hzt"), or null if the cloth has no
+        /// valid source renderer/mesh. Used by both the standalone exec entry points and
+        /// the scene exporter (which passes its per-scene cloth dir).
+        /// </summary>
+        public static string ExportClothToDir(MagicaCloth cloth, string outDir)
         {
             var sd = cloth.SerializeData;
+            if (sd.clothType == ClothProcess.ClothType.BoneCloth ||
+                sd.clothType == ClothProcess.ClothType.BoneSpring)
+                return ExportBoneClothToDir(cloth, outDir);
             var sel = cloth.GetSerializeData2().selectionData;
             if (sd.sourceRenderers.Count == 0 || sd.sourceRenderers[0] == null)
             {
                 Debug.LogError($"[HZClothExporter] {cloth.name}: no source renderer");
-                return;
+                return null;
             }
             var ren = sd.sourceRenderers[0];
             Mesh mesh = ren is SkinnedMeshRenderer smr ? smr.sharedMesh
@@ -127,7 +169,7 @@ namespace HZExporter
             if (mesh == null)
             {
                 Debug.LogError($"[HZClothExporter] {cloth.name}: no mesh");
-                return;
+                return null;
             }
 
             var sb = new StringBuilder(64 * 1024);
@@ -192,7 +234,20 @@ namespace HZExporter
             }
             sb.Append('\n');
 
-            // colliders
+            int colCount = WriteColliders(sb, sd);
+
+            Directory.CreateDirectory(outDir);
+            string fileName = SanitizeName(cloth.gameObject.name) + ".hzt";
+            string outPath = Path.Combine(outDir, fileName);
+            File.WriteAllText(outPath, sb.ToString());
+            Debug.Log($"[HZClothExporter] {cloth.name}: mesh='{mesh.name}' verts={mesh.vertexCount} " +
+                      $"sel={selCount} colliders={colCount} -> {outPath}");
+            return fileName;
+        }
+
+        // Writes the `colliders <N>` block from a cloth's colliderList. Returns N.
+        static int WriteColliders(StringBuilder sb, ClothSerializeData sd)
+        {
             var colliders = sd.colliderCollisionConstraint.colliderList;
             var validCols = new List<ColliderComponent>();
             if (colliders != null)
@@ -258,13 +313,80 @@ namespace HZExporter
                 FieldV3(sb, 1, "size", size);
                 FieldB(sb, 1, "aligned_center", alignedCenter);
             }
+            return validCols.Count;
+        }
 
-            Directory.CreateDirectory(OutDir);
+        /// <summary>
+        /// Exports a BoneCloth (clothType==BoneCloth): the simulated bones are each
+        /// rootBone + its Transform descendants; rootBones are Fixed, descendants Move.
+        /// Bone names map to the model's GLB joint names. selection_* are empty.
+        /// </summary>
+        static string ExportBoneClothToDir(MagicaCloth cloth, string outDir)
+        {
+            var sd = cloth.SerializeData;
+            // collect bones: each root + descendants, dedup, root=Fixed/desc=Move
+            var boneNames = new List<string>();
+            var boneAttrs = new List<int>();
+            var seen = new HashSet<Transform>();
+            // any rootBone is Fixed, even when reached as another root's descendant
+            var rootSet = new HashSet<Transform>();
+            foreach (var r in sd.rootBones) if (r != null) rootSet.Add(r);
+            foreach (var root in sd.rootBones)
+            {
+                if (root == null) continue;
+                foreach (var t in root.GetComponentsInChildren<Transform>(true))
+                {
+                    if (!seen.Add(t)) continue;
+                    boneNames.Add(t.name);
+                    boneAttrs.Add(rootSet.Contains(t) ? 1 : 2); // 1=Fixed root, 2=Move
+                }
+            }
+            if (boneNames.Count == 0)
+            {
+                Debug.LogError($"[HZClothExporter] {cloth.name}: BoneCloth has no root bones");
+                return null;
+            }
+
+            var sb = new StringBuilder(16 * 1024);
+            sb.Append("type ClothAuthoringBlobAsset\n");
+            sb.Append("version 3\n");
+            sb.Append("---\n");
+
+            FieldU(sb, 0, "cloth_type", (uint)sd.clothType); // 1
+            FieldS(sb, 0, "target_mesh_name", "");
+            sb.Append("params\n");
+            WriteClothParams(sb, 1, sd);
+            sb.Append("reduction\n");
+            FieldF(sb, 1, "simple_distance", 0f);
+            FieldF(sb, 1, "shape_distance", 0f);
+            FieldF(sb, 0, "selection_max_connection_distance", 0f);
+            FieldU(sb, 0, "normal_alignment_mode", 0u);
+            sb.Append("normal_alignment_pos\n");
+            FieldF(sb, 1, "x", 0f);
+            FieldF(sb, 1, "y", 0f);
+            FieldF(sb, 1, "z", 0f);
+            FieldU(sb, 0, "target_vertex_count", 0u);
+            sb.Append("selection_positions 0\n");
+            sb.Append("selection_attributes 0\n");
+            int colCount = WriteColliders(sb, sd);
+
+            // BlobArray(StringBlob): inline space-separated quoted tokens on the field line
+            sb.Append("bone_names ").Append(boneNames.Count);
+            foreach (var n in boneNames)
+                sb.Append(" \"").Append(n).Append('"');
+            sb.Append('\n');
+            sb.Append("bone_attributes ").Append(boneAttrs.Count);
+            foreach (var a in boneAttrs)
+                sb.Append(' ').Append(a);
+            sb.Append('\n');
+
+            Directory.CreateDirectory(outDir);
             string fileName = SanitizeName(cloth.gameObject.name) + ".hzt";
-            string outPath = Path.Combine(OutDir, fileName);
+            string outPath = Path.Combine(outDir, fileName);
             File.WriteAllText(outPath, sb.ToString());
-            Debug.Log($"[HZClothExporter] {cloth.name}: mesh='{mesh.name}' verts={mesh.vertexCount} " +
-                      $"sel={selCount} colliders={validCols.Count} -> {outPath}");
+            Debug.Log($"[HZClothExporter] {cloth.name}: BoneCloth bones={boneNames.Count} " +
+                      $"colliders={colCount} -> {outPath}");
+            return fileName;
         }
 
         static string SanitizeName(string n)
