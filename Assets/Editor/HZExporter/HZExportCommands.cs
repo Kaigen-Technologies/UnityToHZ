@@ -1,5 +1,8 @@
 using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
+using UnityEngine.Rendering;
+using UnityEngine.Rendering.Universal;
 using UnityEngine.SceneManagement;
 using UnityEditor;
 using UnityEditor.SceneManagement;
@@ -106,6 +109,55 @@ public static class HZExportCommands
             catch (System.Exception e) { Debug.LogError($"[HZ-SG] {System.IO.Path.GetFileName(f)}: {e.Message}\n{e.StackTrace}"); fail++; }
         }
         Debug.Log($"[HZ-SG] done — {ok} ok, {fail} failed, {skipped} folder(s) skipped");
+    }
+
+    /// <summary>Test-export a cube with a default URP/Lit material through the grass path,
+    /// so we can verify default grass materials become grass_terrain custom materials.</summary>
+    public static void ExportGrassTerrainMatTest()
+    {
+        var mat = new Material(Shader.Find("Universal Render Pipeline/Lit"));
+        mat.name = "GrassDefaultTest";
+        var go = GameObject.CreatePrimitive(PrimitiveType.Quad);
+        HZGlbWriter.ExportStaticMesh(go.GetComponent<MeshFilter>().sharedMesh,
+            new Material[] { mat },
+            OutputDir + "/glb/GrassTerrainMat_Test.glb", grassShader: true);
+        Object.DestroyImmediate(go);
+        Object.DestroyImmediate(mat);
+        Debug.Log("[HZ] grass-terrain-mat test exported");
+    }
+
+    /// <summary>Log the active terrain's TREE data (treePrototypes + treeInstances) — a
+    /// separate system from grass details — to scope tree export.</summary>
+    public static void DebugTerrainTrees()
+    {
+        var terrain = UnityEngine.Object.FindObjectOfType<Terrain>();
+        if (terrain == null) { Debug.LogError("[HZtree] no Terrain"); return; }
+        var td = terrain.terrainData;
+        Debug.Log($"[HZtree] terrain '{td.name}' pos={terrain.transform.position} size={td.size} " +
+                  $"treePrototypes={td.treePrototypes.Length} treeInstances={td.treeInstances.Length} " +
+                  $"treeDistance={terrain.treeDistance} treeBillboardDistance={terrain.treeBillboardDistance}");
+        for (int i = 0; i < td.treePrototypes.Length; i++)
+        {
+            var tp = td.treePrototypes[i];
+            var prefab = tp.prefab;
+            var lodg = prefab ? prefab.GetComponent<LODGroup>() : null;
+            var mfs = prefab ? prefab.GetComponentsInChildren<MeshFilter>(true) : new MeshFilter[0];
+            var smrs = prefab ? prefab.GetComponentsInChildren<SkinnedMeshRenderer>(true) : new SkinnedMeshRenderer[0];
+            Debug.Log($"[HZtree] proto{i} prefab='{(prefab ? prefab.name : "NULL")}' bend={tp.bendFactor} " +
+                      $"LODGroup={(lodg ? lodg.lodCount + " lods" : "none")} meshFilters={mfs.Length} skinned={smrs.Length}");
+        }
+        // per-prototype instance count + a couple sample transforms
+        var counts = new int[Mathf.Max(1, td.treePrototypes.Length)];
+        foreach (var ti in td.treeInstances) if (ti.prototypeIndex < counts.Length) counts[ti.prototypeIndex]++;
+        for (int i = 0; i < counts.Length; i++) Debug.Log($"[HZtree] proto{i}: {counts[i]} instances");
+        int n = Mathf.Min(3, td.treeInstances.Length);
+        for (int i = 0; i < n; i++)
+        {
+            var ti = td.treeInstances[i];
+            var world = terrain.transform.position + Vector3.Scale(ti.position, td.size);
+            Debug.Log($"[HZtree] inst{i} proto={ti.prototypeIndex} normPos={ti.position} world={world} " +
+                      $"wScale={ti.widthScale} hScale={ti.heightScale} rot={ti.rotation:F2}");
+        }
     }
 
     /// <summary>Test-export a cube using the FloorTriplanar shader-graph material so we can
@@ -442,6 +494,221 @@ public static class HZExportCommands
         UnityEditor.SceneManagement.EditorSceneManager.OpenScene(scenePath,
             UnityEditor.SceneManagement.OpenSceneMode.Single);
         ExportScene();
+    }
+
+    /// <summary>Open the Polytope Environment_Free demo scene (terrain + trees + grass).</summary>
+    public static void OpenEnvironmentFree()
+    {
+        UnityEditor.SceneManagement.EditorSceneManager.OpenScene(
+            "Assets/Polytope Studio/Lowpoly_Demos/Environment_Free/Environment_Free.unity",
+            UnityEditor.SceneManagement.OpenSceneMode.Single);
+    }
+
+    /// <summary>Log the active scene's structure so we pick the right granularity for grid layout.</summary>
+    public static void DebugSceneHierarchy()
+    {
+        var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+        var roots = scene.GetRootGameObjects();
+        Debug.Log($"[HZhier] scene '{scene.name}': {roots.Length} root object(s)");
+        foreach (var root in roots)
+        {
+            int mr = root.GetComponentsInChildren<MeshRenderer>(true).Length;
+            int smr = root.GetComponentsInChildren<SkinnedMeshRenderer>(true).Length;
+            int childCount = root.transform.childCount;
+            Debug.Log($"[HZhier]   '{root.name}': children={childCount} meshRenderers={mr} skinned={smr}");
+            // sample first few children
+            for (int i = 0; i < Mathf.Min(childCount, 6); i++)
+            {
+                var c = root.transform.GetChild(i);
+                var rs = c.GetComponentsInChildren<Renderer>(true);
+                Debug.Log($"[HZhier]       child[{i}] '{c.name}' renderers={rs.Length} pos={c.position}");
+            }
+        }
+    }
+
+    /// <summary>Lay out every renderer-bearing root GameObject in the active scene on a square
+    /// grid, sized to the largest object's footprint so nothing overlaps. Each object is centered
+    /// in its cell (by its combined renderer bounds) and dropped so its base sits on y=0.</summary>
+    [MenuItem("HZ Engine/Layout Scene Grid")]
+    public static void LayoutSceneGrid()
+    {
+        var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+
+        // Asset granularity: a container (root with children but no renderer of its own) contributes
+        // each renderer-bearing direct child; a standalone renderer-bearing root is one asset itself.
+        // Camera/light (no renderers) drop out naturally.
+        var assets = new List<Transform>();
+        foreach (var root in scene.GetRootGameObjects())
+        {
+            bool ownRenderer = HasMeshRenderer(root, deep: false);
+            if (root.transform.childCount > 0 && !ownRenderer)
+            {
+                foreach (Transform child in root.transform)
+                    if (HasMeshRenderer(child.gameObject, deep: true)) assets.Add(child);
+            }
+            else if (HasMeshRenderer(root, deep: true))
+            {
+                assets.Add(root.transform);
+            }
+        }
+
+        // Combined world bounds + XZ footprint per asset.
+        var items = new List<(Transform t, Bounds b, float foot)>();
+        foreach (var t in assets)
+        {
+            if (!TryWorldBounds(t.gameObject, out var b)) continue;
+            items.Add((t, b, Mathf.Max(b.size.x, b.size.z)));
+        }
+        if (items.Count == 0) { Debug.LogWarning("[HZgrid] no assets found"); return; }
+
+        // Skip ground/skybox-like outliers (footprint >> median) so they don't blow up the cell.
+        var foots = items.Select(it => it.foot).OrderBy(f => f).ToList();
+        float median = foots[foots.Count / 2];
+        float outlier = Mathf.Max(median * 8f, 0.01f);
+        var skipped = items.Where(it => it.foot > outlier).Select(it => it.t.name).ToList();
+        items = items.Where(it => it.foot <= outlier).ToList();
+        if (items.Count == 0) { Debug.LogWarning("[HZgrid] everything got filtered as outliers"); return; }
+
+        float maxFoot = items.Max(it => it.foot);
+        float cell = maxFoot * 1.15f + 0.05f;     // uniform cell sized to the largest → no overlap
+        int cols = Mathf.CeilToInt(Mathf.Sqrt(items.Count));
+
+        for (int i = 0; i < items.Count; i++)
+        {
+            var (t, b, _) = items[i];
+            int col = i % cols, row = i / cols;
+            Vector3 cellCenter = new Vector3(col * cell, 0f, row * cell);
+            Undo.RecordObject(t, "Grid Layout");
+            // Center the asset's bounds in its cell (XZ), base on y=0.
+            t.position += new Vector3(cellCenter.x - b.center.x, -b.min.y, cellCenter.z - b.center.z);
+        }
+        UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(scene);
+        Debug.Log($"[HZgrid] placed {items.Count} assets on a {cols}-col grid, cell={cell:F2}m "
+                  + $"(max footprint {maxFoot:F2}m). Skipped {skipped.Count} oversized: {string.Join(", ", skipped)}");
+    }
+
+    // Max shadow render distance comes from the active Render Pipeline asset (URP's
+    // `shadowDistance`), not QualitySettings.shadowDistance which is the legacy/built-in path and
+    // is ignored under SRP. Read via reflection to avoid a hard URP assembly reference; falls back
+    // to QualitySettings when no SRP asset is active.
+    static float ActiveShadowDistance()
+    {
+        var rp = UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline;
+        if (rp != null)
+        {
+            var prop = rp.GetType().GetProperty("shadowDistance");
+            if (prop != null && prop.PropertyType == typeof(float))
+                return (float)prop.GetValue(rp);
+        }
+        return QualitySettings.shadowDistance;
+    }
+
+    // Read the scene's URP post-processing Volume into engine EcsPostProcessing values. Picks the
+    // highest-priority active global Volume; only parameters whose override is enabled are applied,
+    // the rest stay at the engine identity. URP has no exposure/brightness/gamma overrides, so those
+    // keep their defaults.
+    static HZSceneExporter.PostProcessingSettings ReadPostProcessing()
+    {
+        var pp = HZSceneExporter.PostProcessingSettings.Default();
+        VolumeProfile profile = null;
+        float bestPriority = float.NegativeInfinity;
+        foreach (var v in Object.FindObjectsOfType<Volume>())
+        {
+            if (!v.isActiveAndEnabled || !v.isGlobal || v.sharedProfile == null) continue;
+            if (v.priority >= bestPriority) { bestPriority = v.priority; profile = v.sharedProfile; }
+        }
+        if (profile == null) { Debug.Log("[HZpp] no active global post-processing Volume; using defaults"); return pp; }
+
+        if (profile.TryGet<Tonemapping>(out var tm) && tm.active && tm.mode.overrideState)
+            pp.tonemapMode = MapTonemap(tm.mode.value);
+        if (profile.TryGet<ColorAdjustments>(out var ca) && ca.active)
+        {
+            // The engine remaps white-balance (/65) and vignette (×3/×5) itself, but NOT contrast,
+            // saturation, or hue — so we must feed those in the post-remap form the shader expects:
+            //   contrast/saturation: Unity slider -100..100 -> /100 (engine adds the +1.0)
+            //   hueShift: Unity degrees -180..180 -> /360
+            // post_exposure stays raw EV (engine does exp2). color_filter raw.
+            if (ca.postExposure.overrideState) pp.postExposure = ca.postExposure.value;
+            if (ca.contrast.overrideState)     pp.contrast = ca.contrast.value / 100f;
+            if (ca.colorFilter.overrideState)  pp.colorFilter = ca.colorFilter.value;
+            if (ca.hueShift.overrideState)     pp.hueShift = ca.hueShift.value / 360f;
+            if (ca.saturation.overrideState)   pp.saturation = ca.saturation.value / 100f;
+        }
+        if (profile.TryGet<WhiteBalance>(out var wb) && wb.active)
+        {
+            if (wb.temperature.overrideState) pp.whiteBalanceTemperature = wb.temperature.value;
+            if (wb.tint.overrideState)        pp.whiteBalanceTint = wb.tint.value;
+        }
+        if (profile.TryGet<Vignette>(out var vg) && vg.active)
+        {
+            if (vg.color.overrideState)      pp.vignetteColor = vg.color.value;
+            if (vg.center.overrideState)     pp.vignetteCenter = vg.center.value;
+            if (vg.intensity.overrideState)  pp.vignetteIntensity = vg.intensity.value;
+            if (vg.smoothness.overrideState) pp.vignetteSmoothness = vg.smoothness.value;
+            if (vg.rounded.overrideState)    pp.vignetteRounded = vg.rounded.value;
+        }
+        if (profile.TryGet<Bloom>(out var bl) && bl.active)
+        {
+            if (bl.intensity.overrideState) pp.bloomIntensity = bl.intensity.value;
+            if (bl.threshold.overrideState) pp.bloomThreshold = bl.threshold.value;
+            if (bl.scatter.overrideState)   pp.bloomScatter = bl.scatter.value;
+            if (bl.clamp.overrideState)     pp.bloomClamp = bl.clamp.value;
+            if (bl.tint.overrideState)      pp.bloomTint = bl.tint.value;
+        }
+        Debug.Log($"[HZpp] '{profile.name}': contrast={pp.contrast} saturation={pp.saturation} "
+                + $"postExp={pp.postExposure} wbTemp={pp.whiteBalanceTemperature} wbTint={pp.whiteBalanceTint} "
+                + $"vignette(int={pp.vignetteIntensity}) tonemap={pp.tonemapMode} "
+                + $"bloom(int={pp.bloomIntensity} thresh={pp.bloomThreshold} scatter={pp.bloomScatter})");
+        return pp;
+    }
+
+    // URP TonemappingMode -> engine TonemapMode (NONE=0, ACES=4, NEUTRAL=6).
+    static uint MapTonemap(TonemappingMode m)
+    {
+        switch (m)
+        {
+            case TonemappingMode.Neutral: return 6u;
+            case TonemappingMode.ACES:    return 4u;
+            default:                      return 0u;
+        }
+    }
+
+    static bool HasMeshRenderer(GameObject go, bool deep)
+    {
+        if (deep)
+            return go.GetComponentInChildren<MeshRenderer>(true) != null
+                || go.GetComponentInChildren<SkinnedMeshRenderer>(true) != null;
+        return go.GetComponent<MeshRenderer>() != null || go.GetComponent<SkinnedMeshRenderer>() != null;
+    }
+
+    static bool TryWorldBounds(GameObject go, out Bounds bounds)
+    {
+        // Build world AABB from each renderer's authored mesh bounds transformed by its transform.
+        // Renderer.bounds is avoided because SkinnedMeshRenderer.bounds is bone-pose-driven and can
+        // balloon to scene-scale when the skeleton isn't in a clean rest state.
+        bounds = default; bool init = false;
+        foreach (var r in go.GetComponentsInChildren<Renderer>(true))
+        {
+            Mesh mesh = null;
+            if (r is SkinnedMeshRenderer smr) mesh = smr.sharedMesh;
+            else if (r is MeshRenderer && r.TryGetComponent<MeshFilter>(out var mf)) mesh = mf.sharedMesh;
+            if (mesh == null) continue;
+
+            var lb = mesh.bounds;
+            var m = r.transform.localToWorldMatrix;
+            Vector3 c = lb.center, e = lb.extents;
+            for (int s = 0; s < 8; s++)
+            {
+                Vector3 corner = c + new Vector3(
+                    ((s & 1) == 0 ? -e.x : e.x),
+                    ((s & 2) == 0 ? -e.y : e.y),
+                    ((s & 4) == 0 ? -e.z : e.z));
+                Vector3 w = m.MultiplyPoint3x4(corner);
+                if (!init) { bounds = new Bounds(w, Vector3.zero); init = true; }
+                else bounds.Encapsulate(w);
+            }
+        }
+        return init;
     }
 
     /// <summary>
@@ -996,7 +1263,7 @@ public static class HZExportCommands
                         // Grass models flow through the same GLB dedup as scene meshes; grass
                         // albedo textures go to the shared glb/textures tree (deduped).
                         terrainRef = HZTerrainExporter.Export(terrain, outDir, assetPrefix,
-                            (mr, mesh) => ExportStaticGlbForRenderer(mr, mesh, exportedGlbs),
+                            (mr, mesh) => ExportStaticGlbForRenderer(mr, mesh, exportedGlbs, grassShader: true),
                             (tex, hasAlpha) => ExportGrassAlbedo(tex, hasAlpha, exportedGrassAlbedos));
                         exportedTerrains[terrainKey] = terrainRef;
                     }
@@ -1108,6 +1375,10 @@ public static class HZExportCommands
             HZGlbWriter.ExportSkinnedMesh(d.smrs, d.materials, d.primarySmr, d.entityRoot, d.glbPath, animArray);
         }
 
+        // Terrain trees: TerrainData.treeInstances (separate from grass details). Each instance
+        // becomes an individual entity referencing its prototype's model (LOD0 + extra LODs).
+        CollectTreeEntities(roots, scene, entities, exportedGlbs);
+
         string sceneName = SanitizeName(scene.name);
 
         // Background comes from the MAIN camera's clear flags, not just whether a
@@ -1179,7 +1450,8 @@ public static class HZExportCommands
                 ambientColor = new Vector3(ambient.r, ambient.g, ambient.b),
                 ambientIntensity = flatAmbientIntensity,
                 shadowColor = shadowCol,
-                maxShadowDistance = QualitySettings.shadowDistance,
+                maxShadowDistance = ActiveShadowDistance(),
+                postProcessing = ReadPostProcessing(),
                 hasEnv = envAssetPath != null,
                 envAssetPath = envAssetPath,
                 envIntensity = envIntensity,
@@ -1269,19 +1541,140 @@ public static class HZExportCommands
     // GLB cooker to write the same texture filename from multiple sources → asset
     // collision.
     static string ExportStaticGlbForRenderer(MeshRenderer mr, Mesh mesh,
-        Dictionary<string, string> exportedGlbs)
+        Dictionary<string, string> exportedGlbs, bool grassShader = false)
     {
-        string meshKey = GetMeshKey(mesh);
+        // Grass meshes emit a `_grass` shader variant, so they must be a distinct GLB from any
+        // normal static export of the same mesh — namespace both the dedup key and the filename.
+        string meshKey = GetMeshKey(mesh) + (grassShader ? "::grass" : "");
         if (exportedGlbs.TryGetValue(meshKey, out string cached))
             return cached;
 
-        string glbName = GetMeshSourceName(mesh);
+        string glbName = GetMeshSourceName(mesh) + (grassShader ? "_grass" : "");
         string glbPath = $"{OutputDir}/glb/{glbName}.glb";
         string glbAssetPath = $"{AssetPrefix}/glb/{glbName}.glb";
 
-        HZGlbWriter.ExportStaticMesh(mesh, mr.sharedMaterials, glbPath);
+        HZGlbWriter.ExportStaticMesh(mesh, mr.sharedMaterials, glbPath, grassShader);
         exportedGlbs[meshKey] = glbAssetPath;
         return glbAssetPath;
+    }
+
+    // Resolved tree-prototype model: LOD0 GLB ref + extra LOD refs + render flags.
+    sealed class TreeProtoModel
+    {
+        public string modelPath;
+        public List<(string path, float switchCoverage)> extraLods;
+        public bool castsShadow;
+        public Vector3 localBoundsSize = Vector3.one;
+    }
+
+    // Export one tree prototype prefab as a model (LOD0 + extra LODs), reusing the static-mesh
+    // GLB path. Mirrors the scene LODGroup handling: LOD0's first static MeshRenderer is the base,
+    // LOD1+ become extra_lods with switch_coverage = the previous LOD's transition height.
+    static TreeProtoModel ExportTreePrototype(GameObject prefab, Dictionary<string, string> exportedGlbs)
+    {
+        var pm = new TreeProtoModel();
+        var lg = prefab.GetComponentInChildren<LODGroup>(true);
+        if (lg != null)
+        {
+            var lods = lg.GetLODs();
+            MeshRenderer baseMr = null; MeshFilter baseMf = null;
+            if (lods.Length > 0 && lods[0].renderers != null)
+                foreach (var r in lods[0].renderers)
+                    if (r is MeshRenderer m && m.TryGetComponent(out MeshFilter mf) && mf.sharedMesh != null)
+                    { baseMr = m; baseMf = mf; break; }
+            if (baseMr == null)
+            {
+                Debug.LogWarning($"[HZtree] prototype '{prefab.name}': LOD0 has no static MeshRenderer; skipping");
+                return pm;
+            }
+            pm.modelPath = ExportStaticGlbForRenderer(baseMr, baseMf.sharedMesh, exportedGlbs);
+            pm.castsShadow = baseMr.shadowCastingMode != UnityEngine.Rendering.ShadowCastingMode.Off;
+            pm.localBoundsSize = baseMf.sharedMesh.bounds.size;
+            pm.extraLods = new List<(string, float)>();
+            for (int li = 1; li < lods.Length; li++)
+            {
+                if (lods[li].renderers == null) continue;
+                MeshRenderer lr = null; MeshFilter lf = null;
+                foreach (var r in lods[li].renderers)
+                    if (r is MeshRenderer m && m.TryGetComponent(out MeshFilter mf) && mf.sharedMesh != null)
+                    { lr = m; lf = mf; break; }
+                if (lr == null) continue;
+                float switchCov = lods[li - 1].screenRelativeTransitionHeight;
+                pm.extraLods.Add((ExportStaticGlbForRenderer(lr, lf.sharedMesh, exportedGlbs), switchCov));
+            }
+        }
+        else
+        {
+            var mr = prefab.GetComponentInChildren<MeshRenderer>(true);
+            var mf = mr != null ? mr.GetComponent<MeshFilter>() : null;
+            if (mr == null || mf == null || mf.sharedMesh == null)
+            {
+                Debug.LogWarning($"[HZtree] prototype '{prefab.name}': no static mesh; skipping");
+                return pm;
+            }
+            pm.modelPath = ExportStaticGlbForRenderer(mr, mf.sharedMesh, exportedGlbs);
+            pm.castsShadow = mr.shadowCastingMode != UnityEngine.Rendering.ShadowCastingMode.Off;
+            pm.localBoundsSize = mf.sharedMesh.bounds.size;
+        }
+        return pm;
+    }
+
+    // Emit one entity per TerrainData.treeInstance. World position = terrain origin +
+    // normalized-position × terrain size; rotation = Y by instance.rotation (radians); scale =
+    // (width, height, width). The scene exporter's negate-X / rotation-mirror lands them on the
+    // X-mirrored terrain (verified against the X-flipped heightmap). Prototype models are deduped.
+    static void CollectTreeEntities(GameObject[] roots, UnityEngine.SceneManagement.Scene scene,
+        List<HZSceneExporter.EntityExportInfo> entities, Dictionary<string, string> exportedGlbs)
+    {
+        var protoCache = new Dictionary<int, TreeProtoModel>();
+        foreach (var root in roots)
+            foreach (var terrain in root.GetComponentsInChildren<Terrain>(true))
+            {
+                var td = terrain.terrainData;
+                if (td == null) continue;
+                var protos = td.treePrototypes;
+                var instances = td.treeInstances;
+                if (protos == null || instances == null || instances.Length == 0) continue;
+
+                Vector3 tpos = terrain.transform.position;
+                Vector3 tsize = td.size;
+                int count = 0;
+                for (int i = 0; i < instances.Length; i++)
+                {
+                    var ti = instances[i];
+                    if (ti.prototypeIndex < 0 || ti.prototypeIndex >= protos.Length) continue;
+                    var prefab = protos[ti.prototypeIndex].prefab;
+                    if (prefab == null) continue;
+
+                    int key = prefab.GetInstanceID();
+                    if (!protoCache.TryGetValue(key, out var pm))
+                    {
+                        pm = ExportTreePrototype(prefab, exportedGlbs);
+                        protoCache[key] = pm;
+                    }
+                    if (pm == null || string.IsNullOrEmpty(pm.modelPath)) continue;
+
+                    Vector3 world = tpos + Vector3.Scale(ti.position, tsize);
+                    Quaternion rot = Quaternion.AngleAxis(ti.rotation * Mathf.Rad2Deg, Vector3.up);
+                    Vector3 scl = new Vector3(ti.widthScale, ti.heightScale, ti.widthScale);
+
+                    entities.Add(new HZSceneExporter.EntityExportInfo {
+                        name = $"{prefab.name}_{i}",
+                        position = world, rotation = rot, scale = scl,
+                        worldPosition = world, worldRotation = rot, worldScale = scl,
+                        visible = true,
+                        castsShadow = pm.castsShadow,
+                        bounds = new Bounds(world, Vector3.Scale(pm.localBoundsSize, scl)),
+                        modelAssetPath = pm.modelPath,
+                        extraLods = pm.extraLods != null && pm.extraLods.Count > 0
+                            ? new List<(string, float)>(pm.extraLods) : null,
+                        parentStableId = 0,
+                        stableId = StableIdForString($"{scene.path}::tree::{terrain.GetInstanceID()}::{i}"),
+                    });
+                    count++;
+                }
+                Debug.Log($"[HZtree] '{td.name}': {count} tree entities from {protos.Length} prototypes ({protoCache.Count} models)");
+            }
     }
 
     // Export a grass albedo texture as a standalone TextureBlobAsset under glb/textures/,

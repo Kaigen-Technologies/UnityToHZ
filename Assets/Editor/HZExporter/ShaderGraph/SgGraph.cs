@@ -294,6 +294,11 @@ namespace HZExporter.ShaderGraph
     {
         public SgVariant Variant;
         public bool AlphaClip;                 // from active target's m_AlphaClip
+        // True when this shader is listed in grass_shaders.json — the codegen then
+        // emits a sibling `<name>_grass.hz.glsl` whose @fs/@material are byte-identical
+        // to the forward shader but whose @vs pulls from the grass SSBOs. Set by the
+        // exporter (config lookup), not parsed from the graph itself.
+        public bool IsGrassCapable;
         public List<string> VertexBlockIds = new List<string>();
         public List<string> FragmentBlockIds = new List<string>();
         public Dictionary<string, SgNode> Nodes = new Dictionary<string, SgNode>();

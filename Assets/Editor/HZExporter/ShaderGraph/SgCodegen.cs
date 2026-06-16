@@ -14,6 +14,7 @@ namespace HZExporter.ShaderGraph
         public struct EmittedShaders {
             public string Forward;
             public string Shadow; // null when no separate shadow caster needed
+            public string ForwardGrass; // non-null only for grass-capable Lit graphs
         }
 
         public static EmittedShaders Emit(SgGraph g, string sourceName)
@@ -84,7 +85,32 @@ namespace HZExporter.ShaderGraph
                 shadow = sh.ToString();
             }
 
-            return new EmittedShaders { Forward = fwd.ToString(), Shadow = shadow };
+            // Grass sibling — same @fs/@material as the forward Lit shader, but a
+            // grass-SSBO @vs (LIT_GRASS_TEMPLATE). Only for grass-capable Lit graphs.
+            string grass = null;
+            if (g.IsGrassCapable && g.Variant == SgVariant.Lit)
+            {
+                var fwdG = new StringBuilder();
+                fwdG.AppendLine($"// Generated from {sourceName}.shadergraph by HZShaderGraphExporter (grass)");
+                foreach (var kw in g.Keywords)
+                {
+                    if (kw.IsBoolean)
+                        fwdG.AppendLine($"// @keyword {kw.ReferenceName} Boolean default={(kw.DefaultValue == 0 ? "Off" : "On")}");
+                    else
+                    {
+                        var entries = string.Join(",", kw.Entries.ConvertAll(e => e.ReferenceName));
+                        string def = kw.DefaultValue >= 0 && kw.DefaultValue < kw.Entries.Count
+                            ? kw.Entries[kw.DefaultValue].ReferenceName : "?";
+                        fwdG.AppendLine($"// @keyword {kw.ReferenceName} Enum entries={entries} default={def}");
+                    }
+                }
+                fwdG.AppendLine("#include \"renderer.glsl\"");
+                fwdG.AppendLine();
+                fwdG.Append(EmitFromTemplate(g, LIT_GRASS_TEMPLATE, isLit: true));
+                grass = fwdG.ToString();
+            }
+
+            return new EmittedShaders { Forward = fwd.ToString(), Shadow = shadow, ForwardGrass = grass };
         }
 
         // A surface assignment we'll emit at the end of main() — base_color =
@@ -657,6 +683,96 @@ ${VS_MAT_UNPACK}${VERTEX_BODY}    vec4 world_pos = v.model * vec4(${VS_POS}, 1.0
     v_uv1 = vec2(v.uv1.x, 1.0 - v.uv1.y);
     v_color = v.color;
     v_material_offset = v.material_offset;
+    v_view_depth = -(hz_scene.view * world_pos).z;
+}
+@end
+
+@fs
+#define HZ_RENDERER_SHADOWS
+#define HZ_RENDERER_IBL
+#define HZ_RENDERER_LIGHTING_CLUSTERS
+#define HZ_RENDERER_FOG
+${FS_FEATURE_DEFINES}in vec3 v_world_pos;
+in vec3 v_object_pos;
+in vec3 v_normal;
+in vec2 v_uv;
+in vec2 v_uv1;
+in vec4 v_color;
+flat in uint v_material_offset;
+in vec3 v_tangent;
+in float v_bitangent_sign;
+in float v_view_depth;
+out vec4 frag_color;
+
+${MATERIAL_STRUCT}
+${HELPERS}${FUNCTIONS}void main() {
+    MaterialFS mat = MaterialFS_unpack(v_material_offset);
+${MAIN_BODY}
+${LIGHTING}
+    lit *= occlusion;
+    lit += emission;
+    lit = hz_apply_fog(lit, v_view_depth);
+    frag_color = vec4(lit, 1.0);
+}
+@end
+";
+
+        // Grass variant of LIT_TEMPLATE: the @fs/@material blocks are byte-identical
+        // to LIT_TEMPLATE, but the @vs is fully literal and pulls geometry from the
+        // grass SSBOs (grass_terrain_pull.glsl) instead of unpack_instance_data().
+        // It intentionally omits the graph's vertex substitutions (${VERTEX_BODY},
+        // ${VS_POS}, ${VS_NORMAL}, ${VS_TANGENT}, ${VS_MATERIAL}, ${VS_MAT_UNPACK},
+        // ${VS_HELPERS}) — EmitFromTemplate's .Replace of those is a harmless no-op
+        // when absent. Materials used on grass point shader_source at this file.
+        const string LIT_GRASS_TEMPLATE =
+@"@vs
+#define HZ_RENDERER_TERRAIN
+#define HZ_RENDERER_GRASS
+#include ""grass_terrain_pull.glsl""
+out vec3 v_world_pos;
+out vec3 v_object_pos;
+out vec3 v_normal;
+out vec2 v_uv;
+out vec2 v_uv1;
+out vec4 v_color;
+flat out uint v_material_offset;
+out vec3 v_tangent;
+out float v_bitangent_sign;
+out float v_view_depth;
+void main() {
+    uint mo = hz_grass_draw.data[0u];
+    GrassVsParams p = grass_vs_params();
+    uint vb = uint(gl_VertexIndex) * 2u;
+    vec3 vpos = grass_unpack_pos_rgb10a2(hz_grass_vertices.data[vb + 0u], p.pos_min, p.pos_extent);
+    vec2 vuv = unpackHalf2x16(hz_grass_vertices.data[vb + 1u]);
+    uint ib = HZ_INSTANCE_INDEX * 2u;
+    vec2 world_xz = unpackHalf2x16(hz_grass_instances.data[ib + 0u]);
+    uint i1 = hz_grass_instances.data[ib + 1u];
+    float yaw = float(i1 & 0xFFFFu) / 65535.0 * 6.28318530718;
+    float scale_uni = unpackHalf2x16(i1).y;
+    vec3 sp = vpos * scale_uni;
+    float c = cos(yaw), s = sin(yaw);
+    vec3 rotated = vec3(c * sp.x + s * sp.z, sp.y, -s * sp.x + c * sp.z);
+    float y = 0.0;
+    if (p.hws.x > 0.0) {
+        vec2 huv = (world_xz - p.hwo) / p.hws;
+        y = texture_sample(grass_heightmap, p.heightmap, huv).r * p.height_scale;
+    }
+    vec3 world = rotated + vec3(world_xz.x, y, world_xz.y);
+    float local_h_norm = (vpos.y - p.pos_min.y) / max(p.pos_extent.y, 1e-3);
+    float sway = sin(world.x * 0.07 + hz_scene.time * 1.3) * cos(world.z * 0.09 + hz_scene.time * 1.1);
+    world.xz += vec2(0.944, 0.330) * (0.15 * local_h_norm * p.wind_response * sway);
+    vec4 world_pos = vec4(world, 1.0);
+    gl_Position = hz_scene.view_proj * world_pos;
+    v_world_pos = world;
+    v_object_pos = vpos;
+    v_normal = vec3(0.0, 1.0, 0.0);
+    v_tangent = vec3(1.0, 0.0, 0.0);
+    v_bitangent_sign = 1.0;
+    v_uv = vuv;
+    v_uv1 = vuv;
+    v_color = vec4(1.0);
+    v_material_offset = mo;
     v_view_depth = -(hz_scene.view * world_pos).z;
 }
 @end

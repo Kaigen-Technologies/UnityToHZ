@@ -30,6 +30,11 @@ namespace HZExporter
         const int GRASS_INSTANCES_PER_TILE_CAP = 16384; // sanity cap on derived density (engine compacts survivors, so high per-tile is fine)
         const float GRASS_DEFAULT_ALPHA_CUTOFF = 0.5f;
 
+        // Linear fudge on the ground-truth-derived instances_per_tile_max. The calibration uses
+        // the terrain's MEAN coverage, but viewed regions are usually denser-than-average, so the
+        // engine reads a bit thick. Lower this to thin grass out, raise toward 1.0 if too sparse.
+        const float GRASS_DENSITY_CALIBRATION = 0.7f;
+
         /// <summary>Export a grass prototype's mesh as a shared GLB; returns the engine
         /// asset-relative ref (e.g. "unity/glb/Reeds.glb"). Injected by the scene exporter
         /// so grass models flow through the same GLB dedup as scene meshes.</summary>
@@ -46,6 +51,8 @@ namespace HZExporter
             public bool generateBillboard;
             public float billboardWidth;
             public float billboardHeight;
+            public Vector2 billboardUvMin;     // blade sub-rect in the albedo atlas
+            public Vector2 billboardUvExtent;  // (0,0) extent => whole sheet
             public float minViewDistance;
             public float maxViewDistance;
             public uint instancesMax;
@@ -130,8 +137,19 @@ namespace HZExporter
             // through the injected scene callbacks; density maps are written terrain-local.
             var grassTypes = BuildGrassTypes(terrain, td, outDir, assetPrefix, exportModel, exportAlbedo);
 
+            // Grass workload scale, pulled from Unity terrain settings (same fallbacks as
+            // BuildGrassTypes). The engine treats 0 as "use default", but we always have a
+            // concrete value here, so emit it.
+            // grass_density_scale = 1.0: the scene's detailObjectDensity is already baked into
+            // each type's instances_per_tile_max via the ground-truth ComputeDetailInstanceTransforms
+            // measurement in BuildGrassTypes. Re-applying it here would double-scale (and Unity's
+            // response is non-linear, so a straight passthrough wouldn't match anyway).
+            float grassViewDistance = terrain.detailObjectDistance > 0f ? terrain.detailObjectDistance : 100f;
+            float grassDensityScale = 1.0f;
+
             string terrainHztPath = Path.Combine(outDir, "terrain.hzt");
-            WriteManifest(td, terrainHztPath, assetPrefix, layerCount, splatmapCount, tileSize, maxLod, grassTypes);
+            WriteManifest(td, terrainHztPath, assetPrefix, layerCount, splatmapCount, tileSize, maxLod,
+                grassViewDistance, grassDensityScale, grassTypes);
 
             string assetRef = $"{assetPrefix}/terrain.hzt";
             Debug.Log($"[HZTerrain]   → {terrainHztPath}  (engine ref: {assetRef})");
@@ -338,25 +356,26 @@ namespace HZExporter
             // Terrain-wide knobs that drive view distance / density.
             float detailDistance = terrain.detailObjectDistance;   // Unity's detail render distance
             if (detailDistance <= 0f) detailDistance = 100f;
-            float detailDensity = terrain.detailObjectDensity;     // 0..1 global density multiplier
-            if (detailDensity <= 0f) detailDensity = 1f;
             float wind = td.wavingGrassStrength;                   // global waving-grass strength
 
             int dw = td.detailWidth, dh = td.detailHeight;
             int maxScatter = Mathf.Max(1, td.maxDetailScatterPerRes);
 
-            // Derive a full-coverage instance count per grass tile from Unity's detail density:
-            // a detail cell is (size/res) m; a grass tile spans (tile/cell)^2 cells; at full
-            // coverage each cell holds maxScatter instances, scaled by the global density mult.
-            // The density map carries normalized [0,1] coverage and the engine multiplies it in.
-            float cellSizeX = dw > 0 ? td.size.x / dw : 1f;
-            float cellSizeZ = dh > 0 ? td.size.z / dh : 1f;
-            float cellArea = Mathf.Max(1e-4f, cellSizeX * cellSizeZ);
-            float cellsPerTile = (GRASS_TILE_SIZE * GRASS_TILE_SIZE) / cellArea;
-            uint instancesMax = (uint)Mathf.Clamp(
-                Mathf.RoundToInt(maxScatter * cellsPerTile * detailDensity),
-                1, GRASS_INSTANCES_PER_TILE_CAP);
-            uint instancesMin = (uint)Mathf.Max(1, Mathf.RoundToInt(instancesMax * 0.15f));
+            // instances_per_tile_max is calibrated to GROUND TRUTH: we ask Unity's own scatterer
+            // (ComputeDetailInstanceTransforms) how many instances it actually places for this
+            // prototype at the scene's detailObjectDensity, then back out the full-coverage
+            // per-tile count. Unity's density response is non-linear (≈ detailObjectDensity²) and
+            // its absolute count isn't a documented formula, so measuring beats deriving.
+            //
+            // The engine renders ≈ instances_per_tile_max × grass_density_scale × coverage(tile),
+            // and the coverage map averages to covAvg over the field, so:
+            //     engine_total ≈ instances_per_tile_max × grass_density_scale × covAvg × (area/tile²)
+            // We want engine_total == Unity's measured count N(d), with the SAME coverage map
+            // driving spatial layout. Density is baked here and grass_density_scale emitted = 1.0:
+            //     instances_per_tile_max = N(d) / (area × covAvg) × tile²
+            float area = Mathf.Max(1e-3f, td.size.x * td.size.z);
+            int patchesPerAxis = Mathf.Max(1, dw / Mathf.Max(1, td.detailResolutionPerPatch));
+            float densityForCount = terrain.detailObjectDensity; // 0..1; what the scene renders
 
             float near = detailDistance;
             float far = Mathf.Min(near * GRASS_FAR_MULTIPLIER, GRASS_FAR_CAP);
@@ -364,6 +383,29 @@ namespace HZExporter
             for (int i = 0; i < protos.Length; i++)
             {
                 var dp = protos[i];
+
+                // Unity's actual instance count for this prototype at the scene density.
+                long unityCount = 0;
+                for (int px = 0; px < patchesPerAxis; px++)
+                    for (int py = 0; py < patchesPerAxis; py++)
+                    {
+                        var xforms = td.ComputeDetailInstanceTransforms(px, py, i, densityForCount, out _);
+                        if (xforms != null) unityCount += xforms.Length;
+                    }
+                // Mean coverage for this layer (same normalization the density map uses).
+                var covLayer = td.GetDetailLayer(0, 0, dw, dh, i);
+                long covSum = 0;
+                foreach (var v in covLayer) covSum += v;
+                float covAvg = (float)covSum / (dw * dh) / maxScatter;
+
+                uint instancesMax = (uint)Mathf.Clamp(
+                    covAvg > 1e-5f
+                        ? Mathf.RoundToInt((float)(unityCount / (area * covAvg)) * GRASS_TILE_SIZE * GRASS_TILE_SIZE * GRASS_DENSITY_CALIBRATION)
+                        : 0,
+                    1, GRASS_INSTANCES_PER_TILE_CAP);
+                uint instancesMin = (uint)Mathf.Max(1, Mathf.RoundToInt(instancesMax * 0.15f));
+                Debug.Log($"[HZTerrain]   grass proto{i}: unityCount={unityCount} covAvg={covAvg:F3} -> instances_per_tile_max={instancesMax}");
+
                 var gt = new GrassTypeData
                 {
                     sourceLayer = i,
@@ -395,6 +437,13 @@ namespace HZExporter
                         gt.albedoRef = ExportAlbedoFor(mat, exportAlbedo);
                         string modelRef = exportModel != null ? exportModel(mr, mf.sharedMesh) : null;
 
+                        // Cross-billboard dims + atlas sub-rect derived from the near mesh, so
+                        // the far card matches the blade's silhouette and samples just the
+                        // blade's UV region (not the whole sheet). Emitted as concrete values so
+                        // they can be hand-tweaked in the .hzt.
+                        ComputeBillboard(mf.sharedMesh, out float bbW, out float bbH,
+                                         out Vector2 uvMin, out Vector2 uvExtent);
+
                         // LOD0 = the Unity mesh (near band).
                         gt.lods.Add(new GrassLodData {
                             modelRef = modelRef,
@@ -408,8 +457,10 @@ namespace HZExporter
                         // LOD1 = engine-synthesized billboard (far band). Unity gives no far geometry.
                         gt.lods.Add(new GrassLodData {
                             generateBillboard = true,
-                            billboardWidth = 0f,   // 0 => engine derives from near-LOD bounds
-                            billboardHeight = 0f,
+                            billboardWidth = bbW,
+                            billboardHeight = bbH,
+                            billboardUvMin = uvMin,
+                            billboardUvExtent = uvExtent,
                             minViewDistance = near,
                             maxViewDistance = far,
                             instancesMax = (uint)Mathf.Max(1, instancesMax / 2),
@@ -443,7 +494,7 @@ namespace HZExporter
 
             WriteDensityMaps(td, result, outDir, assetPrefix);
 
-            Debug.Log($"[HZTerrain] grass: {result.Count} type(s), instances/tile≈{instancesMax} (near={near:F0} far={far:F0})");
+            Debug.Log($"[HZTerrain] grass: {result.Count} type(s) (near={near:F0} far={far:F0}); instances/tile measured per type from Unity's scatterer");
             return result;
         }
 
@@ -500,6 +551,39 @@ namespace HZExporter
                     return t2;
             }
             return null;
+        }
+
+        // Derive the engine cross-billboard's size + albedo sub-rect from the grass mesh:
+        // width = the larger XZ footprint, height = the Y range (full card extents); the UV
+        // rect is the bounding box of the mesh's UV0, so the billboard samples only the blade's
+        // region of the atlas instead of the whole sheet. Falls back to a unit UV rect when the
+        // mesh has no UVs.
+        static void ComputeBillboard(Mesh mesh, out float width, out float height,
+                                     out Vector2 uvMin, out Vector2 uvExtent)
+        {
+            var b = mesh.bounds;
+            width = Mathf.Max(b.size.x, b.size.z);
+            height = b.size.y;
+            if (width <= 0f) width = 0.8f;
+            if (height <= 0f) height = 1.5f;
+
+            var uvs = mesh.uv;
+            if (uvs == null || uvs.Length == 0)
+            {
+                uvMin = Vector2.zero;
+                uvExtent = Vector2.one;
+                return;
+            }
+            float minU = float.MaxValue, minV = float.MaxValue, maxU = float.MinValue, maxV = float.MinValue;
+            foreach (var uv in uvs)
+            {
+                if (uv.x < minU) minU = uv.x;
+                if (uv.y < minV) minV = uv.y;
+                if (uv.x > maxU) maxU = uv.x;
+                if (uv.y > maxV) maxV = uv.y;
+            }
+            uvMin = new Vector2(minU, minV);
+            uvExtent = new Vector2(maxU - minU, maxV - minV);
         }
 
         static float TryGetAlphaCutoff(Material mat, float fallback)
@@ -595,7 +679,7 @@ namespace HZExporter
             sb.AppendLine("type TextureBlobAsset");
             sb.AppendLine("version 3");
             sb.AppendLine("---");
-            sb.AppendLine($"image {imagePath} u8");
+            sb.AppendLine($"image \"{imagePath}\" u8");
             sb.AppendLine($"format {format}");
             sb.AppendLine($"width {width}");
             sb.AppendLine($"height {height}");
@@ -606,6 +690,7 @@ namespace HZExporter
 
         static void WriteManifest(TerrainData td, string path, string assetPrefix,
             int layerCount, int splatmapCount, int tileSize, int maxLod,
+            float grassViewDistance, float grassDensityScale,
             List<GrassTypeData> grassTypes)
         {
             var size = td.size;
@@ -613,7 +698,7 @@ namespace HZExporter
             sb.AppendLine("type TerrainBlobAsset");
             sb.AppendLine("version 3");
             sb.AppendLine("---");
-            sb.AppendLine($"heightmap {assetPrefix}/heightmap.hzt TextureBlobAsset");
+            sb.AppendLine($"heightmap \"{assetPrefix}/heightmap.hzt\" TextureBlobAsset");
             sb.AppendLine($"world_width {F(size.x)}");
             sb.AppendLine($"world_depth {F(size.z)}");
             sb.AppendLine($"height_scale {F(size.y)}");
@@ -623,7 +708,7 @@ namespace HZExporter
             sb.AppendLine($"splatmaps {splatmapCount}");
             for (int s = 0; s < splatmapCount; s++)
             {
-                sb.AppendLine($"  texture {assetPrefix}/splatmap{s}.hzt TextureBlobAsset");
+                sb.AppendLine($"  texture \"{assetPrefix}/splatmap{s}.hzt\" TextureBlobAsset");
                 sb.AppendLine();
             }
 
@@ -631,11 +716,11 @@ namespace HZExporter
             for (int i = 0; i < layerCount; i++)
             {
                 var layer = td.terrainLayers[i];
-                sb.AppendLine($"  albedo {assetPrefix}/layer{i}_albedo.hzt TextureBlobAsset");
+                sb.AppendLine($"  albedo \"{assetPrefix}/layer{i}_albedo.hzt\" TextureBlobAsset");
                 if (layer != null && layer.normalMapTexture != null)
-                    sb.AppendLine($"  normal {assetPrefix}/layer{i}_normal.hzt TextureBlobAsset");
+                    sb.AppendLine($"  normal \"{assetPrefix}/layer{i}_normal.hzt\" TextureBlobAsset");
                 // mask is always emitted (either the Unity mask or a synthesized default)
-                sb.AppendLine($"  mask {assetPrefix}/layer{i}_mask.hzt TextureBlobAsset");
+                sb.AppendLine($"  mask \"{assetPrefix}/layer{i}_mask.hzt\" TextureBlobAsset");
                 sb.AppendLine($"  uv_scale {F(layer != null ? layer.tileSize.x : 1f)}");
                 sb.AppendLine();
             }
@@ -644,15 +729,17 @@ namespace HZExporter
             // type/LOD are emitted in struct order; omitted fields default to zero (e.g. a
             // billboard LOD omits `model`). See engine terrain.h / terrain.gen.h.
             sb.AppendLine($"grass_tile_size {F(GRASS_TILE_SIZE)}");
+            sb.AppendLine($"grass_view_distance {F(grassViewDistance)}");
+            sb.AppendLine($"grass_density_scale {F(grassDensityScale)}");
             int grassCount = grassTypes != null ? grassTypes.Count : 0;
             sb.AppendLine($"grass_types {grassCount}");
             for (int t = 0; t < grassCount; t++)
             {
                 var gt = grassTypes[t];
                 if (!string.IsNullOrEmpty(gt.albedoRef))
-                    sb.AppendLine($"  albedo {gt.albedoRef} TextureBlobAsset");
+                    sb.AppendLine($"  albedo \"{gt.albedoRef}\" TextureBlobAsset");
                 if (!string.IsNullOrEmpty(gt.densityRef))
-                    sb.AppendLine($"  density_map {gt.densityRef} TextureBlobAsset");
+                    sb.AppendLine($"  density_map \"{gt.densityRef}\" TextureBlobAsset");
                 sb.AppendLine($"  density_channel {gt.densityChannel}");
                 sb.AppendLine($"  scale_xz_min {F(gt.scaleXzMin)}");
                 sb.AppendLine($"  scale_xz_max {F(gt.scaleXzMax)}");
@@ -667,12 +754,14 @@ namespace HZExporter
                 {
                     // model first (struct order); omit on billboard LODs so it defaults to null.
                     if (!lod.generateBillboard && !string.IsNullOrEmpty(lod.modelRef))
-                        sb.AppendLine($"    model {lod.modelRef} ModelBlobAsset");
+                        sb.AppendLine($"    model \"{lod.modelRef}\" ModelBlobAsset");
                     sb.AppendLine($"    generate_billboard {(lod.generateBillboard ? "true" : "false")}");
                     if (lod.generateBillboard)
                     {
                         sb.AppendLine($"    billboard_width {F(lod.billboardWidth)}");
                         sb.AppendLine($"    billboard_height {F(lod.billboardHeight)}");
+                        sb.AppendLine($"    billboard_uv_min {F(lod.billboardUvMin.x)} {F(lod.billboardUvMin.y)}");
+                        sb.AppendLine($"    billboard_uv_extent {F(lod.billboardUvExtent.x)} {F(lod.billboardUvExtent.y)}");
                     }
                     sb.AppendLine($"    min_view_distance {F(lod.minViewDistance)}");
                     sb.AppendLine($"    max_view_distance {F(lod.maxViewDistance)}");
