@@ -318,13 +318,18 @@ namespace HZExporter
 
         /// <summary>
         /// Exports a BoneCloth (clothType==BoneCloth): the simulated bones are each
-        /// rootBone + its Transform descendants; rootBones are Fixed, descendants Move.
-        /// Bone names map to the model's GLB joint names. selection_* are empty.
+        /// rootBone + its Transform descendants. Attributes mirror MC2
+        /// ClothProcess.cs:709-742 — default all Move with rootBones Fixed, then the
+        /// painted selectionData (if userEdit) overrides per-bone by position.
+        /// Bone names map to the model's GLB joint names. selection_* stay empty
+        /// (the per-bone resolution happens here; the engine consumes bone_attributes).
         /// </summary>
         static string ExportBoneClothToDir(MagicaCloth cloth, string outDir)
         {
             var sd = cloth.SerializeData;
-            // collect bones: each root + descendants, dedup, root=Fixed/desc=Move
+            // collect bones IN ORDER (each root + descendants, dedup) so we can
+            // override attributes by index after building the default.
+            var boneTransforms = new List<Transform>();
             var boneNames = new List<string>();
             var boneAttrs = new List<int>();
             var seen = new HashSet<Transform>();
@@ -337,8 +342,53 @@ namespace HZExporter
                 foreach (var t in root.GetComponentsInChildren<Transform>(true))
                 {
                     if (!seen.Add(t)) continue;
+                    boneTransforms.Add(t);
                     boneNames.Add(t.name);
                     boneAttrs.Add(rootSet.Contains(t) ? 1 : 2); // 1=Fixed root, 2=Move
+                }
+            }
+
+            // Painted override (MC2: valid selectionData attributes win over the
+            // root-default). selectionData is the serialized paint; boneAttributeDict
+            // is [NonSerialized] runtime-only, so the paint lives here. MC2 builds the
+            // selection FROM the bone proxy in bone order, so attributes[i] is bone i
+            // — map by index (counts match exactly, one painted entry per bone).
+            var bsel = cloth.GetSerializeData2().selectionData;
+            if (bsel != null && bsel.IsValid() &&
+                bsel.attributes.Length == boneTransforms.Count)
+            {
+                int fixedN = 0, moveN = 0, invalidN = 0;
+                for (int b = 0; b < boneTransforms.Count; b++)
+                {
+                    var a = bsel.attributes[b];
+                    int attr = a.IsFixed() ? 1 : (a.IsMove() ? 2 : 0);
+                    boneAttrs[b] = attr;
+                    if (attr == 1) fixedN++; else if (attr == 2) moveN++; else invalidN++;
+                }
+                Debug.Log($"[HZClothExporter] {cloth.name}: BoneCloth painted attributes " +
+                          $"fixed={fixedN} move={moveN} invalid={invalidN}");
+
+                // MC2 excludes Invalid-painted verts from the proxy. Drop leaf Invalid
+                // bones (attr 0); warn if an Invalid bone has simulated children, since
+                // dropping it mid-chain would orphan them (keep it as Move in that case).
+                for (int b = boneTransforms.Count - 1; b >= 0; b--)
+                {
+                    if (boneAttrs[b] != 0) continue;
+                    bool hasSimChild = false;
+                    for (int c = 0; c < boneTransforms.Count; c++)
+                        if (c != b && boneTransforms[c].parent == boneTransforms[b]) { hasSimChild = true; break; }
+                    if (hasSimChild)
+                    {
+                        Debug.LogWarning($"[HZClothExporter] {cloth.name}: bone '{boneNames[b]}' " +
+                                         "painted Invalid but has simulated children; keeping as Move.");
+                        boneAttrs[b] = 2;
+                    }
+                    else
+                    {
+                        boneTransforms.RemoveAt(b);
+                        boneNames.RemoveAt(b);
+                        boneAttrs.RemoveAt(b);
+                    }
                 }
             }
             if (boneNames.Count == 0)
