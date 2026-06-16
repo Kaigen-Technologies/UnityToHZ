@@ -47,6 +47,39 @@ namespace HZExporter
                 Debug.LogError($"[HZGlbWriter] Mesh '{mesh.name}' has UV7 (Unity mesh.uv8) data — dropping; engine vertex layout only carries UV0/UV1.");
         }
 
+        // Unity URP `_Cull`: 0=Off (double-sided), 1=Front, 2=Back. Defaults to Back
+        // when the material doesn't expose the property.
+        static int CullValue(Material m)
+        {
+            if (m == null) return 2;
+            return m.HasProperty("_Cull") ? (int)m.GetFloat("_Cull") : 2;
+        }
+
+        // Unity multi-pass: a renderer can carry more materials than the mesh has
+        // sub-meshes; the extra materials re-draw the LAST sub-mesh (one extra pass
+        // each). The two-sided toon idiom is exactly this — one single-sided front
+        // pass (cull back) plus one single-sided back pass (cull front) over the same
+        // geometry. glTF can't express cull-front and the engine can't additive-
+        // multipass, so when the extra pass is the opposite-cull complement of the
+        // base material we collapse the pair into a single double-sided primitive
+        // (visually identical when the two materials differ only in cull). The
+        // collapsed primitive is emitted under the COMPLEMENT material's own name so
+        // it doesn't collide (by name) with the bulk single-sided material in the
+        // engine's name-keyed material cook. Returns the complement material to emit
+        // double-sided for sub-mesh `s`, or null when `s` is not such a pass.
+        static Material TwoSidedComplement(Material[] row, int subCount, int s)
+        {
+            if (row == null || s != subCount - 1 || row.Length <= subCount) return null;
+            int baseCull = CullValue(row.Length > 0 ? row[Math.Min(s, row.Length - 1)] : null);
+            if (baseCull == 0) return null;
+            for (int k = subCount; k < row.Length; k++)
+            {
+                int c = CullValue(row[k]);
+                if (c != 0 && c != baseCull) return row[k];
+            }
+            return null;
+        }
+
         /// <summary>Export a single static mesh as .glb. Overload for single-material callers.</summary>
         public static void ExportStaticMesh(Mesh mesh, Material material, string outputPath)
         {
@@ -224,6 +257,28 @@ namespace HZExporter
             var imageEntries = new List<(int off, int size, string name, int matIdx, int role)>();
             var matFactors = new HZShaderMap.Factors[materials.Length];
             var customMats = new HZShaderMap.CustomMaterial[materials.Length];
+            // Unity multi-pass: when the renderer carries more materials than the mesh
+            // has sub-meshes, the extra (opposite-cull) pass over the last sub-mesh is the
+            // two-sided idiom. Collapse it to a double-sided primitive (see ExportSkinnedMesh).
+            // The last sub-mesh's primitive is redirected to the complement material so it
+            // doesn't collide (by name) with the bulk single-sided material in the cook.
+            var matDoubleSided = new bool[materials.Length];
+            int twoSidedSubmesh = -1;
+            int twoSidedMatIndex = -1;
+            {
+                Material comp = TwoSidedComplement(materials, submeshCount, submeshCount - 1);
+                if (comp != null)
+                {
+                    for (int k = submeshCount; k < materials.Length; k++)
+                        if (materials[k] == comp) { twoSidedMatIndex = k; break; }
+                    if (twoSidedMatIndex >= 0)
+                    {
+                        matDoubleSided[twoSidedMatIndex] = true;
+                        twoSidedSubmesh = submeshCount - 1;
+                        Debug.Log($"[HZGlbWriter] '{mesh.name}' has a front/back multi-pass material pair (mesh has {submeshCount} sub-mesh(es), {materials.Length} materials) — emitting '{comp.name}' as a single double-sided primitive.");
+                    }
+                }
+            }
             for (int mi = 0; mi < materials.Length; mi++)
             {
                 int capturedMi = mi;
@@ -443,6 +498,7 @@ namespace HZExporter
                     if (f.emissive.r > 0 || f.emissive.g > 0 || f.emissive.b > 0)
                         json.Append($",\n      \"emissiveFactor\": [{F(f.emissive.r)}, {F(f.emissive.g)}, {F(f.emissive.b)}]");
                     if (ti[3] >= 0) json.Append($",\n      \"emissiveTexture\": {{ \"index\": {ti[3]} }}");
+                    if (matDoubleSided[mi]) json.Append(",\n      \"doubleSided\": true");
                     json.Append("\n    }");
                 }
             }
@@ -459,7 +515,9 @@ namespace HZExporter
                 if (submeshIndicesAcc[s] < 0) continue;
                 if (!firstPrim) json.Append(",\n");
                 firstPrim = false;
-                int matRef = Math.Min(s, materials.Length - 1);
+                int matRef = (s == twoSidedSubmesh && twoSidedMatIndex >= 0)
+                    ? twoSidedMatIndex
+                    : Math.Min(s, materials.Length - 1);
                 json.Append("      {\n");
                 json.Append($"        \"indices\": {submeshIndicesAcc[s]},\n");
                 json.Append($"        \"attributes\": {{ \"POSITION\": {posAcc}, \"NORMAL\": {normAcc}");
@@ -539,6 +597,7 @@ namespace HZExporter
             // (smr, submesh) pair). matIndexPerSmr[smrIdx][submeshIdx] = index into flat materials[].
             // Per-submesh because a single SMR with multiple sub-meshes has one material per sub-mesh.
             var flatMatList = new List<Material>();
+            var flatDoubleSided = new List<bool>();
             int[][] matIndexPerSmr = new int[smrs.Length][];
             for (int si = 0; si < smrs.Length; si++)
             {
@@ -549,11 +608,20 @@ namespace HZExporter
                 for (int s = 0; s < subCount; s++)
                 {
                     Material m = (row.Length > 0) ? row[Math.Min(s, row.Length - 1)] : null;
+                    Material comp = TwoSidedComplement(row, subCount, s);
+                    bool ds = comp != null;
+                    if (ds)
+                    {
+                        m = comp;
+                        Debug.Log($"[HZGlbWriter] '{smrs[si].sharedMesh?.name}' has a front/back multi-pass material pair (mesh has {subCount} sub-mesh(es), {row.Length} materials) — emitting '{comp.name}' as a single double-sided primitive.");
+                    }
                     matIndexPerSmr[si][s] = flatMatList.Count;
                     flatMatList.Add(m);
+                    flatDoubleSided.Add(ds);
                 }
             }
             var materials = flatMatList.ToArray();
+            var matDoubleSided = flatDoubleSided.ToArray();
 
             var bones = primarySmr.bones;
             int jointCount = bones.Length;
@@ -1132,6 +1200,7 @@ namespace HZExporter
                     if (f.emissive.r > 0 || f.emissive.g > 0 || f.emissive.b > 0)
                         json.Append($",\n      \"emissiveFactor\": [{F(f.emissive.r)}, {F(f.emissive.g)}, {F(f.emissive.b)}]");
                     if (ti[3] >= 0) json.Append($",\n      \"emissiveTexture\": {{ \"index\": {ti[3]} }}");
+                    if (matDoubleSided[mi2]) json.Append(",\n      \"doubleSided\": true");
                     json.Append("\n    }");
                 }
             }
