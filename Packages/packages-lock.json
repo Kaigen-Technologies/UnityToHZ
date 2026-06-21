@@ -1,5 +1,14 @@
 {
   "dependencies": {
+    "com.hz.exporter": {
+      "version": "file:../../hz-exporter",
+      "depth": 0,
+      "source": "local",
+      "dependencies": {
+        "com.unity.render-pipelines.universal": "17.6.0",
+        "com.unity.entities": "6.5.0"
+      }
+    },
     "com.unity.ai.navigation": {
       "version": "2.0.13",
       "depth": 0,
