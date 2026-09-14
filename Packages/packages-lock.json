@@ -1,9 +1,9 @@
 {
   "dependencies": {
     "com.hz.exporter": {
-      "version": "file:../../hz-exporter",
+      "version": "file:hz-exporter",
       "depth": 0,
-      "source": "local",
+      "source": "embedded",
       "dependencies": {
         "com.unity.render-pipelines.universal": "17.6.0",
         "com.unity.entities": "6.5.0"
@@ -56,6 +56,7 @@
         "com.unity.nuget.mono-cecil": "1.11.6",
         "com.unity.profiling.core": "1.0.3",
         "com.unity.scriptablebuildpipeline": "1.23.1",
+        "com.unity.serialization": "6.5.0",
         "com.unity.test-framework.performance": "3.2.0",
         "com.unity.modules.assetbundle": "1.0.0",
         "com.unity.modules.audio": "1.0.0",
@@ -116,7 +117,7 @@
       "dependencies": {}
     },
     "com.unity.multiplayer.center": {
-      "version": "2.0.0",
+      "version": "1.0.1",
       "depth": 0,
       "source": "builtin",
       "dependencies": {
@@ -180,7 +181,7 @@
       }
     },
     "com.unity.scriptablebuildpipeline": {
-      "version": "3.0.2",
+      "version": "2.6.1",
       "depth": 1,
       "source": "registry",
       "dependencies": {
@@ -196,6 +197,15 @@
       "dependencies": {},
       "url": "https://packages.unity.com"
     },
+    "com.unity.serialization": {
+      "version": "6.5.0",
+      "depth": 1,
+      "source": "builtin",
+      "dependencies": {
+        "com.unity.collections": "2.1.2",
+        "com.unity.burst": "1.7.2"
+      }
+    },
     "com.unity.shadergraph": {
       "version": "17.6.0",
       "depth": 1,
@@ -206,7 +216,7 @@
       }
     },
     "com.unity.test-framework": {
-      "version": "1.8.0",
+      "version": "1.7.1",
       "depth": 0,
       "source": "builtin",
       "dependencies": {
@@ -216,7 +226,7 @@
       }
     },
     "com.unity.test-framework.performance": {
-      "version": "3.4.0",
+      "version": "3.2.0",
       "depth": 1,
       "source": "registry",
       "dependencies": {
@@ -226,18 +236,19 @@
       "url": "https://packages.unity.com"
     },
     "com.unity.timeline": {
-      "version": "6.6.0",
+      "version": "1.8.12",
       "depth": 0,
-      "source": "builtin",
+      "source": "registry",
       "dependencies": {
+        "com.unity.modules.audio": "1.0.0",
         "com.unity.modules.director": "1.0.0",
         "com.unity.modules.animation": "1.0.0",
-        "com.unity.modules.audio": "1.0.0",
         "com.unity.modules.particlesystem": "1.0.0"
-      }
+      },
+      "url": "https://packages.unity.com"
     },
     "com.unity.ugui": {
-      "version": "2.6.0",
+      "version": "2.5.0",
       "depth": 0,
       "source": "builtin",
       "dependencies": {

@@ -183,7 +183,7 @@ Material:
     m_Colors:
     - _BaseColor: {r: 1, g: 1, b: 1, a: 1}
     - _BottomColor: {r: 0.54522336, g: 0.6603774, b: 0.06541474, a: 0}
-    - _Bottom_Color: {r: 0.31355476, g: 0.3773585, b: 0, a: 0}
+    - _Bottom_Color: {r: 0.31355456, g: 0.37735826, b: 0, a: 0}
     - _Color: {r: 1, g: 1, b: 1, a: 1}
     - _EmissionColor: {r: 0, g: 0, b: 0, a: 1}
     - _Player_Position: {r: 77.09, g: 5.829, b: 28.3, a: 0}

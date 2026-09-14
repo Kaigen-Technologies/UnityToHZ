@@ -48,3 +48,10 @@ crashlytics-build.properties
 ExportOutput/
 tools/__pycache__
 ExportedAssets/
+
+# Unity crash dumps
+mono_crash.*.json
+
+# installed by hz/harness/unityparity (source lives in the engine repo)
+Assets/HZParity/
+Assets/HZParity.meta

@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 1a2c93fb41052c54a8a0c2fcbc69c00d
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 4890085278179872738
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 290713
+  packageName: Bandit Valley Village
+  packageVersion: 1.0
+  assetPath: Assets/LeartesStudios/BanditsValley/HDRP/Scene/BanditValley_LightSettings.lighting
+  uploadId: 685385
